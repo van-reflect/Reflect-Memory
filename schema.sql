@@ -49,6 +49,16 @@ CREATE TABLE memories (
     tags        TEXT NOT NULL DEFAULT '[]'
                 CHECK(json_type(tags) = 'array'),
 
+    -- Who created this memory. Set server-side from the auth key. Never self-reported.
+    -- Values: "user", "chatgpt", "claude", etc.
+    origin      TEXT NOT NULL DEFAULT 'user',
+
+    -- Which vendors can see this memory in queries. JSON array of strings.
+    -- ["*"] = all vendors. ["chatgpt","claude"] = only those two.
+    -- Validated server-side against configured vendor list.
+    allowed_vendors TEXT NOT NULL DEFAULT '["*"]'
+                    CHECK(json_type(allowed_vendors) = 'array'),
+
     -- ISO 8601 timestamps. Set by the application, not by SQLite triggers.
     -- No hidden DEFAULT CURRENT_TIMESTAMP — the application is explicit.
     created_at  TEXT NOT NULL,

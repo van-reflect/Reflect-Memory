@@ -18,7 +18,7 @@ npm install
 Required:
 
 ```bash
-export RM_API_KEY="your-secret-api-key"        # Clients send this to authenticate
+export RM_API_KEY="your-secret-api-key"        # User key — full access to all endpoints
 export RM_MODEL_API_KEY="sk-..."               # Your OpenAI (or compatible) API key
 export RM_MODEL_NAME="gpt-4o-mini"             # Model identifier
 ```
@@ -33,6 +33,20 @@ export RM_MODEL_TEMPERATURE=0.7                # Temperature (default: 0.7)
 export RM_MODEL_MAX_TOKENS=1024                # Max tokens (default: 1024)
 export RM_SYSTEM_PROMPT="Your custom prompt"   # System prompt for AI queries
 ```
+
+Agent keys (per-vendor, optional):
+
+```bash
+export RM_AGENT_KEY_CHATGPT="agent-key-for-chatgpt"   # Registers vendor "chatgpt"
+export RM_AGENT_KEY_CLAUDE="agent-key-for-claude"      # Registers vendor "claude"
+# RM_AGENT_KEY_<NAME> — any env var matching this pattern registers a vendor
+```
+
+Each agent key gives the vendor scoped access:
+- Can write memories via `POST /agent/memories`
+- Can query via `POST /query` (sees only memories with `allowed_vendors` containing `"*"` or their vendor name)
+- Can check identity via `GET /whoami`
+- Cannot access user endpoints (`POST /memories`, `GET /memories/:id`, `PUT /memories/:id`, `DELETE /memories/:id`, `POST /memories/list`)
 
 ## Run
 
@@ -51,13 +65,38 @@ npm start
 
 ## API
 
-All requests require the `Authorization` header:
+All requests (except `/health`) require the `Authorization` header:
 
 ```
 Authorization: Bearer your-secret-api-key
 ```
 
-### Create a memory
+### Health check (no auth required)
+
+```bash
+curl -s https://api.reflectmemory.com/health | jq
+```
+
+### Who am I? (identity debugging)
+
+```bash
+curl -s https://api.reflectmemory.com/whoami \
+  -H "Authorization: Bearer your-secret-api-key" | jq
+```
+
+Response:
+
+```json
+{ "role": "user", "vendor": null }
+```
+
+With an agent key:
+
+```json
+{ "role": "agent", "vendor": "chatgpt" }
+```
+
+### Create a memory (user path)
 
 ```bash
 curl -s -X POST http://localhost:3000/memories \
@@ -70,15 +109,47 @@ curl -s -X POST http://localhost:3000/memories \
   }' | jq
 ```
 
+`allowed_vendors` is optional for user writes. If omitted, defaults to `["*"]` (all vendors can see it). To restrict:
+
+```bash
+curl -s -X POST http://localhost:3000/memories \
+  -H "Authorization: Bearer your-secret-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Private note",
+    "content": "Only Claude should see this.",
+    "tags": ["private"],
+    "allowed_vendors": ["claude"]
+  }' | jq
+```
+
+### Create a memory (agent path)
+
+Agents must use `POST /agent/memories`. The `origin` field is set server-side from the agent's key — it cannot be self-reported. `allowed_vendors` is required.
+
+```bash
+curl -s -X POST http://localhost:3000/agent/memories \
+  -H "Authorization: Bearer agent-key-for-chatgpt" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "ChatGPT learned this",
+    "content": "User prefers bullet points over paragraphs.",
+    "tags": ["preference"],
+    "allowed_vendors": ["chatgpt"]
+  }' | jq
+```
+
 Response (201):
 
 ```json
 {
   "id": "a1b2c3d4-...",
   "user_id": "...",
-  "title": "Project deadline",
-  "content": "The API migration must be completed by end of Q3 2026.",
-  "tags": ["work", "deadlines"],
+  "title": "ChatGPT learned this",
+  "content": "User prefers bullet points over paragraphs.",
+  "tags": ["preference"],
+  "origin": "chatgpt",
+  "allowed_vendors": ["chatgpt"],
   "created_at": "2026-02-08T...",
   "updated_at": "2026-02-08T..."
 }
@@ -111,16 +182,9 @@ curl -s -X POST http://localhost:3000/memories/list \
   -d '{ "filter": { "by": "tags", "tags": ["work"] } }' | jq
 ```
 
-By IDs:
-
-```bash
-curl -s -X POST http://localhost:3000/memories/list \
-  -H "Authorization: Bearer your-secret-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{ "filter": { "by": "ids", "ids": ["MEMORY_ID_1", "MEMORY_ID_2"] } }' | jq
-```
-
 ### Update a memory (full replacement)
+
+Now requires `allowed_vendors` in the body (full replacement — all fields required).
 
 ```bash
 curl -s -X PUT http://localhost:3000/memories/MEMORY_ID \
@@ -129,7 +193,8 @@ curl -s -X PUT http://localhost:3000/memories/MEMORY_ID \
   -d '{
     "title": "Project deadline (revised)",
     "content": "The API migration deadline has been extended to Q4 2026.",
-    "tags": ["work", "deadlines", "revised"]
+    "tags": ["work", "deadlines", "revised"],
+    "allowed_vendors": ["*"]
   }' | jq
 ```
 
@@ -144,6 +209,8 @@ Returns `204 No Content` on success. The row is gone.
 
 ### Query the AI (with memory context)
 
+User key sees all memories matching the filter:
+
 ```bash
 curl -s -X POST http://localhost:3000/query \
   -H "Authorization: Bearer your-secret-api-key" \
@@ -154,76 +221,19 @@ curl -s -X POST http://localhost:3000/query \
   }' | jq
 ```
 
-Response (200) — the full QueryReceipt:
-
-```json
-{
-  "response": "Based on your memory entries, the API migration must be completed by end of Q3 2026.",
-  "memories_used": [
-    {
-      "id": "a1b2c3d4-...",
-      "user_id": "...",
-      "title": "Project deadline",
-      "content": "The API migration must be completed by end of Q3 2026.",
-      "tags": ["work", "deadlines"],
-      "created_at": "2026-02-08T...",
-      "updated_at": "2026-02-08T..."
-    }
-  ],
-  "prompt_sent": "[System]\nYou are a helpful assistant...\n\n[Memories]\n\n--- Project deadline ---\nTags: work, deadlines\nThe API migration must be completed by end of Q3 2026.\n\n[User Query]\nWhen is the API migration deadline?",
-  "model_config": {
-    "provider": "openai",
-    "model": "gpt-4o-mini",
-    "parameters": {
-      "temperature": 0.7,
-      "max_tokens": 1024
-    }
-  }
-}
-```
-
-The `prompt_sent` field shows you the exact text the AI model received. The `memories_used` field shows the full content of each memory as it was at query time. Nothing is hidden.
-
-### Query — filter by tags
+Agent key sees only memories where `allowed_vendors` contains `"*"` or the agent's vendor name:
 
 ```bash
 curl -s -X POST http://localhost:3000/query \
-  -H "Authorization: Bearer your-secret-api-key" \
+  -H "Authorization: Bearer agent-key-for-chatgpt" \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "Summarize my work notes",
-    "memory_filter": { "by": "tags", "tags": ["work"] }
+    "query": "What are the user preferences?",
+    "memory_filter": { "by": "all" }
   }' | jq
 ```
 
-### Query — filter by IDs
-
-```bash
-curl -s -X POST http://localhost:3000/query \
-  -H "Authorization: Bearer your-secret-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "What do these entries have in common?",
-    "memory_filter": { "by": "ids", "ids": ["MEMORY_ID_1", "MEMORY_ID_2"] }
-  }' | jq
-```
-
-### Health check (no auth required)
-
-```bash
-curl -s https://api.reflectmemory.com/health | jq
-```
-
-Response:
-
-```json
-{
-  "service": "reflect-memory",
-  "status": "ok",
-  "uptime_seconds": 3600,
-  "model": "gpt-4o-mini"
-}
-```
+The `vendor_filter` field in the receipt shows which vendor filter was applied (`null` for users, vendor name for agents).
 
 ## Deploy to Railway
 
@@ -233,10 +243,12 @@ Set these in the Railway service's **Variables** tab:
 
 | Variable | Required | Value |
 |---|---|---|
-| `RM_API_KEY` | Yes | A strong random string (your API password) |
+| `RM_API_KEY` | Yes | A strong random string (your user API key) |
 | `RM_MODEL_API_KEY` | Yes | Your OpenAI API key (`sk-...`) |
 | `RM_MODEL_NAME` | Yes | `gpt-4o-mini` or any OpenAI model |
 | `RM_DB_PATH` | No | Defaults to `/data/reflect-memory.db` |
+| `RM_AGENT_KEY_CHATGPT` | No | Agent key for ChatGPT integration |
+| `RM_AGENT_KEY_CLAUDE` | No | Agent key for Claude integration |
 
 Railway sets `PORT` automatically — the app picks it up.
 
@@ -269,77 +281,92 @@ To use `api.reflectmemory.com`:
 
 ## Verification Checklist
 
+### Whoami
+
+```bash
+# User key
+curl -s https://api.reflectmemory.com/whoami \
+  -H "Authorization: Bearer YOUR_USER_KEY" | jq
+# → { "role": "user", "vendor": null }
+
+# Agent key (ChatGPT)
+curl -s https://api.reflectmemory.com/whoami \
+  -H "Authorization: Bearer YOUR_CHATGPT_AGENT_KEY" | jq
+# → { "role": "agent", "vendor": "chatgpt" }
+```
+
+### Agent write
+
+```bash
+curl -s -X POST https://api.reflectmemory.com/agent/memories \
+  -H "Authorization: Bearer YOUR_CHATGPT_AGENT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Agent test",
+    "content": "Written by chatgpt agent.",
+    "tags": ["agent-test"],
+    "allowed_vendors": ["chatgpt"]
+  }' | jq
+# → origin: "chatgpt", allowed_vendors: ["chatgpt"]
+```
+
+### Agent query scoping
+
+```bash
+# Agent sees only memories with allowed_vendors containing "*" or "chatgpt"
+curl -s -X POST https://api.reflectmemory.com/query \
+  -H "Authorization: Bearer YOUR_CHATGPT_AGENT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What do you know?",
+    "memory_filter": { "by": "all" }
+  }' | jq '.memories_used | length'
+# → vendor_filter: "chatgpt" in receipt
+```
+
+### User sees all
+
+```bash
+# User sees every memory regardless of allowed_vendors
+curl -s -X POST https://api.reflectmemory.com/memories/list \
+  -H "Authorization: Bearer YOUR_USER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "filter": { "by": "all" } }' | jq '.memories | length'
+```
+
+### Agent route restriction
+
+```bash
+# Agent cannot hit user-only endpoints
+curl -s -X POST https://api.reflectmemory.com/memories \
+  -H "Authorization: Bearer YOUR_CHATGPT_AGENT_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"x","content":"x","tags":["x"]}' | jq
+# → { "error": "Agent keys cannot access this endpoint" } (403)
+```
+
 ### Persistence (data survives redeploy)
 
-1. Create a memory:
-
-```bash
-curl -s -X POST https://api.reflectmemory.com/memories \
-  -H "Authorization: Bearer YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Persistence test","content":"If I survive a redeploy, storage works.","tags":["test"]}' | jq .id
-```
-
-2. Note the returned `id`.
-
-3. Trigger a redeploy in Railway (push a commit, or click **Redeploy** in the Deployments tab).
-
-4. After the redeploy completes, read the memory by ID:
-
-```bash
-curl -s https://api.reflectmemory.com/memories/THE_ID_FROM_STEP_2 \
-  -H "Authorization: Bearer YOUR_KEY" | jq
-```
-
-5. If you get back the full memory entry, persistence is working. If you get 404, the volume is not mounted correctly.
-
-### Domain and health
-
-1. Health check (no auth):
-
-```bash
-curl -s https://api.reflectmemory.com/health | jq
-```
-
-Should return `{"service":"reflect-memory","status":"ok",...}`.
-
-2. Auth rejection (no key):
-
-```bash
-curl -s https://api.reflectmemory.com/memories -X POST
-```
-
-Should return `{"error":"Missing or malformed Authorization header..."}`.
-
-3. Full round trip (create + list):
-
-```bash
-# Create
-curl -s -X POST https://api.reflectmemory.com/memories \
-  -H "Authorization: Bearer YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Domain test","content":"Sent via custom domain.","tags":["test"]}' | jq
-
-# List all
-curl -s -X POST https://api.reflectmemory.com/memories/list \
-  -H "Authorization: Bearer YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"filter":{"by":"all"}}' | jq
-```
+1. Create a memory, note the ID
+2. Trigger a redeploy in Railway
+3. Read the memory by ID — should still exist
 
 ## Architecture
 
 ```
-POST /memories          → Memory Service → SQLite (create)
-GET  /memories/:id      → Memory Service → SQLite (read)
-POST /memories/list     → Memory Service → SQLite (list)
-PUT  /memories/:id      → Memory Service → SQLite (update)
-DELETE /memories/:id    → Memory Service → SQLite (delete)
+User key  → POST /memories        → Memory Service → SQLite (origin: "user")
+          → GET  /memories/:id     → Memory Service → SQLite
+          → POST /memories/list    → Memory Service → SQLite
+          → PUT  /memories/:id     → Memory Service → SQLite
+          → DELETE /memories/:id   → Memory Service → SQLite
 
-POST /query             → Memory Service (read)
-                        → Context Builder (pure function)
-                        → Model Gateway (stateless HTTP call)
-                        → QueryReceipt returned to client
+Agent key → POST /agent/memories   → Memory Service → SQLite (origin: vendor)
+          → POST /query            → Memory Service (vendor-filtered read)
+                                   → Context Builder → Model Gateway → QueryReceipt
+
+Both      → GET /health           (no auth)
+          → GET /whoami           (returns role + vendor)
+          → POST /query           (vendor filter from key, not body)
 ```
 
 ## Hard Invariants
@@ -348,4 +375,9 @@ POST /query             → Memory Service (read)
 2. **Hard Deletion** — Delete means delete. One row, one table, gone. No soft deletes.
 3. **Pure Context Builder** — No I/O. Same inputs, same output. Always.
 4. **No AI Write Path** — The model cannot create, modify, or delete memories. One-directional data flow.
-5. **Deterministic Visibility** — Every query response includes the full receipt: memories used, prompt sent, model config.
+5. **Deterministic Visibility** — Every query response includes the full receipt: memories used, prompt sent, model config, vendor filter.
+
+## Hard Security Constraints
+
+1. **`/agent/memories` must never accept `origin` in the body.** If present, hard 400 (enforced by `additionalProperties: false` in the schema).
+2. **Agent keys must never be allowed to call user endpoints.** Agents can only hit `/agent/*`, `/query`, `/whoami`, `/health`. Everything else returns 403.

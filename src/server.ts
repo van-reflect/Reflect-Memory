@@ -1,5 +1,5 @@
 // Reflect Memory — HTTP API Layer
-// Fastify server with memory CRUD routes and AI query route.
+// Fastify server with memory CRUD, agent connector, and AI query route.
 // No UI. No logging. No default behavior.
 // Every request requires auth and explicit intent.
 
@@ -31,8 +31,9 @@ import {
 
 declare module "fastify" {
   interface FastifyRequest {
-    /** Set by the auth hook after successful API key validation. */
     userId: string;
+    role: "user" | "agent";
+    vendor: string | null;
   }
 }
 
@@ -40,29 +41,18 @@ declare module "fastify" {
 // Application types
 // =============================================================================
 
-/**
- * Returned by POST /query. Contains everything needed to understand
- * what the AI saw and how it was configured (Invariant 5).
- *
- * Every field is mandatory — the type system makes "response without
- * explanation" unrepresentable.
- */
 export interface QueryReceipt {
-  /** The model's raw text response. */
   response: string;
-  /** Full content of each memory entry as it was at query time. */
   memories_used: MemoryEntry[];
-  /** The exact assembled prompt string sent to the model. */
   prompt_sent: string;
-  /** Model provider, name, and parameters. No secrets. */
   model_config: ModelConfigReceipt;
+  vendor_filter: string | null;
 }
 
 // =============================================================================
 // Server config
 // =============================================================================
 
-/** All dependencies are injected explicitly. No globals, no singletons. */
 export interface ServerConfig {
   db: Database.Database;
   apiKey: string;
@@ -70,18 +60,14 @@ export interface ServerConfig {
   modelGateway: ModelGatewayConfig;
   systemPrompt: string;
   startedAt: number;
+  agentKeys: Record<string, string>;
+  validVendors: string[];
 }
 
 // =============================================================================
 // Auth helper
 // =============================================================================
 
-/**
- * Timing-safe string comparison. Both inputs are hashed to SHA-256 first,
- * producing fixed-length 32-byte digests. This prevents:
- * - Timing attacks (timingSafeEqual compares in constant time)
- * - Length leakage (both hashes are always 32 bytes regardless of input length)
- */
 function constantTimeEqual(a: string, b: string): boolean {
   const hashA = createHash("sha256").update(a).digest();
   const hashB = createHash("sha256").update(b).digest();
@@ -89,17 +75,7 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 // =============================================================================
-// JSON Schemas for request validation
-// =============================================================================
-// Fastify validates every request against these schemas before the handler runs.
-// If validation fails, Fastify returns 400 automatically. The handler never
-// sees invalid input.
-//
-// Key properties enforced:
-// - additionalProperties: false — rejects unexpected fields
-// - minLength: 1 — rejects empty strings
-// - required — every field is mandatory, no optional fields
-// - const — discriminated union tags match exactly one value
+// JSON Schemas
 // =============================================================================
 
 const memoryBodySchema = {
@@ -113,6 +89,49 @@ const memoryBodySchema = {
       type: "array" as const,
       items: { type: "string" as const, minLength: 1 },
     },
+    allowed_vendors: {
+      type: "array" as const,
+      items: { type: "string" as const, minLength: 1 },
+      minItems: 1,
+    },
+  },
+};
+
+const agentMemoryBodySchema = {
+  type: "object" as const,
+  required: ["title", "content", "tags", "allowed_vendors"],
+  additionalProperties: false,
+  properties: {
+    title: { type: "string" as const, minLength: 1 },
+    content: { type: "string" as const, minLength: 1 },
+    tags: {
+      type: "array" as const,
+      items: { type: "string" as const, minLength: 1 },
+    },
+    allowed_vendors: {
+      type: "array" as const,
+      items: { type: "string" as const, minLength: 1 },
+      minItems: 1,
+    },
+  },
+};
+
+const updateMemoryBodySchema = {
+  type: "object" as const,
+  required: ["title", "content", "tags", "allowed_vendors"],
+  additionalProperties: false,
+  properties: {
+    title: { type: "string" as const, minLength: 1 },
+    content: { type: "string" as const, minLength: 1 },
+    tags: {
+      type: "array" as const,
+      items: { type: "string" as const, minLength: 1 },
+    },
+    allowed_vendors: {
+      type: "array" as const,
+      items: { type: "string" as const, minLength: 1 },
+      minItems: 1,
+    },
   },
 };
 
@@ -125,12 +144,6 @@ const memoryIdParamSchema = {
   },
 };
 
-// Shared filter schema — used in both POST /memories/list and POST /query.
-// Defined once to avoid divergence.
-//
-// Uses the discriminator keyword so Ajv resolves the correct oneOf branch
-// by inspecting "by" directly, instead of testing all branches sequentially.
-// Each branch must: (1) require "by", (2) define "by" with a const value.
 const memoryFilterSchema = {
   discriminator: { propertyName: "by" },
   oneOf: [
@@ -191,23 +204,40 @@ const queryBodySchema = {
 };
 
 // =============================================================================
+// Vendor validation helper
+// =============================================================================
+
+function validateAllowedVendors(
+  allowedVendors: string[],
+  validVendors: string[],
+): string | null {
+  for (const v of allowedVendors) {
+    if (v !== "*" && !validVendors.includes(v)) {
+      const valid = validVendors.length > 0
+        ? `"*", ${validVendors.map((n) => `"${n}"`).join(", ")}`
+        : `"*"`;
+      return `Invalid vendor "${v}" in allowed_vendors. Valid: ${valid}`;
+    }
+  }
+  return null;
+}
+
+// =============================================================================
 // Server factory
 // =============================================================================
 
 export function createServer(config: ServerConfig): FastifyInstance {
-  const { db, apiKey, userId, modelGateway, systemPrompt, startedAt } = config;
+  const {
+    db,
+    apiKey,
+    userId,
+    modelGateway,
+    systemPrompt,
+    startedAt,
+    agentKeys,
+    validVendors,
+  } = config;
 
-  // Ajv customization:
-  // - discriminator: true — enables the JSON Schema discriminator keyword so
-  //   oneOf branches are resolved by inspecting a single property value, not
-  //   by testing (and mutating) every branch sequentially.
-  // - removeAdditional: false — Fastify defaults this to true, which causes
-  //   Ajv to silently strip properties not listed in the current schema's
-  //   `properties`. Combined with oneOf, this mutates the input while
-  //   evaluating non-matching branches, destroying valid data before the
-  //   correct branch is reached. Setting to false means extra properties
-  //   are REJECTED (via additionalProperties: false), not silently eaten.
-  //   This also aligns with Invariant 1: no silent behavior.
   const server = Fastify({
     ajv: {
       customOptions: {
@@ -217,21 +247,19 @@ export function createServer(config: ServerConfig): FastifyInstance {
     },
   });
 
-  // Register the userId property on the request prototype.
-  // This is required by Fastify's decoration system before it can be set in hooks.
   server.decorateRequest("userId", "");
+  server.decorateRequest("role", "user");
+  server.decorateRequest("vendor", null);
 
   // ===========================================================================
   // Auth hook
   // ===========================================================================
-  // Runs before every route handler, before body parsing.
-  // Validates the API key from the Authorization header.
-  // On failure: returns 401 immediately, handler never runs.
-  // On success: sets request.userId for use in handlers.
+  // Resolves caller identity from the Authorization header.
+  // Sets role ("user" or "agent") and vendor (null for users, vendor name for agents).
+  // Enforces route restrictions: agents can only hit /agent/*, /query, /whoami, /health.
   // ===========================================================================
 
   server.addHook("onRequest", async (request, reply) => {
-    // Health endpoint is public — no auth required.
     if (request.url === "/health") return;
 
     const header = request.headers.authorization;
@@ -243,20 +271,47 @@ export function createServer(config: ServerConfig): FastifyInstance {
     }
 
     const token = header.slice("Bearer ".length);
-
-    if (token.length === 0 || !constantTimeEqual(token, apiKey)) {
-      return reply.code(401).send({ error: "Invalid API key" });
+    if (token.length === 0) {
+      return reply.code(401).send({ error: "Empty API key" });
     }
 
-    request.userId = userId;
+    // Try user key first.
+    if (constantTimeEqual(token, apiKey)) {
+      request.userId = userId;
+      request.role = "user";
+      request.vendor = null;
+      return;
+    }
+
+    // Try each agent key. Timing-safe comparison for every configured vendor.
+    for (const [vendor, key] of Object.entries(agentKeys)) {
+      if (constantTimeEqual(token, key)) {
+        request.userId = userId;
+        request.role = "agent";
+        request.vendor = vendor;
+
+        // Enforce agent route restrictions.
+        const path = request.url.split("?")[0];
+        const allowed =
+          path === "/health" ||
+          path === "/whoami" ||
+          path === "/query" ||
+          path.startsWith("/agent/");
+        if (!allowed) {
+          return reply.code(403).send({
+            error: "Agent keys cannot access this endpoint",
+          });
+        }
+
+        return;
+      }
+    }
+
+    return reply.code(401).send({ error: "Invalid API key" });
   });
 
   // ===========================================================================
   // GET /health — Public health check
-  // ===========================================================================
-  // No auth required. Returns service name, uptime, and model name.
-  // Used by Railway, uptime monitors, and manual verification.
-  // No sensitive data exposed.
   // ===========================================================================
 
   server.get("/health", async () => {
@@ -270,11 +325,24 @@ export function createServer(config: ServerConfig): FastifyInstance {
   });
 
   // ===========================================================================
-  // POST /memories — Create a memory
+  // GET /whoami — Identity debugging
   // ===========================================================================
-  // Requires: title, content, tags (all mandatory, no defaults).
-  // Returns: 201 with the complete created entry.
-  // Rejects: any missing field (400), any extra field (400).
+  // Returns the caller's resolved role and vendor from their auth key.
+  // No sensitive data. Just what the server sees for this key.
+  // ===========================================================================
+
+  server.get("/whoami", async (request) => {
+    return {
+      role: request.role,
+      vendor: request.vendor,
+    };
+  });
+
+  // ===========================================================================
+  // POST /memories — Create a memory (user path)
+  // ===========================================================================
+  // allowed_vendors is optional. Defaults to ["*"] server-side.
+  // origin is always "user" — set server-side, never from the body.
   // ===========================================================================
 
   server.post(
@@ -285,7 +353,29 @@ export function createServer(config: ServerConfig): FastifyInstance {
       },
     },
     async (request, reply) => {
-      const input = request.body as CreateMemoryInput;
+      const body = request.body as {
+        title: string;
+        content: string;
+        tags: string[];
+        allowed_vendors?: string[];
+      };
+
+      const allowedVendors = body.allowed_vendors ?? ["*"];
+
+      const vendorErr = validateAllowedVendors(allowedVendors, validVendors);
+      if (vendorErr) {
+        reply.code(400);
+        return { error: vendorErr };
+      }
+
+      const input: CreateMemoryInput = {
+        title: body.title,
+        content: body.content,
+        tags: body.tags,
+        origin: "user",
+        allowed_vendors: allowedVendors,
+      };
+
       const memory = createMemory(db, request.userId, input);
       reply.code(201);
       return memory;
@@ -293,11 +383,50 @@ export function createServer(config: ServerConfig): FastifyInstance {
   );
 
   // ===========================================================================
-  // GET /memories/:id — Read a single memory by primary key
+  // POST /agent/memories — Create a memory (agent path)
   // ===========================================================================
-  // Requires: id in URL path.
-  // Returns: 200 with the entry, or 404 if not found / not owned.
-  // The handler never reveals whether the ID exists for another user.
+  // allowed_vendors is required. origin is set server-side from the auth key.
+  // The body schema does NOT include origin — additionalProperties: false
+  // rejects it with a 400 if present.
+  // ===========================================================================
+
+  server.post(
+    "/agent/memories",
+    {
+      schema: {
+        body: agentMemoryBodySchema,
+      },
+    },
+    async (request, reply) => {
+      const body = request.body as {
+        title: string;
+        content: string;
+        tags: string[];
+        allowed_vendors: string[];
+      };
+
+      const vendorErr = validateAllowedVendors(body.allowed_vendors, validVendors);
+      if (vendorErr) {
+        reply.code(400);
+        return { error: vendorErr };
+      }
+
+      const input: CreateMemoryInput = {
+        title: body.title,
+        content: body.content,
+        tags: body.tags,
+        origin: request.vendor!,
+        allowed_vendors: body.allowed_vendors,
+      };
+
+      const memory = createMemory(db, request.userId, input);
+      reply.code(201);
+      return memory;
+    },
+  );
+
+  // ===========================================================================
+  // GET /memories/:id — Read a single memory
   // ===========================================================================
 
   server.get(
@@ -321,18 +450,6 @@ export function createServer(config: ServerConfig): FastifyInstance {
   // ===========================================================================
   // POST /memories/list — List memories with an explicit filter
   // ===========================================================================
-  // Uses POST (not GET) because the filter is a structured JSON body with a
-  // discriminated union — not representable as clean query parameters.
-  //
-  // The filter is required and must be one of:
-  //   { "by": "all" }
-  //   { "by": "tags", "tags": ["tag1", "tag2"] }
-  //   { "by": "ids", "ids": ["id1", "id2"] }
-  //
-  // No filter = 400 (not "return everything").
-  // Empty tags/ids array = 400 (minItems: 1). Use { "by": "all" } if you
-  // want everything — say it explicitly.
-  // ===========================================================================
 
   server.post(
     "/memories/list",
@@ -351,10 +468,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
   // ===========================================================================
   // PUT /memories/:id — Update a memory (full replacement)
   // ===========================================================================
-  // Requires: id in URL path, plus title, content, tags in body.
-  // This is a full replacement. Every field must be provided.
-  // No PATCH, no partial merge, no "send only what changed."
-  // Returns: 200 with the updated entry, or 404 if not found / not owned.
+  // Now requires allowed_vendors in the body. origin is immutable.
   // ===========================================================================
 
   server.put(
@@ -362,12 +476,31 @@ export function createServer(config: ServerConfig): FastifyInstance {
     {
       schema: {
         params: memoryIdParamSchema,
-        body: memoryBodySchema,
+        body: updateMemoryBodySchema,
       },
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const input = request.body as UpdateMemoryInput;
+      const body = request.body as {
+        title: string;
+        content: string;
+        tags: string[];
+        allowed_vendors: string[];
+      };
+
+      const vendorErr = validateAllowedVendors(body.allowed_vendors, validVendors);
+      if (vendorErr) {
+        reply.code(400);
+        return { error: vendorErr };
+      }
+
+      const input: UpdateMemoryInput = {
+        title: body.title,
+        content: body.content,
+        tags: body.tags,
+        allowed_vendors: body.allowed_vendors,
+      };
+
       const memory = updateMemory(db, request.userId, id, input);
       if (!memory) {
         reply.code(404);
@@ -379,10 +512,6 @@ export function createServer(config: ServerConfig): FastifyInstance {
 
   // ===========================================================================
   // DELETE /memories/:id — Hard delete by primary key
-  // ===========================================================================
-  // Requires: id in URL path.
-  // Returns: 204 No Content on success, 404 if not found / not owned.
-  // After success, the row is gone. No soft delete. No tombstone.
   // ===========================================================================
 
   server.delete(
@@ -406,16 +535,9 @@ export function createServer(config: ServerConfig): FastifyInstance {
   // ===========================================================================
   // POST /query — AI query with explicit memory selection
   // ===========================================================================
-  // The AI query path. Strict one-directional data flow:
-  //
-  //   1. Validate request (Fastify schema)
-  //   2. Fetch memories via Memory Service (read only)
-  //   3. Assemble prompt via Context Builder (pure function, Invariant 3)
-  //   4. Call model via Model Gateway (stateless, no write path, Invariant 4)
-  //   5. Return QueryReceipt (deterministic visibility, Invariant 5)
-  //
-  // The model's response is never fed back into the Memory Service.
-  // The receipt is never persisted. Nothing is written. Nothing is logged.
+  // Vendor filtering is determined by the caller's auth key:
+  // - User key: no vendor filter (sees all memories)
+  // - Agent key: filters memories by allowed_vendors containing "*" or that vendor
   // ===========================================================================
 
   server.post(
@@ -431,15 +553,10 @@ export function createServer(config: ServerConfig): FastifyInstance {
         memory_filter: MemoryFilter;
       };
 
-      // Step 1: Fetch memories based on the user's explicit filter.
-      // This is a read from the Memory Service — the only data access in this path.
-      const memoriesUsed = listMemories(db, request.userId, memory_filter);
-
-      // Step 2: Assemble the prompt. Pure function — no I/O, no side effects.
-      // The inputs are captured here for the receipt.
+      const vendorFilter = request.vendor;
+      const memoriesUsed = listMemories(db, request.userId, memory_filter, vendorFilter);
       const promptSent = buildPrompt(memoriesUsed, query, systemPrompt);
 
-      // Step 3: Call the model. Prompt in, text out. No write path back.
       let response: string;
       try {
         response = await callModel(modelGateway, promptSent);
@@ -451,14 +568,12 @@ export function createServer(config: ServerConfig): FastifyInstance {
         };
       }
 
-      // Step 4: Build and return the QueryReceipt.
-      // Every field is populated from values already computed above.
-      // No additional fetches, no side effects, no persistence.
       const receipt: QueryReceipt = {
         response,
         memories_used: memoriesUsed,
         prompt_sent: promptSent,
         model_config: getConfigReceipt(modelGateway),
+        vendor_filter: vendorFilter,
       };
 
       return receipt;

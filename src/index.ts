@@ -17,7 +17,7 @@ import type { ModelGatewayConfig } from "./model-gateway.js";
 // set them in your shell, docker-compose, or systemd unit. Explicit.
 //
 // Required:
-//   RM_API_KEY          — the API key clients must send in Authorization header
+//   RM_API_KEY          — the API key clients must send in Authorization header (user key)
 //   RM_MODEL_API_KEY    — the API key for the model provider (e.g. OpenAI)
 //   RM_MODEL_NAME       — model identifier (e.g. "gpt-4o", "gpt-4o-mini")
 //
@@ -28,6 +28,11 @@ import type { ModelGatewayConfig } from "./model-gateway.js";
 //   RM_MODEL_TEMPERATURE — temperature (default: 0.7)
 //   RM_MODEL_MAX_TOKENS  — max tokens (default: 1024)
 //   RM_SYSTEM_PROMPT     — system prompt for AI queries
+//
+// Agent keys (dynamic, per-vendor):
+//   RM_AGENT_KEY_CHATGPT  — agent key for vendor "chatgpt"
+//   RM_AGENT_KEY_CLAUDE   — agent key for vendor "claude"
+//   RM_AGENT_KEY_<NAME>   — any env var matching this pattern registers a vendor
 // =============================================================================
 
 function requireEnv(name: string): string {
@@ -70,6 +75,26 @@ const systemPrompt = optionalEnv(
 );
 
 // =============================================================================
+// Agent keys — discovered from RM_AGENT_KEY_* environment variables
+// =============================================================================
+// Each RM_AGENT_KEY_<VENDOR> env var registers a vendor with its own API key.
+// The vendor name is derived from the suffix, lowercased.
+// Example: RM_AGENT_KEY_CHATGPT=sk-agent-abc → vendor "chatgpt" with key "sk-agent-abc"
+// =============================================================================
+
+const agentKeys: Record<string, string> = {};
+const AGENT_KEY_PREFIX = "RM_AGENT_KEY_";
+
+for (const [key, value] of Object.entries(process.env)) {
+  if (key.startsWith(AGENT_KEY_PREFIX) && value && value.trim().length > 0) {
+    const vendor = key.slice(AGENT_KEY_PREFIX.length).toLowerCase();
+    agentKeys[vendor] = value.trim();
+  }
+}
+
+const validVendors = Object.keys(agentKeys);
+
+// =============================================================================
 // Database setup
 // =============================================================================
 
@@ -101,6 +126,20 @@ if (tableExists.count === 0) {
   const schemaPath = resolve(__dirname, "..", "schema.sql");
   const schemaSql = readFileSync(schemaPath, "utf-8");
   db.exec(schemaSql);
+} else {
+  // Migrate existing databases: add origin and allowed_vendors if missing.
+  const hasOrigin = db
+    .prepare(
+      `SELECT count(*) as count FROM pragma_table_info('memories') WHERE name = 'origin'`,
+    )
+    .get() as { count: number };
+
+  if (hasOrigin.count === 0) {
+    db.exec(`ALTER TABLE memories ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'`);
+    db.exec(
+      `ALTER TABLE memories ADD COLUMN allowed_vendors TEXT NOT NULL DEFAULT '["*"]' CHECK(json_type(allowed_vendors) = 'array')`,
+    );
+  }
 }
 
 // =============================================================================
@@ -136,6 +175,8 @@ const config: ServerConfig = {
   modelGateway,
   systemPrompt,
   startedAt: Date.now(),
+  agentKeys,
+  validVendors,
 };
 
 const server = createServer(config);
@@ -149,4 +190,5 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   console.log(`User ID: ${userId}`);
   console.log(`Database: ${DB_PATH}`);
   console.log(`Model: ${modelGateway.provider}/${modelGateway.model}`);
+  console.log(`Agent vendors: ${validVendors.length > 0 ? validVendors.join(", ") : "(none configured)"}`);
 });
