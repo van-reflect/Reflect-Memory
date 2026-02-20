@@ -1,10 +1,13 @@
-# local db files
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# SQLite database files
 *.db
 *.db-shm
 *.db-wal
 
-# dependencies
-node_modules/
-
-# env
+# environment secrets
 .env
