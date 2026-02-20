@@ -23,7 +23,7 @@ import type { ModelGatewayConfig } from "./model-gateway.js";
 //
 // Optional (with sensible defaults noted):
 //   RM_PORT             — HTTP port (default: 3000)
-//   RM_DB_PATH          — SQLite file path (default: ./reflect-memory.db)
+//   RM_DB_PATH          — SQLite file path (default: /data/reflect-memory.db)
 //   RM_MODEL_BASE_URL   — model API base URL (default: https://api.openai.com/v1)
 //   RM_MODEL_TEMPERATURE — temperature (default: 0.7)
 //   RM_MODEL_MAX_TOKENS  — max tokens (default: 1024)
@@ -50,7 +50,7 @@ function optionalEnv(name: string, fallback: string): string {
 // =============================================================================
 
 const PORT = parseInt(optionalEnv("RM_PORT", optionalEnv("PORT", "3000")), 10);
-const DB_PATH = optionalEnv("RM_DB_PATH", "./reflect-memory.db");
+const DB_PATH = optionalEnv("RM_DB_PATH", "/data/reflect-memory.db");
 const API_KEY = requireEnv("RM_API_KEY");
 
 const modelGateway: ModelGatewayConfig = {
@@ -78,8 +78,13 @@ const db = new Database(DB_PATH);
 // Invariant: foreign keys must be enforced on every connection.
 db.pragma("foreign_keys = ON");
 
-// WAL mode for better read concurrency (safe, non-destructive).
-db.pragma("journal_mode = WAL");
+// WAL mode for better read concurrency. Works on Railway volumes (ext4).
+// Returns the active journal mode — verify it's actually "wal".
+const journalMode = db.pragma("journal_mode = WAL") as Array<{ journal_mode: string }>;
+if (journalMode[0]?.journal_mode !== "wal") {
+  console.error(`WAL mode not active. Got: ${journalMode[0]?.journal_mode}`);
+  process.exit(1);
+}
 
 // Run the schema. Uses IF NOT EXISTS logic via a version check:
 // if the users table doesn't exist, this is a fresh database.
@@ -130,6 +135,7 @@ const config: ServerConfig = {
   userId,
   modelGateway,
   systemPrompt,
+  startedAt: Date.now(),
 };
 
 const server = createServer(config);

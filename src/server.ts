@@ -69,6 +69,7 @@ export interface ServerConfig {
   userId: string;
   modelGateway: ModelGatewayConfig;
   systemPrompt: string;
+  startedAt: number;
 }
 
 // =============================================================================
@@ -194,7 +195,7 @@ const queryBodySchema = {
 // =============================================================================
 
 export function createServer(config: ServerConfig): FastifyInstance {
-  const { db, apiKey, userId, modelGateway, systemPrompt } = config;
+  const { db, apiKey, userId, modelGateway, systemPrompt, startedAt } = config;
 
   // Ajv customization:
   // - discriminator: true — enables the JSON Schema discriminator keyword so
@@ -230,6 +231,9 @@ export function createServer(config: ServerConfig): FastifyInstance {
   // ===========================================================================
 
   server.addHook("onRequest", async (request, reply) => {
+    // Health endpoint is public — no auth required.
+    if (request.url === "/health") return;
+
     const header = request.headers.authorization;
 
     if (!header || !header.startsWith("Bearer ")) {
@@ -245,6 +249,24 @@ export function createServer(config: ServerConfig): FastifyInstance {
     }
 
     request.userId = userId;
+  });
+
+  // ===========================================================================
+  // GET /health — Public health check
+  // ===========================================================================
+  // No auth required. Returns service name, uptime, and model name.
+  // Used by Railway, uptime monitors, and manual verification.
+  // No sensitive data exposed.
+  // ===========================================================================
+
+  server.get("/health", async () => {
+    const uptimeSeconds = Math.floor((Date.now() - startedAt) / 1000);
+    return {
+      service: "reflect-memory",
+      status: "ok",
+      uptime_seconds: uptimeSeconds,
+      model: modelGateway.model,
+    };
   });
 
   // ===========================================================================

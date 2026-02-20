@@ -27,7 +27,7 @@ Optional:
 
 ```bash
 export RM_PORT=3000                            # HTTP port (default: 3000)
-export RM_DB_PATH="./reflect-memory.db"         # SQLite file path
+export RM_DB_PATH="/data/reflect-memory.db"     # SQLite file path (default on Railway)
 export RM_MODEL_BASE_URL="https://api.openai.com/v1"  # Model API base URL
 export RM_MODEL_TEMPERATURE=0.7                # Temperature (default: 0.7)
 export RM_MODEL_MAX_TOKENS=1024                # Max tokens (default: 1024)
@@ -206,6 +206,125 @@ curl -s -X POST http://localhost:3000/query \
     "query": "What do these entries have in common?",
     "memory_filter": { "by": "ids", "ids": ["MEMORY_ID_1", "MEMORY_ID_2"] }
   }' | jq
+```
+
+### Health check (no auth required)
+
+```bash
+curl -s https://api.reflectmemory.com/health | jq
+```
+
+Response:
+
+```json
+{
+  "service": "reflect-memory",
+  "status": "ok",
+  "uptime_seconds": 3600,
+  "model": "gpt-4o-mini"
+}
+```
+
+## Deploy to Railway
+
+### 1. Environment variables
+
+Set these in the Railway service's **Variables** tab:
+
+| Variable | Required | Value |
+|---|---|---|
+| `RM_API_KEY` | Yes | A strong random string (your API password) |
+| `RM_MODEL_API_KEY` | Yes | Your OpenAI API key (`sk-...`) |
+| `RM_MODEL_NAME` | Yes | `gpt-4o-mini` or any OpenAI model |
+| `RM_DB_PATH` | No | Defaults to `/data/reflect-memory.db` |
+
+Railway sets `PORT` automatically — the app picks it up.
+
+### 2. Attach a volume (persistent storage)
+
+Without a volume, Railway containers are ephemeral — the SQLite database resets on every deploy or restart. To persist data:
+
+1. Click on the **Reflect-Memory** service in Railway
+2. Go to the **Volumes** section (or **Settings > Volumes**)
+3. Click **"Add Volume"**
+4. Set **Mount Path** to `/data`
+5. Save
+
+Railway will mount a persistent disk at `/data`. The app creates the database file at `/data/reflect-memory.db` by default. This survives restarts, redeploys, and container replacements.
+
+### 3. Build and start commands
+
+Railway should auto-detect these from `package.json`:
+
+- **Build:** `npm run build`
+- **Start:** `npm start`
+
+### 4. Custom domain
+
+To use `api.reflectmemory.com`:
+
+1. In Railway: Service → Settings → Networking → Custom Domain → add `api.reflectmemory.com`
+2. In your DNS provider: add the CNAME and TXT records Railway shows you
+3. Wait for the green checkmark
+
+## Verification Checklist
+
+### Persistence (data survives redeploy)
+
+1. Create a memory:
+
+```bash
+curl -s -X POST https://api.reflectmemory.com/memories \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Persistence test","content":"If I survive a redeploy, storage works.","tags":["test"]}' | jq .id
+```
+
+2. Note the returned `id`.
+
+3. Trigger a redeploy in Railway (push a commit, or click **Redeploy** in the Deployments tab).
+
+4. After the redeploy completes, read the memory by ID:
+
+```bash
+curl -s https://api.reflectmemory.com/memories/THE_ID_FROM_STEP_2 \
+  -H "Authorization: Bearer YOUR_KEY" | jq
+```
+
+5. If you get back the full memory entry, persistence is working. If you get 404, the volume is not mounted correctly.
+
+### Domain and health
+
+1. Health check (no auth):
+
+```bash
+curl -s https://api.reflectmemory.com/health | jq
+```
+
+Should return `{"service":"reflect-memory","status":"ok",...}`.
+
+2. Auth rejection (no key):
+
+```bash
+curl -s https://api.reflectmemory.com/memories -X POST
+```
+
+Should return `{"error":"Missing or malformed Authorization header..."}`.
+
+3. Full round trip (create + list):
+
+```bash
+# Create
+curl -s -X POST https://api.reflectmemory.com/memories \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Domain test","content":"Sent via custom domain.","tags":["test"]}' | jq
+
+# List all
+curl -s -X POST https://api.reflectmemory.com/memories/list \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"filter":{"by":"all"}}' | jq
 ```
 
 ## Architecture
