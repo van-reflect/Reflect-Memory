@@ -1,0 +1,135 @@
+openapi: 3.1.0
+info:
+  title: Reflect Memory Agent API
+  version: 1.0.0
+  description: Cross-agent memory system. Write and query structured memories.
+servers:
+  - url: https://api.reflectmemory.com
+paths:
+  /agent/memories:
+    post:
+      operationId: writeMemory
+      summary: Write a structured memory entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+                - content
+                - tags
+                - allowed_vendors
+              properties:
+                title:
+                  type: string
+                  description: "Short descriptor. Format: 'Architecture Update - <topic>'"
+                content:
+                  type: string
+                  description: "Structured summary. Use format: Change / Reason / Impact / Open Questions"
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: "Always include 'project_state' and 'architecture'"
+                allowed_vendors:
+                  type: array
+                  items:
+                    type: string
+                  description: "Which vendors can see this. Use ['*'] for all."
+      responses:
+        "201":
+          description: Memory created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  title:
+                    type: string
+                  content:
+                    type: string
+                  tags:
+                    type: array
+                    items:
+                      type: string
+                  origin:
+                    type: string
+                  allowed_vendors:
+                    type: array
+                    items:
+                      type: string
+  /query:
+    post:
+      operationId: queryMemory
+      summary: Query AI with memory context
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+                - memory_filter
+              properties:
+                query:
+                  type: string
+                  description: The question to ask with memory context
+                memory_filter:
+                  type: object
+                  description: "Filter memories. Use {\"by\":\"all\"} for all, or {\"by\":\"tags\",\"tags\":[\"project_state\"]} for filtered."
+                  required:
+                    - by
+                  properties:
+                    by:
+                      type: string
+                      enum:
+                        - all
+                        - tags
+                        - ids
+                    tags:
+                      type: array
+                      items:
+                        type: string
+                    ids:
+                      type: array
+                      items:
+                        type: string
+      responses:
+        "200":
+          description: Query receipt with full transparency
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response:
+                    type: string
+                  memories_used:
+                    type: array
+                    items:
+                      type: object
+                  vendor_filter:
+                    type: string
+                    nullable: true
+  /whoami:
+    get:
+      operationId: whoAmI
+      summary: Check resolved identity from auth key
+      responses:
+        "200":
+          description: Caller identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  role:
+                    type: string
+                  vendor:
+                    type: string
+                    nullable: true
