@@ -1,0 +1,59 @@
+-- Reflective Memory — MVP Schema
+-- SQLite 3.37+ required (STRICT tables)
+-- SQLite 3.38+ required (json_valid, json_type)
+
+-- Must be run per connection. Without this, foreign keys are advisory only.
+PRAGMA foreign_keys = ON;
+
+-- =============================================================================
+-- USERS
+-- =============================================================================
+-- Establishes identity for memory ownership.
+-- Single-user MVP, but user_id scopes every query for multi-tenant safety.
+-- =============================================================================
+
+CREATE TABLE users (
+    -- UUIDv4 as text. No autoincrement integers — avoids leaking sequence info.
+    id          TEXT NOT NULL PRIMARY KEY,
+
+    -- ISO 8601 timestamp. When this user record was created.
+    created_at  TEXT NOT NULL
+) STRICT;
+
+-- =============================================================================
+-- MEMORIES
+-- =============================================================================
+-- The single source of truth for all user-authored memory entries.
+-- One table, no children, no inbound foreign keys.
+-- Delete means: DELETE FROM memories WHERE id = ? AND user_id = ?
+-- =============================================================================
+
+CREATE TABLE memories (
+    -- UUIDv4 as text. Primary key for hard deletion (Invariant 2).
+    id          TEXT NOT NULL PRIMARY KEY,
+
+    -- Owner. Every query must include this in the WHERE clause.
+    -- ON DELETE RESTRICT: cannot delete a user while memories exist.
+    -- This prevents orphaned rows. Delete memories first, then the user.
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+
+    -- Human-readable label. Required, never inferred.
+    title       TEXT NOT NULL,
+
+    -- The memory content. Freeform text, authored by the user.
+    content     TEXT NOT NULL,
+
+    -- Tags as a JSON array of strings: '["work", "project-x"]'
+    -- Stored on the same row — no join table, no cascading deletes.
+    -- CHECK ensures this is always a valid JSON array, never a bare string or object.
+    tags        TEXT NOT NULL DEFAULT '[]'
+                CHECK(json_type(tags) = 'array'),
+
+    -- ISO 8601 timestamps. Set by the application, not by SQLite triggers.
+    -- No hidden DEFAULT CURRENT_TIMESTAMP — the application is explicit.
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+) STRICT;
+
+-- Every memory query is scoped by user_id. This index makes that fast.
+CREATE INDEX idx_memories_user_id ON memories(user_id);
