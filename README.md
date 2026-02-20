@@ -230,3 +230,4 @@ POST /query             → Memory Service (read)
 3. **Pure Context Builder** — No I/O. Same inputs, same output. Always.
 4. **No AI Write Path** — The model cannot create, modify, or delete memories. One-directional data flow.
 5. **Deterministic Visibility** — Every query response includes the full receipt: memories used, prompt sent, model config.
+# Reflect-Memory
