@@ -1,4 +1,4 @@
-# Reflective Memory
+# Reflect Memory
 
 Privacy-first AI memory system. All memory is explicitly user-authored, structured, editable, and deletable. The AI model is stateless — it sees only what you choose to show it.
 
@@ -27,7 +27,7 @@ Optional:
 
 ```bash
 export RM_PORT=3000                            # HTTP port (default: 3000)
-export RM_DB_PATH="./reflective-memory.db"     # SQLite file path
+export RM_DB_PATH="./reflect-memory.db"         # SQLite file path
 export RM_MODEL_BASE_URL="https://api.openai.com/v1"  # Model API base URL
 export RM_MODEL_TEMPERATURE=0.7                # Temperature (default: 0.7)
 export RM_MODEL_MAX_TOKENS=1024                # Max tokens (default: 1024)
@@ -230,5 +230,3 @@ POST /query             → Memory Service (read)
 3. **Pure Context Builder** — No I/O. Same inputs, same output. Always.
 4. **No AI Write Path** — The model cannot create, modify, or delete memories. One-directional data flow.
 5. **Deterministic Visibility** — Every query response includes the full receipt: memories used, prompt sent, model config.
-# Reflect-Memory
-# Reflect-Memory

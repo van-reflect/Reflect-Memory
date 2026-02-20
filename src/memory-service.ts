@@ -1,4 +1,4 @@
-// Reflective Memory — Memory Service
+// Reflect Memory — Memory Service
 // Pure data access layer. No HTTP, no AI, no logging, no side effects beyond SQL.
 // Every function requires an explicit user_id. No function infers ownership.
 

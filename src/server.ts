@@ -1,4 +1,4 @@
-// Reflective Memory — HTTP API Layer
+// Reflect Memory — HTTP API Layer
 // Fastify server with memory CRUD routes and AI query route.
 // No UI. No logging. No default behavior.
 // Every request requires auth and explicit intent.

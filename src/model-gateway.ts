@@ -1,4 +1,4 @@
-// Reflective Memory — Model Gateway
+// Reflect Memory — Model Gateway
 // Stateless adapter for AI model API calls.
 // No reference to Memory Service. No write path back to any store.
 // Prompt in, text out. Nothing else.

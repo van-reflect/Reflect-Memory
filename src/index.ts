@@ -1,4 +1,4 @@
-// Reflective Memory — Entrypoint
+// Reflect Memory — Entrypoint
 // Reads config from environment, opens the database, seeds the user,
 // starts the server. No new logic. No feature code. Just wiring.
 
@@ -23,7 +23,7 @@ import type { ModelGatewayConfig } from "./model-gateway.js";
 //
 // Optional (with sensible defaults noted):
 //   RM_PORT             — HTTP port (default: 3000)
-//   RM_DB_PATH          — SQLite file path (default: ./reflective-memory.db)
+//   RM_DB_PATH          — SQLite file path (default: ./reflect-memory.db)
 //   RM_MODEL_BASE_URL   — model API base URL (default: https://api.openai.com/v1)
 //   RM_MODEL_TEMPERATURE — temperature (default: 0.7)
 //   RM_MODEL_MAX_TOKENS  — max tokens (default: 1024)
@@ -50,7 +50,7 @@ function optionalEnv(name: string, fallback: string): string {
 // =============================================================================
 
 const PORT = parseInt(optionalEnv("RM_PORT", optionalEnv("PORT", "3000")), 10);
-const DB_PATH = optionalEnv("RM_DB_PATH", "./reflective-memory.db");
+const DB_PATH = optionalEnv("RM_DB_PATH", "./reflect-memory.db");
 const API_KEY = requireEnv("RM_API_KEY");
 
 const modelGateway: ModelGatewayConfig = {
@@ -139,7 +139,7 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
     console.error(`Failed to start server: ${err.message}`);
     process.exit(1);
   }
-  console.log(`Reflective Memory listening on ${address}`);
+  console.log(`Reflect Memory listening on ${address}`);
   console.log(`User ID: ${userId}`);
   console.log(`Database: ${DB_PATH}`);
   console.log(`Model: ${modelGateway.provider}/${modelGateway.model}`);

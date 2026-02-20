@@ -1,4 +1,4 @@
--- Reflective Memory — MVP Schema
+-- Reflect Memory — MVP Schema
 -- SQLite 3.37+ required (STRICT tables)
 -- SQLite 3.38+ required (json_valid, json_type)
 

@@ -1,4 +1,4 @@
-// Reflective Memory — Context Builder
+// Reflect Memory — Context Builder
 // Pure function. No I/O. No database. No network. No side effects.
 // Takes data in, returns a string out. Nothing else.
 
