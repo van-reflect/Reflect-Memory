@@ -49,7 +49,7 @@ function optionalEnv(name: string, fallback: string): string {
 // Read config
 // =============================================================================
 
-const PORT = parseInt(optionalEnv("RM_PORT", "3000"), 10);
+const PORT = parseInt(optionalEnv("RM_PORT", optionalEnv("PORT", "3000")), 10);
 const DB_PATH = optionalEnv("RM_DB_PATH", "./reflective-memory.db");
 const API_KEY = requireEnv("RM_API_KEY");
 
