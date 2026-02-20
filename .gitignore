@@ -1,0 +1,10 @@
+# local db files
+*.db
+*.db-shm
+*.db-wal
+
+# dependencies
+node_modules/
+
+# env
+.env
