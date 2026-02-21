@@ -74,6 +74,9 @@ const systemPrompt = optionalEnv(
   "You are a helpful assistant. The user has provided memory entries for context. Use them to inform your response. Do not fabricate information that is not in the provided memories.",
 );
 
+// ~25K tokens worth of characters. Prevents prompt from exceeding model context windows.
+const contextCharBudget = parseInt(optionalEnv("RM_CONTEXT_CHAR_BUDGET", "100000"), 10);
+
 // =============================================================================
 // Agent keys — discovered from RM_AGENT_KEY_* environment variables
 // =============================================================================
@@ -177,6 +180,7 @@ const config: ServerConfig = {
   startedAt: Date.now(),
   agentKeys,
   validVendors,
+  contextCharBudget,
 };
 
 const server = createServer(config);

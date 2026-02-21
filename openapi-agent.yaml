@@ -1,8 +1,11 @@
 openapi: 3.1.0
 info:
   title: Reflect Memory Agent API
-  version: 1.0.0
-  description: Cross-agent memory system. Write and query structured memories.
+  version: 2.0.0
+  description: >
+    Cross-agent memory system. Write, browse, and query structured memories.
+    Use /agent/memories/browse to discover available memories (lightweight, no content),
+    then /query with specific filters to get AI responses grounded in relevant context.
 servers:
   - url: https://api.reflectmemory.com
 paths:
@@ -62,10 +65,106 @@ paths:
                     type: array
                     items:
                       type: string
+  /agent/memories/browse:
+    post:
+      operationId: browseMemories
+      summary: Browse memory summaries (lightweight, no content)
+      description: >
+        Returns memory metadata (title, tags, origin, timestamps) without full content.
+        Use this to discover what memories exist, then use /query with specific IDs or tags
+        to get AI responses grounded in relevant context. Supports pagination and search.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - filter
+              properties:
+                filter:
+                  type: object
+                  description: >
+                    Filter memories. Options:
+                    {"by":"all"} for all memories,
+                    {"by":"tags","tags":["project_state"]} for tag filtering,
+                    {"by":"search","term":"authentication"} for text search on title/content,
+                    {"by":"ids","ids":["uuid1","uuid2"]} for specific IDs.
+                  required:
+                    - by
+                  properties:
+                    by:
+                      type: string
+                      enum:
+                        - all
+                        - tags
+                        - ids
+                        - search
+                    tags:
+                      type: array
+                      items:
+                        type: string
+                    ids:
+                      type: array
+                      items:
+                        type: string
+                    term:
+                      type: string
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 200
+                  description: "Max memories to return. Default: 50."
+                offset:
+                  type: integer
+                  minimum: 0
+                  description: "Skip this many results (for pagination). Default: 0."
+      responses:
+        "200":
+          description: Paginated memory summaries (no content field)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        title:
+                          type: string
+                        tags:
+                          type: array
+                          items:
+                            type: string
+                        origin:
+                          type: string
+                        created_at:
+                          type: string
+                        updated_at:
+                          type: string
+                  total:
+                    type: integer
+                    description: Total matching memories (before pagination)
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                  has_more:
+                    type: boolean
   /query:
     post:
       operationId: queryMemory
       summary: Query AI with memory context
+      description: >
+        Queries the AI model with selected memories as context. Use memory_filter
+        to select which memories to include. The response is slim for agents —
+        just the AI answer plus metadata (no full prompt or memory objects echoed back).
+        Use the browse endpoint first to discover relevant memories, then query
+        with specific tags or IDs for best results.
       requestBody:
         required: true
         content:
@@ -81,7 +180,13 @@ paths:
                   description: The question to ask with memory context
                 memory_filter:
                   type: object
-                  description: "Filter memories. Use {\"by\":\"all\"} for all, or {\"by\":\"tags\",\"tags\":[\"project_state\"]} for filtered."
+                  description: >
+                    Filter memories to include as context. Options:
+                    {"by":"all"} for all memories,
+                    {"by":"tags","tags":["project_state"]} for tag filtering,
+                    {"by":"search","term":"auth"} for text search,
+                    {"by":"ids","ids":["uuid1"]} for specific IDs.
+                    Prefer specific filters over "all" to avoid context size limits.
                   required:
                     - by
                   properties:
@@ -91,6 +196,7 @@ paths:
                         - all
                         - tags
                         - ids
+                        - search
                     tags:
                       type: array
                       items:
@@ -99,9 +205,16 @@ paths:
                       type: array
                       items:
                         type: string
+                    term:
+                      type: string
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 200
+                  description: "Max memories to pull for context. Omit for no limit."
       responses:
         "200":
-          description: Query receipt with full transparency
+          description: AI response with metadata
           content:
             application/json:
               schema:
@@ -109,10 +222,19 @@ paths:
                 properties:
                   response:
                     type: string
-                  memories_used:
-                    type: array
-                    items:
-                      type: object
+                    description: The AI model's answer
+                  memories_used_count:
+                    type: integer
+                    description: How many memories matched the filter
+                  memories_included_in_prompt:
+                    type: integer
+                    description: How many memories fit within the context budget
+                  truncated:
+                    type: boolean
+                    description: Whether some memories were omitted due to context size
+                  estimated_tokens:
+                    type: integer
+                    description: Estimated token count of the assembled prompt
                   vendor_filter:
                     type: string
                     nullable: true

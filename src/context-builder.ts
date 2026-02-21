@@ -1,8 +1,20 @@
 // Reflect Memory — Context Builder
 // Pure function. No I/O. No database. No network. No side effects.
-// Takes data in, returns a string out. Nothing else.
+// Takes data in, returns data out. Nothing else.
 
 import type { MemoryEntry } from "./memory-service.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface PromptResult {
+  prompt: string;
+  memoriesIncluded: number;
+  memoriesTotal: number;
+  truncated: boolean;
+  estimatedTokens: number;
+}
 
 // =============================================================================
 // buildPrompt
@@ -18,28 +30,40 @@ import type { MemoryEntry } from "./memory-service.js";
 // - It does not decide which memories to include — that decision was made
 //   upstream based on the user's explicit intent (Invariant 1).
 // - It does not transform or summarize memory content. What the user wrote
-//   is what the model sees.
-// - The output is a single string suitable for inspection in a QueryReceipt
-//   (Invariant 5). No structured message format — one string, fully readable.
+//   is what the model sees — within the character budget.
+// - The output is suitable for inspection in a QueryReceipt (Invariant 5).
+//
+// Character budget:
+// - When charBudget is provided, memories are included in order until the
+//   budget would be exceeded. At least one memory is always included if any
+//   exist (the first memory is never skipped due to budget).
+// - A truncation note is appended when memories are omitted.
+// - When charBudget is undefined, all memories are included (legacy behavior).
 // =============================================================================
 
 export function buildPrompt(
   memories: MemoryEntry[],
   userQuery: string,
   systemPrompt: string,
-): string {
-  const sections: string[] = [];
+  charBudget?: number,
+): PromptResult {
+  const systemSection = systemPrompt.length > 0 ? `[System]\n${systemPrompt}` : "";
+  const querySection = `[User Query]\n${userQuery}`;
 
-  // --- System instructions ---
-  if (systemPrompt.length > 0) {
-    sections.push(`[System]\n${systemPrompt}`);
-  }
+  // Fixed overhead: system + query + separators
+  const fixedChars =
+    (systemSection.length > 0 ? systemSection.length + 2 : 0) +
+    querySection.length +
+    2; // "\n\n" between sections
 
-  // --- Memory entries ---
-  // Each memory is rendered with its title, tags, and full content.
-  // No truncation, no summarization, no reordering.
+  let memoriesIncluded = 0;
+  let truncated = false;
+  const memoryBlocks: string[] = [];
+  let memoryChars = 0;
+
   if (memories.length > 0) {
-    const memoryBlocks: string[] = [];
+    // "[Memories]\n\n" header
+    const headerLen = "[Memories]\n\n".length;
 
     for (const memory of memories) {
       const lines: string[] = [];
@@ -48,14 +72,45 @@ export function buildPrompt(
         lines.push(`Tags: ${memory.tags.join(", ")}`);
       }
       lines.push(`${memory.content}`);
-      memoryBlocks.push(lines.join("\n"));
-    }
+      const block = lines.join("\n");
 
-    sections.push(`[Memories]\n\n${memoryBlocks.join("\n\n")}`);
+      const separatorLen = memoryBlocks.length > 0 ? 2 : 0; // "\n\n" between blocks
+      const projectedTotal = fixedChars + headerLen + memoryChars + separatorLen + block.length + 2;
+
+      if (charBudget != null && projectedTotal > charBudget && memoriesIncluded > 0) {
+        truncated = true;
+        break;
+      }
+
+      memoryBlocks.push(block);
+      memoryChars += separatorLen + block.length;
+      memoriesIncluded++;
+    }
   }
 
-  // --- User query ---
-  sections.push(`[User Query]\n${userQuery}`);
+  // Assemble final prompt
+  const sections: string[] = [];
+  if (systemSection.length > 0) {
+    sections.push(systemSection);
+  }
 
-  return sections.join("\n\n");
+  if (memoryBlocks.length > 0) {
+    let memoriesSection = `[Memories]\n\n${memoryBlocks.join("\n\n")}`;
+    if (truncated) {
+      const omitted = memories.length - memoriesIncluded;
+      memoriesSection += `\n\n[Note: ${omitted} additional memor${omitted === 1 ? "y was" : "ies were"} omitted due to context size limits. Use more specific tags or filters to narrow results.]`;
+    }
+    sections.push(memoriesSection);
+  }
+
+  sections.push(querySection);
+
+  const prompt = sections.join("\n\n");
+  return {
+    prompt,
+    memoriesIncluded,
+    memoriesTotal: memories.length,
+    truncated,
+    estimatedTokens: Math.ceil(prompt.length / 4),
+  };
 }

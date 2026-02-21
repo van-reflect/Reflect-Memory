@@ -10,14 +10,17 @@ import {
   createMemory,
   readMemoryById,
   listMemories,
+  listMemorySummaries,
+  countMemories,
   updateMemory,
   deleteMemory,
   type MemoryEntry,
   type CreateMemoryInput,
   type UpdateMemoryInput,
   type MemoryFilter,
+  type PaginationOptions,
 } from "./memory-service.js";
-import { buildPrompt } from "./context-builder.js";
+import { buildPrompt, type PromptResult } from "./context-builder.js";
 import {
   callModel,
   getConfigReceipt,
@@ -47,6 +50,18 @@ export interface QueryReceipt {
   prompt_sent: string;
   model_config: ModelConfigReceipt;
   vendor_filter: string | null;
+  truncated: boolean;
+  memories_included: number;
+  memories_total: number;
+}
+
+export interface AgentQueryReceipt {
+  response: string;
+  memories_used_count: number;
+  memories_included_in_prompt: number;
+  truncated: boolean;
+  estimated_tokens: number;
+  vendor_filter: string | null;
 }
 
 // =============================================================================
@@ -62,6 +77,7 @@ export interface ServerConfig {
   startedAt: number;
   agentKeys: Record<string, string>;
   validVendors: string[];
+  contextCharBudget: number;
 }
 
 // =============================================================================
@@ -181,6 +197,15 @@ const memoryFilterSchema = {
         },
       },
     },
+    {
+      type: "object" as const,
+      required: ["by", "term"],
+      additionalProperties: false,
+      properties: {
+        by: { type: "string" as const, const: "search" },
+        term: { type: "string" as const, minLength: 1 },
+      },
+    },
   ],
 };
 
@@ -200,6 +225,18 @@ const queryBodySchema = {
   properties: {
     query: { type: "string" as const, minLength: 1 },
     memory_filter: memoryFilterSchema,
+    limit: { type: "integer" as const, minimum: 1, maximum: 200 },
+  },
+};
+
+const browseBodySchema = {
+  type: "object" as const,
+  required: ["filter"],
+  additionalProperties: false,
+  properties: {
+    filter: memoryFilterSchema,
+    limit: { type: "integer" as const, minimum: 1, maximum: 200 },
+    offset: { type: "integer" as const, minimum: 0 },
   },
 };
 
@@ -236,6 +273,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
     startedAt,
     agentKeys,
     validVendors,
+    contextCharBudget,
   } = config;
 
   const server = Fastify({
@@ -426,6 +464,47 @@ export function createServer(config: ServerConfig): FastifyInstance {
   );
 
   // ===========================================================================
+  // POST /agent/memories/browse — Lightweight memory listing for agents
+  // ===========================================================================
+  // Returns memory summaries (title, tags, origin, timestamps) without content.
+  // Agents use this to discover what memories exist, then selectively fetch
+  // or query with specific IDs/tags. Supports pagination.
+  // ===========================================================================
+
+  server.post(
+    "/agent/memories/browse",
+    {
+      schema: {
+        body: browseBodySchema,
+      },
+    },
+    async (request) => {
+      const { filter, limit, offset } = request.body as {
+        filter: MemoryFilter;
+        limit?: number;
+        offset?: number;
+      };
+
+      const vendorFilter = request.role === "agent" ? request.vendor : null;
+      const pagination: PaginationOptions = {
+        limit: limit ?? 50,
+        offset: offset ?? 0,
+      };
+
+      const summaries = listMemorySummaries(db, request.userId, filter, vendorFilter, pagination);
+      const total = countMemories(db, request.userId, filter, vendorFilter);
+
+      return {
+        memories: summaries,
+        total,
+        limit: pagination.limit,
+        offset: pagination.offset,
+        has_more: (pagination.offset ?? 0) + summaries.length < total,
+      };
+    },
+  );
+
+  // ===========================================================================
   // GET /memories/:id — Read a single memory
   // ===========================================================================
 
@@ -548,18 +627,20 @@ export function createServer(config: ServerConfig): FastifyInstance {
       },
     },
     async (request, reply) => {
-      const { query, memory_filter } = request.body as {
+      const { query, memory_filter, limit } = request.body as {
         query: string;
         memory_filter: MemoryFilter;
+        limit?: number;
       };
 
       const vendorFilter = request.vendor;
-      const memoriesUsed = listMemories(db, request.userId, memory_filter, vendorFilter);
-      const promptSent = buildPrompt(memoriesUsed, query, systemPrompt);
+      const pagination: PaginationOptions | undefined = limit ? { limit } : undefined;
+      const memoriesUsed = listMemories(db, request.userId, memory_filter, vendorFilter, pagination);
+      const promptResult = buildPrompt(memoriesUsed, query, systemPrompt, contextCharBudget);
 
       let response: string;
       try {
-        response = await callModel(modelGateway, promptSent);
+        response = await callModel(modelGateway, promptResult.prompt);
       } catch (error) {
         reply.code(502);
         return {
@@ -568,12 +649,29 @@ export function createServer(config: ServerConfig): FastifyInstance {
         };
       }
 
+      // Agents get a slim receipt — no full prompt or memory objects echoed back.
+      // This keeps the response small enough for ChatGPT Custom Actions to handle.
+      if (request.role === "agent") {
+        const agentReceipt: AgentQueryReceipt = {
+          response,
+          memories_used_count: memoriesUsed.length,
+          memories_included_in_prompt: promptResult.memoriesIncluded,
+          truncated: promptResult.truncated,
+          estimated_tokens: promptResult.estimatedTokens,
+          vendor_filter: vendorFilter,
+        };
+        return agentReceipt;
+      }
+
       const receipt: QueryReceipt = {
         response,
         memories_used: memoriesUsed,
-        prompt_sent: promptSent,
+        prompt_sent: promptResult.prompt,
         model_config: getConfigReceipt(modelGateway),
         vendor_filter: vendorFilter,
+        truncated: promptResult.truncated,
+        memories_included: promptResult.memoriesIncluded,
+        memories_total: promptResult.memoriesTotal,
       };
 
       return receipt;

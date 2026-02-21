@@ -39,7 +39,22 @@ export interface UpdateMemoryInput {
 export type MemoryFilter =
   | { by: "all" }
   | { by: "tags"; tags: string[] }
-  | { by: "ids"; ids: string[] };
+  | { by: "ids"; ids: string[] }
+  | { by: "search"; term: string };
+
+export interface MemorySummary {
+  id: string;
+  title: string;
+  tags: string[];
+  origin: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaginationOptions {
+  limit?: number;
+  offset?: number;
+}
 
 // =============================================================================
 // Internal: row mapping
@@ -72,6 +87,18 @@ function rowToMemory(row: MemoryRow): MemoryEntry {
 }
 
 const COLUMNS = `id, user_id, title, content, tags, origin, allowed_vendors, created_at, updated_at`;
+const SUMMARY_COLUMNS = `id, user_id, title, tags, origin, created_at, updated_at`;
+
+function buildPaginationClause(opts?: PaginationOptions): { sql: string; params: number[] } {
+  if (!opts?.limit) return { sql: "", params: [] };
+  const params: number[] = [opts.limit];
+  let sql = " LIMIT ?";
+  if (opts.offset) {
+    sql += " OFFSET ?";
+    params.push(opts.offset);
+  }
+  return { sql, params };
+}
 
 // =============================================================================
 // createMemory
@@ -128,6 +155,7 @@ export function readMemoryById(
 // Optional vendor parameter: when set, only returns memories where
 // allowed_vendors contains "*" or the given vendor name.
 // When null/undefined (user path), returns all memories for the user.
+// Supports pagination via limit/offset.
 // =============================================================================
 
 export function listMemories(
@@ -135,11 +163,13 @@ export function listMemories(
   userId: string,
   filter: MemoryFilter,
   vendor?: string | null,
+  pagination?: PaginationOptions,
 ): MemoryEntry[] {
   const vendorClause = vendor
     ? `AND EXISTS (SELECT 1 FROM json_each(m.allowed_vendors) WHERE value = '*' OR value = ?)`
     : "";
   const vendorParams = vendor ? [vendor] : [];
+  const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
 
   switch (filter.by) {
     case "all": {
@@ -148,9 +178,9 @@ export function listMemories(
           `SELECT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m
            WHERE m.user_id = ? ${vendorClause}
-           ORDER BY m.created_at DESC`,
+           ORDER BY m.created_at DESC${pagSql}`,
         )
-        .all(userId, ...vendorParams) as MemoryRow[];
+        .all(userId, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
     }
 
@@ -162,9 +192,9 @@ export function listMemories(
           `SELECT DISTINCT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m, json_each(m.tags) t
            WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause}
-           ORDER BY m.created_at DESC`,
+           ORDER BY m.created_at DESC${pagSql}`,
         )
-        .all(userId, ...filter.tags, ...vendorParams) as MemoryRow[];
+        .all(userId, ...filter.tags, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
     }
 
@@ -176,10 +206,197 @@ export function listMemories(
           `SELECT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m
            WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause}
-           ORDER BY m.created_at DESC`,
+           ORDER BY m.created_at DESC${pagSql}`,
         )
-        .all(userId, ...filter.ids, ...vendorParams) as MemoryRow[];
+        .all(userId, ...filter.ids, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
+    }
+
+    case "search": {
+      if (filter.term.trim().length === 0) return [];
+      const likeTerm = `%${filter.term}%`;
+      const rows = db
+        .prepare(
+          `SELECT m.${COLUMNS.split(", ").join(", m.")}
+           FROM memories m
+           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause}
+           ORDER BY m.created_at DESC${pagSql}`,
+        )
+        .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as MemoryRow[];
+      return rows.map(rowToMemory);
+    }
+
+    default: {
+      const _exhaustive: never = filter;
+      throw new Error(`Unhandled filter type: ${(_exhaustive as { by: string }).by}`);
+    }
+  }
+}
+
+// =============================================================================
+// countMemories
+// =============================================================================
+
+export function countMemories(
+  db: Database.Database,
+  userId: string,
+  filter: MemoryFilter,
+  vendor?: string | null,
+): number {
+  const vendorClause = vendor
+    ? `AND EXISTS (SELECT 1 FROM json_each(m.allowed_vendors) WHERE value = '*' OR value = ?)`
+    : "";
+  const vendorParams = vendor ? [vendor] : [];
+
+  switch (filter.by) {
+    case "all": {
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) as count FROM memories m WHERE m.user_id = ? ${vendorClause}`,
+        )
+        .get(userId, ...vendorParams) as { count: number };
+      return row.count;
+    }
+
+    case "tags": {
+      if (filter.tags.length === 0) return 0;
+      const placeholders = filter.tags.map(() => "?").join(", ");
+      const row = db
+        .prepare(
+          `SELECT COUNT(DISTINCT m.id) as count
+           FROM memories m, json_each(m.tags) t
+           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause}`,
+        )
+        .get(userId, ...filter.tags, ...vendorParams) as { count: number };
+      return row.count;
+    }
+
+    case "ids": {
+      if (filter.ids.length === 0) return 0;
+      const placeholders = filter.ids.map(() => "?").join(", ");
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) as count FROM memories m
+           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause}`,
+        )
+        .get(userId, ...filter.ids, ...vendorParams) as { count: number };
+      return row.count;
+    }
+
+    case "search": {
+      if (filter.term.trim().length === 0) return 0;
+      const likeTerm = `%${filter.term}%`;
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) as count FROM memories m
+           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause}`,
+        )
+        .get(userId, likeTerm, likeTerm, ...vendorParams) as { count: number };
+      return row.count;
+    }
+
+    default: {
+      const _exhaustive: never = filter;
+      throw new Error(`Unhandled filter type: ${(_exhaustive as { by: string }).by}`);
+    }
+  }
+}
+
+// =============================================================================
+// listMemorySummaries
+// =============================================================================
+// Lightweight listing: returns metadata only (no content field).
+// Designed for browse/discovery endpoints where the agent needs to see
+// what exists before fetching full entries.
+// =============================================================================
+
+interface SummaryRow {
+  id: string;
+  user_id: string;
+  title: string;
+  tags: string;
+  origin: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToSummary(row: SummaryRow): MemorySummary {
+  return {
+    id: row.id,
+    title: row.title,
+    tags: JSON.parse(row.tags) as string[],
+    origin: row.origin,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export function listMemorySummaries(
+  db: Database.Database,
+  userId: string,
+  filter: MemoryFilter,
+  vendor?: string | null,
+  pagination?: PaginationOptions,
+): MemorySummary[] {
+  const vendorClause = vendor
+    ? `AND EXISTS (SELECT 1 FROM json_each(m.allowed_vendors) WHERE value = '*' OR value = ?)`
+    : "";
+  const vendorParams = vendor ? [vendor] : [];
+  const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
+
+  switch (filter.by) {
+    case "all": {
+      const rows = db
+        .prepare(
+          `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
+           FROM memories m
+           WHERE m.user_id = ? ${vendorClause}
+           ORDER BY m.created_at DESC${pagSql}`,
+        )
+        .all(userId, ...vendorParams, ...pagParams) as SummaryRow[];
+      return rows.map(rowToSummary);
+    }
+
+    case "tags": {
+      if (filter.tags.length === 0) return [];
+      const placeholders = filter.tags.map(() => "?").join(", ");
+      const rows = db
+        .prepare(
+          `SELECT DISTINCT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
+           FROM memories m, json_each(m.tags) t
+           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause}
+           ORDER BY m.created_at DESC${pagSql}`,
+        )
+        .all(userId, ...filter.tags, ...vendorParams, ...pagParams) as SummaryRow[];
+      return rows.map(rowToSummary);
+    }
+
+    case "ids": {
+      if (filter.ids.length === 0) return [];
+      const placeholders = filter.ids.map(() => "?").join(", ");
+      const rows = db
+        .prepare(
+          `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
+           FROM memories m
+           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause}
+           ORDER BY m.created_at DESC${pagSql}`,
+        )
+        .all(userId, ...filter.ids, ...vendorParams, ...pagParams) as SummaryRow[];
+      return rows.map(rowToSummary);
+    }
+
+    case "search": {
+      if (filter.term.trim().length === 0) return [];
+      const likeTerm = `%${filter.term}%`;
+      const rows = db
+        .prepare(
+          `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
+           FROM memories m
+           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause}
+           ORDER BY m.created_at DESC${pagSql}`,
+        )
+        .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as SummaryRow[];
+      return rows.map(rowToSummary);
     }
 
     default: {
