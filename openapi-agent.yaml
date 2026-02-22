@@ -65,6 +65,31 @@ paths:
                     type: array
                     items:
                       type: string
+  /agent/memories/latest:
+    get:
+      operationId: getLatestMemory
+      summary: Get the single most recent memory
+      description: >
+        Returns the one most recent memory. No limit or filter parameters.
+        Use this when the plugin cannot express "most recent" via the query endpoint.
+      responses:
+        "200":
+          description: The most recent memory
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  title: { type: string }
+                  content: { type: string }
+                  tags: { type: array; items: { type: string } }
+                  origin: { type: string }
+                  allowed_vendors: { type: array; items: { type: string } }
+                  created_at: { type: string }
+                  updated_at: { type: string }
+        "404":
+          description: No memories found
   /agent/memories/browse:
     post:
       operationId: browseMemories

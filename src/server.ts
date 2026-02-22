@@ -475,6 +475,30 @@ export function createServer(config: ServerConfig): FastifyInstance {
   );
 
   // ===========================================================================
+  // GET /agent/memories/latest — Single most recent memory for agents
+  // ===========================================================================
+  // Zero-config "most recent" retrieval. No limit parameter, no filter schema.
+  // Unblocks JIT plugins that cannot express ordering + limit cleanly.
+  // ===========================================================================
+
+  server.get("/agent/memories/latest", async (request, reply) => {
+    const vendorFilter = request.vendor;
+    const memories = listMemories(
+      db,
+      request.userId,
+      { by: "all" },
+      vendorFilter,
+      { limit: 1 },
+    );
+    const memory = memories[0] ?? null;
+    if (!memory) {
+      reply.code(404);
+      return { error: "No memories found" };
+    }
+    return memory;
+  });
+
+  // ===========================================================================
   // POST /agent/memories/browse — Lightweight memory listing for agents
   // ===========================================================================
   // Returns memory summaries (title, tags, origin, timestamps) without content.
