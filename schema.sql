@@ -62,8 +62,15 @@ CREATE TABLE memories (
     -- ISO 8601 timestamps. Set by the application, not by SQLite triggers.
     -- No hidden DEFAULT CURRENT_TIMESTAMP — the application is explicit.
     created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    updated_at  TEXT NOT NULL,
+
+    -- Trash: when set, memory is soft-deleted. NULL = active.
+    -- Auto-purge after 30 days is a separate job. Restore clears this.
+    deleted_at  TEXT
 ) STRICT;
 
 -- Every memory query is scoped by user_id. This index makes that fast.
 CREATE INDEX idx_memories_user_id ON memories(user_id);
+
+-- Trash listing: find soft-deleted memories by user.
+CREATE INDEX idx_memories_deleted_at ON memories(user_id, deleted_at);

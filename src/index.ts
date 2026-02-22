@@ -143,6 +143,16 @@ if (tableExists.count === 0) {
       `ALTER TABLE memories ADD COLUMN allowed_vendors TEXT NOT NULL DEFAULT '["*"]' CHECK(json_type(allowed_vendors) = 'array')`,
     );
   }
+
+  const hasDeletedAt = db
+    .prepare(
+      `SELECT count(*) as count FROM pragma_table_info('memories') WHERE name = 'deleted_at'`,
+    )
+    .get() as { count: number };
+
+  if (hasDeletedAt.count === 0) {
+    db.exec(`ALTER TABLE memories ADD COLUMN deleted_at TEXT`);
+  }
 }
 
 // =============================================================================

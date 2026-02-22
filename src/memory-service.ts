@@ -19,6 +19,7 @@ export interface MemoryEntry {
   allowed_vendors: string[];
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
 }
 
 export interface CreateMemoryInput {
@@ -40,7 +41,8 @@ export type MemoryFilter =
   | { by: "all" }
   | { by: "tags"; tags: string[] }
   | { by: "ids"; ids: string[] }
-  | { by: "search"; term: string };
+  | { by: "search"; term: string }
+  | { by: "trashed" };
 
 export interface MemorySummary {
   id: string;
@@ -70,6 +72,7 @@ interface MemoryRow {
   allowed_vendors: string;
   created_at: string;
   updated_at: string;
+  deleted_at?: string | null;
 }
 
 function rowToMemory(row: MemoryRow): MemoryEntry {
@@ -83,11 +86,12 @@ function rowToMemory(row: MemoryRow): MemoryEntry {
     allowed_vendors: JSON.parse(row.allowed_vendors) as string[],
     created_at: row.created_at,
     updated_at: row.updated_at,
+    deleted_at: row.deleted_at ?? undefined,
   };
 }
 
-const COLUMNS = `id, user_id, title, content, tags, origin, allowed_vendors, created_at, updated_at`;
-const SUMMARY_COLUMNS = `id, user_id, title, tags, origin, created_at, updated_at`;
+const COLUMNS = `id, user_id, title, content, tags, origin, allowed_vendors, created_at, updated_at, deleted_at`;
+const SUMMARY_COLUMNS = `id, user_id, title, tags, origin, created_at, updated_at, deleted_at`;
 
 function buildPaginationClause(opts?: PaginationOptions): { sql: string; params: number[] } {
   if (!opts?.limit) return { sql: "", params: [] };
@@ -169,6 +173,10 @@ export function listMemories(
     ? `AND EXISTS (SELECT 1 FROM json_each(m.allowed_vendors) WHERE value = '*' OR value = ?)`
     : "";
   const vendorParams = vendor ? [vendor] : [];
+  const deletedClause =
+    filter.by === "trashed"
+      ? `AND m.deleted_at IS NOT NULL`
+      : `AND m.deleted_at IS NULL`;
   const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
 
   switch (filter.by) {
@@ -177,8 +185,20 @@ export function listMemories(
         .prepare(
           `SELECT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m
-           WHERE m.user_id = ? ${vendorClause}
+           WHERE m.user_id = ? ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
+        )
+        .all(userId, ...vendorParams, ...pagParams) as MemoryRow[];
+      return rows.map(rowToMemory);
+    }
+
+    case "trashed": {
+      const rows = db
+        .prepare(
+          `SELECT m.${COLUMNS.split(", ").join(", m.")}
+           FROM memories m
+           WHERE m.user_id = ? ${vendorClause} ${deletedClause}
+           ORDER BY m.deleted_at DESC${pagSql}`,
         )
         .all(userId, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
@@ -191,7 +211,7 @@ export function listMemories(
         .prepare(
           `SELECT DISTINCT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m, json_each(m.tags) t
-           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause}
+           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
         )
         .all(userId, ...filter.tags, ...vendorParams, ...pagParams) as MemoryRow[];
@@ -205,7 +225,7 @@ export function listMemories(
         .prepare(
           `SELECT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m
-           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause}
+           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
         )
         .all(userId, ...filter.ids, ...vendorParams, ...pagParams) as MemoryRow[];
@@ -219,7 +239,7 @@ export function listMemories(
         .prepare(
           `SELECT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m
-           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause}
+           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
         )
         .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as MemoryRow[];
@@ -247,12 +267,25 @@ export function countMemories(
     ? `AND EXISTS (SELECT 1 FROM json_each(m.allowed_vendors) WHERE value = '*' OR value = ?)`
     : "";
   const vendorParams = vendor ? [vendor] : [];
+  const deletedClause =
+    filter.by === "trashed"
+      ? `AND m.deleted_at IS NOT NULL`
+      : `AND m.deleted_at IS NULL`;
 
   switch (filter.by) {
     case "all": {
       const row = db
         .prepare(
-          `SELECT COUNT(*) as count FROM memories m WHERE m.user_id = ? ${vendorClause}`,
+          `SELECT COUNT(*) as count FROM memories m WHERE m.user_id = ? ${vendorClause} ${deletedClause}`,
+        )
+        .get(userId, ...vendorParams) as { count: number };
+      return row.count;
+    }
+
+    case "trashed": {
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) as count FROM memories m WHERE m.user_id = ? ${vendorClause} ${deletedClause}`,
         )
         .get(userId, ...vendorParams) as { count: number };
       return row.count;
@@ -265,7 +298,7 @@ export function countMemories(
         .prepare(
           `SELECT COUNT(DISTINCT m.id) as count
            FROM memories m, json_each(m.tags) t
-           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause}`,
+           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}`,
         )
         .get(userId, ...filter.tags, ...vendorParams) as { count: number };
       return row.count;
@@ -277,7 +310,7 @@ export function countMemories(
       const row = db
         .prepare(
           `SELECT COUNT(*) as count FROM memories m
-           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause}`,
+           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}`,
         )
         .get(userId, ...filter.ids, ...vendorParams) as { count: number };
       return row.count;
@@ -289,7 +322,7 @@ export function countMemories(
       const row = db
         .prepare(
           `SELECT COUNT(*) as count FROM memories m
-           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause}`,
+           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause} ${deletedClause}`,
         )
         .get(userId, likeTerm, likeTerm, ...vendorParams) as { count: number };
       return row.count;
@@ -342,6 +375,7 @@ export function listMemorySummaries(
     ? `AND EXISTS (SELECT 1 FROM json_each(m.allowed_vendors) WHERE value = '*' OR value = ?)`
     : "";
   const vendorParams = vendor ? [vendor] : [];
+  const deletedClause = `AND m.deleted_at IS NULL`;
   const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
 
   switch (filter.by) {
@@ -350,7 +384,7 @@ export function listMemorySummaries(
         .prepare(
           `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
            FROM memories m
-           WHERE m.user_id = ? ${vendorClause}
+           WHERE m.user_id = ? ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
         )
         .all(userId, ...vendorParams, ...pagParams) as SummaryRow[];
@@ -364,7 +398,7 @@ export function listMemorySummaries(
         .prepare(
           `SELECT DISTINCT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
            FROM memories m, json_each(m.tags) t
-           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause}
+           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
         )
         .all(userId, ...filter.tags, ...vendorParams, ...pagParams) as SummaryRow[];
@@ -378,7 +412,7 @@ export function listMemorySummaries(
         .prepare(
           `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
            FROM memories m
-           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause}
+           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
         )
         .all(userId, ...filter.ids, ...vendorParams, ...pagParams) as SummaryRow[];
@@ -392,12 +426,15 @@ export function listMemorySummaries(
         .prepare(
           `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
            FROM memories m
-           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause}
+           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
         )
         .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
     }
+
+    case "trashed":
+      return [];
 
     default: {
       const _exhaustive: never = filter;
@@ -435,7 +472,57 @@ export function updateMemory(
 }
 
 // =============================================================================
+// softDeleteMemory
+// =============================================================================
+// Moves memory to trash. Sets deleted_at. Used by dashboard "Delete" action.
+// =============================================================================
+
+export function softDeleteMemory(
+  db: Database.Database,
+  userId: string,
+  memoryId: string,
+): MemoryEntry | null {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE memories
+       SET deleted_at = ?, updated_at = ?
+       WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+    )
+    .run(now, now, memoryId, userId);
+
+  if (result.changes === 0) return null;
+  return readMemoryById(db, userId, memoryId);
+}
+
+// =============================================================================
+// restoreMemory
+// =============================================================================
+// Clears deleted_at. Used by dashboard "Restore" from trash.
+// =============================================================================
+
+export function restoreMemory(
+  db: Database.Database,
+  userId: string,
+  memoryId: string,
+): MemoryEntry | null {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE memories
+       SET deleted_at = NULL, updated_at = ?
+       WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL`,
+    )
+    .run(now, memoryId, userId);
+
+  if (result.changes === 0) return null;
+  return readMemoryById(db, userId, memoryId);
+}
+
+// =============================================================================
 // deleteMemory
+// =============================================================================
+// Hard delete by primary key. For purge job (30-day auto-delete). Not used by dashboard.
 // =============================================================================
 
 export function deleteMemory(

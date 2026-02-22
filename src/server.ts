@@ -13,7 +13,8 @@ import {
   listMemorySummaries,
   countMemories,
   updateMemory,
-  deleteMemory,
+  softDeleteMemory,
+  restoreMemory,
   type MemoryEntry,
   type CreateMemoryInput,
   type UpdateMemoryInput,
@@ -206,6 +207,14 @@ const memoryFilterSchema = {
         term: { type: "string" as const, minLength: 1 },
       },
     },
+    {
+      type: "object" as const,
+      required: ["by"],
+      additionalProperties: false,
+      properties: {
+        by: { type: "string" as const, const: "trashed" },
+      },
+    },
   ],
 };
 
@@ -215,6 +224,8 @@ const listFilterBodySchema = {
   additionalProperties: false,
   properties: {
     filter: memoryFilterSchema,
+    limit: { type: "integer" as const, minimum: 1, maximum: 500 },
+    offset: { type: "integer" as const, minimum: 0 },
   },
 };
 
@@ -538,8 +549,22 @@ export function createServer(config: ServerConfig): FastifyInstance {
       },
     },
     async (request) => {
-      const { filter } = request.body as { filter: MemoryFilter };
-      const memories = listMemories(db, request.userId, filter);
+      const body = request.body as {
+        filter: MemoryFilter;
+        limit?: number;
+        offset?: number;
+      };
+      const pagination: PaginationOptions | undefined =
+        body.limit != null
+          ? { limit: body.limit, offset: body.offset ?? 0 }
+          : undefined;
+      const memories = listMemories(
+        db,
+        request.userId,
+        body.filter,
+        null,
+        pagination,
+      );
       return { memories };
     },
   );
@@ -590,7 +615,9 @@ export function createServer(config: ServerConfig): FastifyInstance {
   );
 
   // ===========================================================================
-  // DELETE /memories/:id — Hard delete by primary key
+  // DELETE /memories/:id — Soft delete (move to trash)
+  // ===========================================================================
+  // Sets deleted_at. Memory can be restored within 30 days.
   // ===========================================================================
 
   server.delete(
@@ -602,12 +629,34 @@ export function createServer(config: ServerConfig): FastifyInstance {
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const deleted = deleteMemory(db, request.userId, id);
-      if (!deleted) {
+      const memory = softDeleteMemory(db, request.userId, id);
+      if (!memory) {
         reply.code(404);
         return { error: "Memory not found" };
       }
-      return reply.code(204).send();
+      return memory;
+    },
+  );
+
+  // ===========================================================================
+  // POST /memories/:id/restore — Restore from trash
+  // ===========================================================================
+
+  server.post(
+    "/memories/:id/restore",
+    {
+      schema: {
+        params: memoryIdParamSchema,
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const memory = restoreMemory(db, request.userId, id);
+      if (!memory) {
+        reply.code(404);
+        return { error: "Memory not found or not in trash" };
+      }
+      return memory;
     },
   );
 
@@ -632,6 +681,11 @@ export function createServer(config: ServerConfig): FastifyInstance {
         memory_filter: MemoryFilter;
         limit?: number;
       };
+
+      if (memory_filter.by === "trashed") {
+        reply.code(400);
+        return { error: "Cannot use trashed memories as query context" };
+      }
 
       const vendorFilter = request.vendor;
       const AGENT_DEFAULT_LIMIT = 5;
