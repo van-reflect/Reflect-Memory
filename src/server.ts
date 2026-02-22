@@ -28,6 +28,12 @@ import {
   type ModelGatewayConfig,
   type ModelConfigReceipt,
 } from "./model-gateway.js";
+import {
+  chat,
+  AVAILABLE_MODELS,
+  type ProviderConfig,
+  type ChatMessage,
+} from "./chat-gateway.js";
 
 // =============================================================================
 // Type augmentation
@@ -79,6 +85,7 @@ export interface ServerConfig {
   agentKeys: Record<string, string>;
   validVendors: string[];
   contextCharBudget: number;
+  chatProviders: ProviderConfig;
 }
 
 // =============================================================================
@@ -285,6 +292,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
     agentKeys,
     validVendors,
     contextCharBudget,
+    chatProviders,
   } = config;
 
   const server = Fastify({
@@ -759,6 +767,92 @@ export function createServer(config: ServerConfig): FastifyInstance {
       };
 
       return receipt;
+    },
+  );
+
+  // ===========================================================================
+  // GET /chat/models — Available chat models
+  // ===========================================================================
+  // Returns models that have API keys configured. Dashboard uses this to
+  // populate the model selector.
+  // ===========================================================================
+
+  server.get("/chat/models", async () => {
+    const available = AVAILABLE_MODELS.filter((m) => {
+      switch (m.id) {
+        case "gpt-4o":
+        case "gpt-4o-mini":
+          return !!chatProviders.openaiKey;
+        case "claude-sonnet-4":
+          return !!chatProviders.anthropicKey;
+        case "gemini-2.0-flash":
+          return !!chatProviders.googleKey;
+        case "perplexity-sonar":
+          return !!chatProviders.perplexityKey;
+        case "grok-3-mini":
+          return !!chatProviders.xaiKey;
+        default:
+          return false;
+      }
+    });
+    return { models: available.map((m) => ({ id: m.id, label: m.label })) };
+  });
+
+  // ===========================================================================
+  // POST /chat — Multi-model chat with Reflect Memory tool calling
+  // ===========================================================================
+  // User-only. Agents cannot use this endpoint.
+  // The model reads/writes memories mid-conversation via server-side tools.
+  // ===========================================================================
+
+  const chatBodySchema = {
+    type: "object" as const,
+    required: ["model", "messages"],
+    additionalProperties: false,
+    properties: {
+      model: { type: "string" as const, minLength: 1 },
+      messages: {
+        type: "array" as const,
+        minItems: 1,
+        items: {
+          type: "object" as const,
+          required: ["role", "content"],
+          additionalProperties: false,
+          properties: {
+            role: { type: "string" as const, enum: ["user", "assistant"] },
+            content: { type: "string" as const },
+          },
+        },
+      },
+    },
+  };
+
+  server.post(
+    "/chat",
+    {
+      schema: { body: chatBodySchema },
+    },
+    async (request, reply) => {
+      if (request.role !== "user") {
+        reply.code(403);
+        return { error: "Chat endpoint is user-only" };
+      }
+
+      const { model, messages } = request.body as {
+        model: string;
+        messages: ChatMessage[];
+      };
+
+      try {
+        const result = await chat(model, messages, db, request.userId, chatProviders);
+        return result;
+      } catch (error) {
+        reply.code(502);
+        return {
+          error: "Chat failed",
+          detail: error instanceof Error ? error.message : "Unknown error",
+        };
+      }
     },
   );
 

@@ -9,6 +9,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type ServerConfig } from "./server.js";
 import type { ModelGatewayConfig } from "./model-gateway.js";
+import type { ProviderConfig } from "./chat-gateway.js";
 
 // =============================================================================
 // Environment loading
@@ -98,6 +99,22 @@ for (const [key, value] of Object.entries(process.env)) {
 const validVendors = Object.keys(agentKeys);
 
 // =============================================================================
+// Chat provider keys — for multi-model chat on the dashboard
+// =============================================================================
+// Each provider is optional. Only models with configured keys appear in /chat/models.
+// RM_MODEL_API_KEY doubles as the OpenAI key for chat if RM_CHAT_OPENAI_KEY is not set.
+// =============================================================================
+
+const chatProviders: ProviderConfig = {
+  openaiKey: optionalEnv("RM_CHAT_OPENAI_KEY", modelGateway.apiKey),
+  openaiBaseUrl: optionalEnv("RM_CHAT_OPENAI_BASE_URL", "https://api.openai.com/v1"),
+  anthropicKey: optionalEnv("RM_CHAT_ANTHROPIC_KEY", ""),
+  googleKey: optionalEnv("RM_CHAT_GOOGLE_KEY", ""),
+  perplexityKey: optionalEnv("RM_CHAT_PERPLEXITY_KEY", ""),
+  xaiKey: optionalEnv("RM_CHAT_XAI_KEY", ""),
+};
+
+// =============================================================================
 // Database setup
 // =============================================================================
 
@@ -181,6 +198,14 @@ if (existingUser) {
 // Server startup
 // =============================================================================
 
+const chatProviderNames = [
+  chatProviders.openaiKey ? "openai" : "",
+  chatProviders.anthropicKey ? "anthropic" : "",
+  chatProviders.googleKey ? "google" : "",
+  chatProviders.perplexityKey ? "perplexity" : "",
+  chatProviders.xaiKey ? "xai" : "",
+].filter(Boolean);
+
 const config: ServerConfig = {
   db,
   apiKey: API_KEY,
@@ -191,6 +216,7 @@ const config: ServerConfig = {
   agentKeys,
   validVendors,
   contextCharBudget,
+  chatProviders,
 };
 
 const server = createServer(config);
@@ -205,4 +231,5 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   console.log(`Database: ${DB_PATH}`);
   console.log(`Model: ${modelGateway.provider}/${modelGateway.model}`);
   console.log(`Agent vendors: ${validVendors.length > 0 ? validVendors.join(", ") : "(none configured)"}`);
+  console.log(`Chat providers: ${chatProviderNames.length > 0 ? chatProviderNames.join(", ") : "(none configured)"}`);
 });
