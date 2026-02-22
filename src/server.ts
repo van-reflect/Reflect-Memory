@@ -225,7 +225,7 @@ const queryBodySchema = {
   properties: {
     query: { type: "string" as const, minLength: 1 },
     memory_filter: memoryFilterSchema,
-    limit: { type: "integer" as const, minimum: 1, maximum: 200 },
+    limit: { type: "integer" as const, minimum: 1, maximum: 50 },
   },
 };
 
@@ -634,7 +634,13 @@ export function createServer(config: ServerConfig): FastifyInstance {
       };
 
       const vendorFilter = request.vendor;
-      const pagination: PaginationOptions | undefined = limit ? { limit } : undefined;
+      const AGENT_DEFAULT_LIMIT = 5;
+      const HARD_CEILING = 50;
+      const effectiveLimit = Math.min(
+        limit ?? (request.role === "agent" ? AGENT_DEFAULT_LIMIT : HARD_CEILING),
+        HARD_CEILING,
+      );
+      const pagination: PaginationOptions = { limit: effectiveLimit };
       const memoriesUsed = listMemories(db, request.userId, memory_filter, vendorFilter, pagination);
       const promptResult = buildPrompt(memoriesUsed, query, systemPrompt, contextCharBudget);
 

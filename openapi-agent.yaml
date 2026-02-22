@@ -210,8 +210,9 @@ paths:
                 limit:
                   type: integer
                   minimum: 1
-                  maximum: 200
-                  description: "Max memories to pull for context. Omit for no limit."
+                  maximum: 50
+                  default: 5
+                  description: "Max memories to include as context. Default: 5 for agents. Hard ceiling: 50. Use specific filters + low limit for best results."
       responses:
         "200":
           description: AI response with metadata
