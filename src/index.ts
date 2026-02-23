@@ -187,18 +187,23 @@ if (tableExists.count === 0) {
 }
 
 // =============================================================================
+// Migrations table
+// =============================================================================
+// Tracks one-time data migrations so they never re-run on subsequent deploys.
+// =============================================================================
+
+db.exec(`CREATE TABLE IF NOT EXISTS _migrations (
+  name       TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL
+)`);
+
+// =============================================================================
 // Owner resolution
 // =============================================================================
 // RM_OWNER_EMAIL is the single source of truth for who the primary user is.
-// On startup we guarantee exactly one user row with that email, and that row
-// owns all memories that were created via the API key or agent keys.
-//
-// This handles every edge case:
-//   - Fresh database (no users) → create the owner
-//   - Owner row exists with correct email → no-op
-//   - Owner email was on a different row (claimed by wrong sign-in) → reclaim
-//   - Stale NULL-email rows from old seeded users → absorb their memories
-//   - Multiple orphan rows → consolidate everything onto the owner
+// On startup we guarantee exactly one user row with that email. The one-time
+// migration absorbs orphaned NULL-email rows (from the old seeded-user bug).
+// Legitimate users with emails are never touched.
 // =============================================================================
 
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
@@ -206,7 +211,6 @@ const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 let userId: string;
 
 if (ownerEmail) {
-  // Step 1: Find or create the canonical owner row.
   let ownerRow = db
     .prepare(`SELECT id FROM users WHERE email = ?`)
     .get(ownerEmail) as { id: string } | undefined;
@@ -224,22 +228,35 @@ if (ownerEmail) {
 
   userId = ownerRow.id;
 
-  // Step 2: Absorb memories from every other user into the owner, then delete them.
-  // This reclaims memories from NULL-email seeded users and from users that
-  // incorrectly inherited data via the old claim bug.
-  const others = db
-    .prepare(`SELECT id FROM users WHERE id != ?`)
-    .all(userId) as { id: string }[];
+  // One-time migration: absorb orphaned NULL-email users into the owner.
+  // Only runs once. Legitimate email-bearing users are never touched.
+  const migrationName = "001_consolidate_owner_memories";
+  const alreadyRan = db
+    .prepare(`SELECT 1 FROM _migrations WHERE name = ?`)
+    .get(migrationName);
 
-  for (const other of others) {
-    db.prepare(`UPDATE memories SET user_id = ? WHERE user_id = ?`).run(
-      userId,
-      other.id,
-    );
-    db.prepare(`DELETE FROM users WHERE id = ?`).run(other.id);
+  if (!alreadyRan) {
+    const consolidate = db.transaction(() => {
+      const orphans = db
+        .prepare(`SELECT id FROM users WHERE id != ? AND email IS NULL`)
+        .all(userId) as { id: string }[];
+
+      for (const orphan of orphans) {
+        db.prepare(`UPDATE memories SET user_id = ? WHERE user_id = ?`).run(
+          userId,
+          orphan.id,
+        );
+        db.prepare(`DELETE FROM users WHERE id = ?`).run(orphan.id);
+      }
+
+      db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+        migrationName,
+        new Date().toISOString(),
+      );
+    });
+    consolidate();
   }
 } else {
-  // No owner email configured — legacy single-user mode.
   const existingUser = db
     .prepare(`SELECT id FROM users LIMIT 1`)
     .get() as { id: string } | undefined;
@@ -280,7 +297,7 @@ const config: ServerConfig = {
   dashboardJwtSecret: dashboardJwtSecret || null,
 };
 
-const server = createServer(config);
+const server = await createServer(config);
 
 server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   if (err) {
@@ -294,3 +311,22 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   console.log(`Agent vendors: ${validVendors.length > 0 ? validVendors.join(", ") : "(none configured)"}`);
   console.log(`Chat providers: ${chatProviderNames.length > 0 ? chatProviderNames.join(", ") : "(none configured)"}`);
 });
+
+// =============================================================================
+// Graceful shutdown
+// =============================================================================
+
+function shutdown(signal: string) {
+  console.log(`\n${signal} received — shutting down`);
+  server.close().then(() => {
+    db.close();
+    console.log("Database closed. Goodbye.");
+    process.exit(0);
+  }).catch(() => {
+    db.close();
+    process.exit(1);
+  });
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

@@ -6,12 +6,15 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export function findOrCreateUserByEmail(
   db: Database.Database,
   email: string,
 ): string {
   const normalized = email.trim().toLowerCase();
   if (!normalized) throw new Error("Email required");
+  if (!EMAIL_REGEX.test(normalized)) throw new Error("Invalid email format");
 
   const existing = db
     .prepare(`SELECT id FROM users WHERE email = ?`)

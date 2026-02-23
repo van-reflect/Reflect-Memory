@@ -11,7 +11,6 @@ import { randomUUID } from "node:crypto";
 
 export interface MemoryEntry {
   id: string;
-  user_id: string;
   title: string;
   content: string;
   tags: string[];
@@ -78,7 +77,6 @@ interface MemoryRow {
 function rowToMemory(row: MemoryRow): MemoryEntry {
   return {
     id: row.id,
-    user_id: row.user_id,
     title: row.title,
     content: row.content,
     tags: JSON.parse(row.tags) as string[],
@@ -92,6 +90,10 @@ function rowToMemory(row: MemoryRow): MemoryEntry {
 
 const COLUMNS = `id, user_id, title, content, tags, origin, allowed_vendors, created_at, updated_at, deleted_at`;
 const SUMMARY_COLUMNS = `id, user_id, title, tags, origin, created_at, updated_at, deleted_at`;
+
+function escapeLike(term: string): string {
+  return term.replace(/[%_\\]/g, (ch) => `\\${ch}`);
+}
 
 function buildPaginationClause(opts?: PaginationOptions): { sql: string; params: number[] } {
   if (!opts?.limit) return { sql: "", params: [] };
@@ -125,7 +127,6 @@ export function createMemory(
 
   return {
     id,
-    user_id: userId,
     title: input.title,
     content: input.content,
     tags: [...input.tags],
@@ -234,12 +235,12 @@ export function listMemories(
 
     case "search": {
       if (filter.term.trim().length === 0) return [];
-      const likeTerm = `%${filter.term}%`;
+      const likeTerm = `%${escapeLike(filter.term)}%`;
       const rows = db
         .prepare(
           `SELECT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m
-           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause} ${deletedClause}
+           WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
         )
         .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as MemoryRow[];
@@ -318,11 +319,11 @@ export function countMemories(
 
     case "search": {
       if (filter.term.trim().length === 0) return 0;
-      const likeTerm = `%${filter.term}%`;
+      const likeTerm = `%${escapeLike(filter.term)}%`;
       const row = db
         .prepare(
           `SELECT COUNT(*) as count FROM memories m
-           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause} ${deletedClause}`,
+           WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}`,
         )
         .get(userId, likeTerm, likeTerm, ...vendorParams) as { count: number };
       return row.count;
@@ -421,12 +422,12 @@ export function listMemorySummaries(
 
     case "search": {
       if (filter.term.trim().length === 0) return [];
-      const likeTerm = `%${filter.term}%`;
+      const likeTerm = `%${escapeLike(filter.term)}%`;
       const rows = db
         .prepare(
           `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
            FROM memories m
-           WHERE m.user_id = ? AND (m.title LIKE ? OR m.content LIKE ?) ${vendorClause} ${deletedClause}
+           WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC${pagSql}`,
         )
         .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as SummaryRow[];

@@ -244,7 +244,8 @@ async function chatOpenAI(
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`${model.label} API error ${res.status}: ${body}`);
+      console.error(`[openai] ${model.label} API error ${res.status}: ${body}`);
+      throw new Error(`${model.label} API error ${res.status}`);
     }
 
     const data = (await res.json()) as {
@@ -279,7 +280,16 @@ async function chatOpenAI(
     });
 
     for (const tc of choice.message.tool_calls) {
-      const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+      let args: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(tc.function.arguments);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          throw new Error("Expected object");
+        }
+        args = parsed as Record<string, unknown>;
+      } catch {
+        args = {};
+      }
       const result = executeToolCall(db, userId, tc.function.name, args, model.id);
       toolExecutions.push({ tool: tc.function.name, input: args, result });
 
@@ -346,7 +356,8 @@ async function chatAnthropic(
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Claude API error ${res.status}: ${body}`);
+      console.error(`[anthropic] Claude API error ${res.status}: ${body}`);
+      throw new Error(`Claude API error ${res.status}`);
     }
 
     const data = (await res.json()) as {
@@ -442,10 +453,10 @@ async function chatGoogle(
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model.apiModel}:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model.apiModel}:generateContent`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: JSON.stringify({
           system_instruction: { parts: [{ text: systemPrompt }] },
           contents,
@@ -456,7 +467,8 @@ async function chatGoogle(
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Gemini API error ${res.status}: ${body}`);
+      console.error(`[gemini] API error ${res.status}: ${body}`);
+      throw new Error(`Gemini API error ${res.status}`);
     }
 
     const data = (await res.json()) as {
