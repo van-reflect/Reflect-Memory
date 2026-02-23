@@ -42,6 +42,23 @@ export RM_AGENT_KEY_CLAUDE="agent-key-for-claude"      # Registers vendor "claud
 # RM_AGENT_KEY_<NAME> — any env var matching this pattern registers a vendor
 ```
 
+Dashboard multi-user auth (required for dashboard deployment):
+
+```bash
+export RM_DASHBOARD_SERVICE_KEY="..."   # Shared with dashboard. Generate: openssl rand -hex 32
+export RM_DASHBOARD_JWT_SECRET="..."    # Must match dashboard AUTH_SECRET. Same value for JWT verification.
+```
+
+Multi-vendor chat (dashboard Chat tab — enables GPT, Claude, Gemini, Perplexity, Grok):
+
+```bash
+export RM_CHAT_OPENAI_KEY="sk-..."        # Defaults to RM_MODEL_API_KEY if omitted
+export RM_CHAT_ANTHROPIC_KEY="sk-ant-..." # Claude (console.anthropic.com)
+export RM_CHAT_GOOGLE_KEY="..."           # Gemini (aistudio.google.com)
+export RM_CHAT_PERPLEXITY_KEY="..."       # Perplexity (perplexity.ai/settings/api)
+export RM_CHAT_XAI_KEY="..."             # Grok (x.ai)
+```
+
 Each agent key gives the vendor scoped access:
 - Can write memories via `POST /agent/memories`
 - Can query via `POST /query` (sees only memories with `allowed_vendors` containing `"*"` or their vendor name)

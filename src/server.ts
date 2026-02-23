@@ -5,7 +5,9 @@
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
+import { findOrCreateUserByEmail } from "./user-service.js";
 import {
   createMemory,
   readMemoryById,
@@ -86,6 +88,8 @@ export interface ServerConfig {
   validVendors: string[];
   contextCharBudget: number;
   chatProviders: ProviderConfig;
+  dashboardServiceKey: string | null;
+  dashboardJwtSecret: string | null;
 }
 
 // =============================================================================
@@ -293,6 +297,8 @@ export function createServer(config: ServerConfig): FastifyInstance {
     validVendors,
     contextCharBudget,
     chatProviders,
+    dashboardServiceKey,
+    dashboardJwtSecret,
   } = config;
 
   const server = Fastify({
@@ -330,6 +336,34 @@ export function createServer(config: ServerConfig): FastifyInstance {
     const token = header.slice("Bearer ".length);
     if (token.length === 0) {
       return reply.code(401).send({ error: "Empty API key" });
+    }
+
+    // Dashboard auth: service key + X-Dashboard-Token JWT
+    if (
+      dashboardServiceKey &&
+      dashboardJwtSecret &&
+      constantTimeEqual(token, dashboardServiceKey)
+    ) {
+      const dashboardToken = request.headers["x-dashboard-token"];
+      if (typeof dashboardToken !== "string" || !dashboardToken) {
+        return reply.code(401).send({
+          error: "Dashboard auth requires X-Dashboard-Token header",
+        });
+      }
+      try {
+        const key = new TextEncoder().encode(dashboardJwtSecret);
+        const { payload } = await jwtVerify(dashboardToken, key);
+        const email = payload.email;
+        if (typeof email !== "string" || !email) {
+          return reply.code(401).send({ error: "Invalid dashboard token" });
+        }
+        request.userId = findOrCreateUserByEmail(db, email);
+        request.role = "user";
+        request.vendor = null;
+        return;
+      } catch {
+        return reply.code(401).send({ error: "Invalid or expired dashboard token" });
+      }
     }
 
     // Try user key first.

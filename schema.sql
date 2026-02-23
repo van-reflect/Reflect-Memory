@@ -16,6 +16,9 @@ CREATE TABLE users (
     -- UUIDv4 as text. No autoincrement integers — avoids leaking sequence info.
     id          TEXT NOT NULL PRIMARY KEY,
 
+    -- Email for dashboard auth. Nullable for legacy seeded user. Unique when set.
+    email       TEXT UNIQUE,
+
     -- ISO 8601 timestamp. When this user record was created.
     created_at  TEXT NOT NULL
 ) STRICT;

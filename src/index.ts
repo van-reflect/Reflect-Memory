@@ -114,6 +114,9 @@ const chatProviders: ProviderConfig = {
   xaiKey: optionalEnv("RM_CHAT_XAI_KEY", ""),
 };
 
+const dashboardServiceKey = optionalEnv("RM_DASHBOARD_SERVICE_KEY", "");
+const dashboardJwtSecret = optionalEnv("RM_DASHBOARD_JWT_SECRET", "");
+
 // =============================================================================
 // Database setup
 // =============================================================================
@@ -170,6 +173,16 @@ if (tableExists.count === 0) {
   if (hasDeletedAt.count === 0) {
     db.exec(`ALTER TABLE memories ADD COLUMN deleted_at TEXT`);
   }
+
+  const hasUserEmail = db
+    .prepare(
+      `SELECT count(*) as count FROM pragma_table_info('users') WHERE name = 'email'`,
+    )
+    .get() as { count: number };
+
+  if (hasUserEmail.count === 0) {
+    db.exec(`ALTER TABLE users ADD COLUMN email TEXT UNIQUE`);
+  }
 }
 
 // =============================================================================
@@ -217,6 +230,8 @@ const config: ServerConfig = {
   validVendors,
   contextCharBudget,
   chatProviders,
+  dashboardServiceKey: dashboardServiceKey || null,
+  dashboardJwtSecret: dashboardJwtSecret || null,
 };
 
 const server = createServer(config);
