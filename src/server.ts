@@ -4,6 +4,8 @@
 // Every request requires auth and explicit intent.
 
 import Fastify, { type FastifyInstance } from "fastify";
+import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
@@ -112,16 +114,18 @@ const memoryBodySchema = {
   required: ["title", "content", "tags"],
   additionalProperties: false,
   properties: {
-    title: { type: "string" as const, minLength: 1 },
-    content: { type: "string" as const, minLength: 1 },
+    title: { type: "string" as const, minLength: 1, maxLength: 500 },
+    content: { type: "string" as const, minLength: 1, maxLength: 100_000 },
     tags: {
       type: "array" as const,
-      items: { type: "string" as const, minLength: 1 },
+      items: { type: "string" as const, minLength: 1, maxLength: 100 },
+      maxItems: 50,
     },
     allowed_vendors: {
       type: "array" as const,
-      items: { type: "string" as const, minLength: 1 },
+      items: { type: "string" as const, minLength: 1, maxLength: 50 },
       minItems: 1,
+      maxItems: 50,
     },
   },
 };
@@ -131,16 +135,18 @@ const agentMemoryBodySchema = {
   required: ["title", "content", "tags", "allowed_vendors"],
   additionalProperties: false,
   properties: {
-    title: { type: "string" as const, minLength: 1 },
-    content: { type: "string" as const, minLength: 1 },
+    title: { type: "string" as const, minLength: 1, maxLength: 500 },
+    content: { type: "string" as const, minLength: 1, maxLength: 100_000 },
     tags: {
       type: "array" as const,
-      items: { type: "string" as const, minLength: 1 },
+      items: { type: "string" as const, minLength: 1, maxLength: 100 },
+      maxItems: 50,
     },
     allowed_vendors: {
       type: "array" as const,
-      items: { type: "string" as const, minLength: 1 },
+      items: { type: "string" as const, minLength: 1, maxLength: 50 },
       minItems: 1,
+      maxItems: 50,
     },
   },
 };
@@ -150,16 +156,18 @@ const updateMemoryBodySchema = {
   required: ["title", "content", "tags", "allowed_vendors"],
   additionalProperties: false,
   properties: {
-    title: { type: "string" as const, minLength: 1 },
-    content: { type: "string" as const, minLength: 1 },
+    title: { type: "string" as const, minLength: 1, maxLength: 500 },
+    content: { type: "string" as const, minLength: 1, maxLength: 100_000 },
     tags: {
       type: "array" as const,
-      items: { type: "string" as const, minLength: 1 },
+      items: { type: "string" as const, minLength: 1, maxLength: 100 },
+      maxItems: 50,
     },
     allowed_vendors: {
       type: "array" as const,
-      items: { type: "string" as const, minLength: 1 },
+      items: { type: "string" as const, minLength: 1, maxLength: 50 },
       minItems: 1,
+      maxItems: 50,
     },
   },
 };
@@ -216,7 +224,7 @@ const memoryFilterSchema = {
       additionalProperties: false,
       properties: {
         by: { type: "string" as const, const: "search" },
-        term: { type: "string" as const, minLength: 1 },
+        term: { type: "string" as const, minLength: 1, maxLength: 500 },
       },
     },
     {
@@ -246,7 +254,7 @@ const queryBodySchema = {
   required: ["query", "memory_filter"],
   additionalProperties: false,
   properties: {
-    query: { type: "string" as const, minLength: 1 },
+    query: { type: "string" as const, minLength: 1, maxLength: 10_000 },
     memory_filter: memoryFilterSchema,
     limit: { type: "integer" as const, minimum: 1, maximum: 50 },
   },
@@ -286,7 +294,7 @@ function validateAllowedVendors(
 // Server factory
 // =============================================================================
 
-export function createServer(config: ServerConfig): FastifyInstance {
+export async function createServer(config: ServerConfig): Promise<FastifyInstance> {
   const {
     db,
     apiKey,
@@ -309,6 +317,24 @@ export function createServer(config: ServerConfig): FastifyInstance {
         removeAdditional: false,
       },
     },
+  });
+
+  // CORS: only allow the production dashboard and local dev
+  await server.register(cors, {
+    origin: [
+      "https://www.reflectmemory.com",
+      "https://reflectmemory.com",
+      ...(process.env.NODE_ENV !== "production" ? ["http://localhost:3000"] : []),
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Dashboard-Token"],
+    credentials: true,
+  });
+
+  // Global rate limit: 100 req/min per IP
+  await server.register(rateLimit, {
+    max: 100,
+    timeWindow: "1 minute",
   });
 
   server.decorateRequest("userId", "");
@@ -353,7 +379,10 @@ export function createServer(config: ServerConfig): FastifyInstance {
       }
       try {
         const key = new TextEncoder().encode(dashboardJwtSecret);
-        const { payload } = await jwtVerify(dashboardToken, key);
+        const { payload } = await jwtVerify(dashboardToken, key, {
+          audience: "reflect-memory",
+          issuer: "reflect-dashboard",
+        });
         const email = payload.email;
         if (typeof email !== "string" || !email) {
           return reply.code(401).send({ error: "Invalid dashboard token" });
@@ -441,7 +470,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
   // and investor/acquisition storytelling.
   // ===========================================================================
 
-  server.get("/admin/check", async (request, reply) => {
+  server.get("/admin/check", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
     if (request.userId !== userId) {
       reply.code(403);
       return { error: "Admin access restricted to owner" };
@@ -449,7 +478,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
     return { owner: true };
   });
 
-  server.get("/admin/metrics", async (request, reply) => {
+  server.get("/admin/metrics", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
     if (request.userId !== userId) {
       reply.code(403);
       return { error: "Admin access restricted to owner" };
@@ -849,6 +878,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
       schema: {
         body: queryBodySchema,
       },
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       const { query, memory_filter, limit } = request.body as {
@@ -877,11 +907,9 @@ export function createServer(config: ServerConfig): FastifyInstance {
       try {
         response = await callModel(modelGateway, promptResult.prompt);
       } catch (error) {
+        console.error("[query] Model call failed:", error);
         reply.code(502);
-        return {
-          error: "Model API call failed",
-          detail: error instanceof Error ? error.message : "Unknown error",
-        };
+        return { error: "Model API call failed" };
       }
 
       // Agents get a slim receipt — no full prompt or memory objects echoed back.
@@ -953,17 +981,18 @@ export function createServer(config: ServerConfig): FastifyInstance {
     required: ["model", "messages"],
     additionalProperties: false,
     properties: {
-      model: { type: "string" as const, minLength: 1 },
+      model: { type: "string" as const, minLength: 1, maxLength: 50 },
       messages: {
         type: "array" as const,
         minItems: 1,
+        maxItems: 100,
         items: {
           type: "object" as const,
           required: ["role", "content"],
           additionalProperties: false,
           properties: {
             role: { type: "string" as const, enum: ["user", "assistant"] },
-            content: { type: "string" as const },
+            content: { type: "string" as const, maxLength: 50_000 },
           },
         },
       },
@@ -974,6 +1003,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
     "/chat",
     {
       schema: { body: chatBodySchema },
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       if (request.role !== "user") {
@@ -990,11 +1020,9 @@ export function createServer(config: ServerConfig): FastifyInstance {
         const result = await chat(model, messages, db, request.userId, chatProviders);
         return result;
       } catch (error) {
+        console.error("[chat] Chat failed:", error);
         reply.code(502);
-        return {
-          error: "Chat failed",
-          detail: error instanceof Error ? error.message : "Unknown error",
-        };
+        return { error: "Chat failed" };
       }
     },
   );
