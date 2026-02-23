@@ -434,6 +434,111 @@ export function createServer(config: ServerConfig): FastifyInstance {
   });
 
   // ===========================================================================
+  // GET /admin/metrics — Owner-only usage stats
+  // ===========================================================================
+  // Dashboard auth or API key. Only the owner (userId) can access.
+  // Returns user counts, memory counts, and growth metrics for alpha tracking
+  // and investor/acquisition storytelling.
+  // ===========================================================================
+
+  server.get("/admin/check", async (request, reply) => {
+    if (request.userId !== userId) {
+      reply.code(403);
+      return { error: "Admin access restricted to owner" };
+    }
+    return { owner: true };
+  });
+
+  server.get("/admin/metrics", async (request, reply) => {
+    if (request.userId !== userId) {
+      reply.code(403);
+      return { error: "Admin access restricted to owner" };
+    }
+
+    const now = new Date().toISOString();
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const totalUsers = (
+      db.prepare(`SELECT count(*) as n FROM users`).get() as { n: number }
+    ).n;
+
+    const newUsers7d = (
+      db
+        .prepare(`SELECT count(*) as n FROM users WHERE created_at >= ?`)
+        .get(sevenDaysAgo) as { n: number }
+    ).n;
+
+    const newUsers30d = (
+      db
+        .prepare(`SELECT count(*) as n FROM users WHERE created_at >= ?`)
+        .get(thirtyDaysAgo) as { n: number }
+    ).n;
+
+    const totalMemories = (
+      db
+        .prepare(
+          `SELECT count(*) as n FROM memories WHERE deleted_at IS NULL`,
+        )
+        .get() as { n: number }
+    ).n;
+
+    const newMemories7d = (
+      db
+        .prepare(
+          `SELECT count(*) as n FROM memories WHERE deleted_at IS NULL AND created_at >= ?`,
+        )
+        .get(sevenDaysAgo) as { n: number }
+    ).n;
+
+    const newMemories30d = (
+      db
+        .prepare(
+          `SELECT count(*) as n FROM memories WHERE deleted_at IS NULL AND created_at >= ?`,
+        )
+        .get(thirtyDaysAgo) as { n: number }
+    ).n;
+
+    const memoriesByOrigin = db
+      .prepare(
+        `SELECT origin, count(*) as n FROM memories WHERE deleted_at IS NULL GROUP BY origin`,
+      )
+      .all() as { origin: string; n: number }[];
+
+    const usersWithMemories = (
+      db
+        .prepare(
+          `SELECT count(DISTINCT user_id) as n FROM memories WHERE deleted_at IS NULL`,
+        )
+        .get() as { n: number }
+    ).n;
+
+    const avgMemoriesPerUser =
+      usersWithMemories > 0
+        ? Math.round((totalMemories / usersWithMemories) * 10) / 10
+        : 0;
+
+    return {
+      users: {
+        total: totalUsers,
+        new_7d: newUsers7d,
+        new_30d: newUsers30d,
+        with_memories: usersWithMemories,
+      },
+      memories: {
+        total: totalMemories,
+        new_7d: newMemories7d,
+        new_30d: newMemories30d,
+        by_origin: Object.fromEntries(
+          memoriesByOrigin.map((r) => [r.origin, r.n]),
+        ),
+        avg_per_user: avgMemoriesPerUser,
+      },
+      generated_at: now,
+    };
+  });
+
+  // ===========================================================================
   // POST /memories — Create a memory (user path)
   // ===========================================================================
   // allowed_vendors is optional. Defaults to ["*"] server-side.
