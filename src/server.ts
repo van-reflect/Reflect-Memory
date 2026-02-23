@@ -46,6 +46,7 @@ declare module "fastify" {
     userId: string;
     role: "user" | "agent";
     vendor: string | null;
+    authMethod: "dashboard" | "api_key" | "agent_key";
   }
 }
 
@@ -360,6 +361,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
         request.userId = findOrCreateUserByEmail(db, email);
         request.role = "user";
         request.vendor = null;
+        request.authMethod = "dashboard";
         return;
       } catch {
         return reply.code(401).send({ error: "Invalid or expired dashboard token" });
@@ -371,6 +373,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
       request.userId = userId;
       request.role = "user";
       request.vendor = null;
+      request.authMethod = "api_key";
       return;
     }
 
@@ -380,6 +383,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
         request.userId = userId;
         request.role = "agent";
         request.vendor = vendor;
+        request.authMethod = "agent_key";
 
         // Enforce agent route restrictions.
         const path = request.url.split("?")[0];
@@ -463,7 +467,7 @@ export function createServer(config: ServerConfig): FastifyInstance {
         title: body.title,
         content: body.content,
         tags: body.tags,
-        origin: "user",
+        origin: request.authMethod === "dashboard" ? "user" : "api",
         allowed_vendors: allowedVendors,
       };
 
