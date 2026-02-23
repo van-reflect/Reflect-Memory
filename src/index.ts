@@ -209,6 +209,44 @@ if (existingUser) {
 }
 
 // =============================================================================
+// Owner email binding
+// =============================================================================
+// RM_OWNER_EMAIL ensures the primary (seeded) user is linked to the correct
+// email address. Handles email changes: if the seeded user has a different
+// email, it gets updated. Any orphaned user row for the new email (created
+// by a dashboard login before this migration ran) is cleaned up — its
+// memories (if any) are reassigned to the primary user, then it's deleted.
+// =============================================================================
+
+const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
+
+if (ownerEmail) {
+  const primaryUser = db
+    .prepare(`SELECT id, email FROM users WHERE id = ?`)
+    .get(userId) as { id: string; email: string | null };
+
+  if (primaryUser.email !== ownerEmail) {
+    // Check for an orphaned user row that was created under the new email.
+    const orphan = db
+      .prepare(`SELECT id FROM users WHERE email = ? AND id != ?`)
+      .get(ownerEmail, userId) as { id: string } | undefined;
+
+    if (orphan) {
+      db.prepare(`UPDATE memories SET user_id = ? WHERE user_id = ?`).run(
+        userId,
+        orphan.id,
+      );
+      db.prepare(`DELETE FROM users WHERE id = ?`).run(orphan.id);
+    }
+
+    db.prepare(`UPDATE users SET email = ? WHERE id = ?`).run(
+      ownerEmail,
+      userId,
+    );
+  }
+}
+
+// =============================================================================
 // Server startup
 // =============================================================================
 
