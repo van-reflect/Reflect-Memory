@@ -187,62 +187,69 @@ if (tableExists.count === 0) {
 }
 
 // =============================================================================
-// User seeding
+// Owner resolution
 // =============================================================================
-// Single-user MVP: ensure exactly one user exists. If the table is empty,
-// create one. If a user already exists, use that user's ID.
-// This runs once at startup. No user creation endpoint exists.
-// =============================================================================
-
-const existingUser = db
-  .prepare(`SELECT id FROM users LIMIT 1`)
-  .get() as { id: string } | undefined;
-
-let userId: string;
-
-if (existingUser) {
-  userId = existingUser.id;
-} else {
-  userId = randomUUID();
-  const now = new Date().toISOString();
-  db.prepare(`INSERT INTO users (id, created_at) VALUES (?, ?)`).run(userId, now);
-}
-
-// =============================================================================
-// Owner email binding
-// =============================================================================
-// RM_OWNER_EMAIL ensures the primary (seeded) user is linked to the correct
-// email address. Handles email changes: if the seeded user has a different
-// email, it gets updated. Any orphaned user row for the new email (created
-// by a dashboard login before this migration ran) is cleaned up — its
-// memories (if any) are reassigned to the primary user, then it's deleted.
+// RM_OWNER_EMAIL is the single source of truth for who the primary user is.
+// On startup we guarantee exactly one user row with that email, and that row
+// owns all memories that were created via the API key or agent keys.
+//
+// This handles every edge case:
+//   - Fresh database (no users) → create the owner
+//   - Owner row exists with correct email → no-op
+//   - Owner email was on a different row (claimed by wrong sign-in) → reclaim
+//   - Stale NULL-email rows from old seeded users → absorb their memories
+//   - Multiple orphan rows → consolidate everything onto the owner
 // =============================================================================
 
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 
+let userId: string;
+
 if (ownerEmail) {
-  const primaryUser = db
-    .prepare(`SELECT id, email FROM users WHERE id = ?`)
-    .get(userId) as { id: string; email: string | null };
+  // Step 1: Find or create the canonical owner row.
+  let ownerRow = db
+    .prepare(`SELECT id FROM users WHERE email = ?`)
+    .get(ownerEmail) as { id: string } | undefined;
 
-  if (primaryUser.email !== ownerEmail) {
-    // Check for an orphaned user row that was created under the new email.
-    const orphan = db
-      .prepare(`SELECT id FROM users WHERE email = ? AND id != ?`)
-      .get(ownerEmail, userId) as { id: string } | undefined;
-
-    if (orphan) {
-      db.prepare(`UPDATE memories SET user_id = ? WHERE user_id = ?`).run(
-        userId,
-        orphan.id,
-      );
-      db.prepare(`DELETE FROM users WHERE id = ?`).run(orphan.id);
-    }
-
-    db.prepare(`UPDATE users SET email = ? WHERE id = ?`).run(
+  if (!ownerRow) {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(
+      id,
       ownerEmail,
-      userId,
+      now,
     );
+    ownerRow = { id };
+  }
+
+  userId = ownerRow.id;
+
+  // Step 2: Absorb memories from every other user into the owner, then delete them.
+  // This reclaims memories from NULL-email seeded users and from users that
+  // incorrectly inherited data via the old claim bug.
+  const others = db
+    .prepare(`SELECT id FROM users WHERE id != ?`)
+    .all(userId) as { id: string }[];
+
+  for (const other of others) {
+    db.prepare(`UPDATE memories SET user_id = ? WHERE user_id = ?`).run(
+      userId,
+      other.id,
+    );
+    db.prepare(`DELETE FROM users WHERE id = ?`).run(other.id);
+  }
+} else {
+  // No owner email configured — legacy single-user mode.
+  const existingUser = db
+    .prepare(`SELECT id FROM users LIMIT 1`)
+    .get() as { id: string } | undefined;
+
+  if (existingUser) {
+    userId = existingUser.id;
+  } else {
+    userId = randomUUID();
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO users (id, created_at) VALUES (?, ?)`).run(userId, now);
   }
 }
 

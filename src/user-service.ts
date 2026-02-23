@@ -1,9 +1,7 @@
 // Reflect Memory — User Service
 // Find or create users by email. Used for dashboard multi-tenant auth.
-//
-// Handles the single-user → multi-user transition: the original seeded user
-// has no email. The first dashboard sign-in "claims" that user by setting
-// their email, preserving all existing memories.
+// New sign-ins always get a fresh, empty user. Owner binding is handled
+// exclusively by RM_OWNER_EMAIL at startup in index.ts.
 
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -20,20 +18,6 @@ export function findOrCreateUserByEmail(
     .get(normalized) as { id: string } | undefined;
 
   if (existing) return existing.id;
-
-  // Claim the original seeded user if it has no email yet.
-  // This preserves all memories created via the API key or agent keys.
-  const unclaimed = db
-    .prepare(`SELECT id FROM users WHERE email IS NULL LIMIT 1`)
-    .get() as { id: string } | undefined;
-
-  if (unclaimed) {
-    db.prepare(`UPDATE users SET email = ? WHERE id = ?`).run(
-      normalized,
-      unclaimed.id,
-    );
-    return unclaimed.id;
-  }
 
   const id = randomUUID();
   const now = new Date().toISOString();
