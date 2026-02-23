@@ -181,7 +181,8 @@ if (tableExists.count === 0) {
     .get() as { count: number };
 
   if (hasUserEmail.count === 0) {
-    db.exec(`ALTER TABLE users ADD COLUMN email TEXT UNIQUE`);
+    db.exec(`ALTER TABLE users ADD COLUMN email TEXT`);
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
   }
 }
 
