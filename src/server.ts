@@ -679,6 +679,107 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
+  // GET /agent/memories/:id — Full-body retrieval by ID for agents
+  // ===========================================================================
+  // Deterministic, surgical access to a single memory. Vendor-filtered:
+  // agents only see memories where allowed_vendors contains "*" or their vendor.
+  // Returns 404 if the memory doesn't exist OR the agent can't see it (no leaking).
+  // ===========================================================================
+
+  server.get(
+    "/agent/memories/:id",
+    {
+      schema: {
+        params: memoryIdParamSchema,
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const memory = readMemoryById(db, request.userId, id);
+      if (!memory || memory.deleted_at) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+
+      if (request.vendor) {
+        const allowed = memory.allowed_vendors.includes("*") || memory.allowed_vendors.includes(request.vendor);
+        if (!allowed) {
+          reply.code(404);
+          return { error: "Memory not found" };
+        }
+      }
+
+      return memory;
+    },
+  );
+
+  // ===========================================================================
+  // POST /agent/memories/by-tag — Full-body retrieval by tags for agents
+  // ===========================================================================
+  // Returns complete memory entries (with content) filtered by tags.
+  // Vendor-filtered. Supports pagination. Use for council retrieval,
+  // audit, and any case where agents need full memory bodies by topic.
+  // ===========================================================================
+
+  server.post(
+    "/agent/memories/by-tag",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["tags"],
+          additionalProperties: false,
+          properties: {
+            tags: {
+              type: "array" as const,
+              items: { type: "string" as const, minLength: 1, maxLength: 100 },
+              minItems: 1,
+              maxItems: 50,
+            },
+            limit: { type: "integer" as const, minimum: 1, maximum: 100 },
+            offset: { type: "integer" as const, minimum: 0 },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const { tags, limit, offset } = request.body as {
+        tags: string[];
+        limit?: number;
+        offset?: number;
+      };
+
+      const vendorFilter = request.role === "agent" ? request.vendor : null;
+      const pagination: PaginationOptions = {
+        limit: limit ?? 20,
+        offset: offset ?? 0,
+      };
+
+      const memories = listMemories(
+        db,
+        request.userId,
+        { by: "tags", tags },
+        vendorFilter,
+        pagination,
+      );
+      const total = countMemories(
+        db,
+        request.userId,
+        { by: "tags", tags },
+        vendorFilter,
+      );
+
+      return {
+        memories,
+        total,
+        limit: pagination.limit,
+        offset: pagination.offset,
+        has_more: (pagination.offset ?? 0) + memories.length < total,
+      };
+    },
+  );
+
+  // ===========================================================================
   // POST /agent/memories/browse — Lightweight memory listing for agents
   // ===========================================================================
   // Returns memory summaries (title, tags, origin, timestamps) without content.
