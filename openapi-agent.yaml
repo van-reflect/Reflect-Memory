@@ -73,8 +73,17 @@ paths:
       operationId: getLatestMemory
       summary: Get the single most recent memory
       description: >
-        Returns the one most recent memory. No limit or filter parameters.
-        Use this when the plugin cannot express "most recent" via the query endpoint.
+        Returns the one most recent memory. Optional ?tag= param filters to
+        that tag (e.g. ?tag=cto_response for latest CTO response). Use ?tag=
+        when you need topic-specific "latest" so your own writes don't overwrite
+        the result you need.
+      parameters:
+        - name: tag
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Filter to most recent memory with this tag. E.g. tag=cto_response for latest CTO response."
       responses:
         "200":
           description: The most recent memory

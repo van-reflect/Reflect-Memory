@@ -335,6 +335,15 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   await server.register(rateLimit, {
     max: 100,
     timeWindow: "1 minute",
+    onExceeded: (request) => {
+      console.log(`[security] ${JSON.stringify({
+        event: "rate_limit_exceeded",
+        ip: request.ip,
+        method: request.method,
+        path: request.url.split("?")[0],
+        time: new Date().toISOString(),
+      })}`);
+    },
   });
 
   server.decorateRequest("userId", "");
@@ -349,12 +358,25 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // Enforces route restrictions: agents can only hit /agent/*, /query, /whoami, /health.
   // ===========================================================================
 
+  function logSecurity(event: string, request: { ip: string; url: string; method: string }, extra?: Record<string, unknown>) {
+    const entry = {
+      event,
+      ip: request.ip,
+      method: request.method,
+      path: request.url.split("?")[0],
+      time: new Date().toISOString(),
+      ...extra,
+    };
+    console.log(`[security] ${JSON.stringify(entry)}`);
+  }
+
   server.addHook("onRequest", async (request, reply) => {
     if (request.url === "/health") return;
 
     const header = request.headers.authorization;
 
     if (!header || !header.startsWith("Bearer ")) {
+      logSecurity("auth_missing", request);
       return reply.code(401).send({
         error: "Missing or malformed Authorization header. Expected: Bearer <api_key>",
       });
@@ -362,6 +384,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
     const token = header.slice("Bearer ".length);
     if (token.length === 0) {
+      logSecurity("auth_empty", request);
       return reply.code(401).send({ error: "Empty API key" });
     }
 
@@ -373,6 +396,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     ) {
       const dashboardToken = request.headers["x-dashboard-token"];
       if (typeof dashboardToken !== "string" || !dashboardToken) {
+        logSecurity("dashboard_token_missing", request);
         return reply.code(401).send({
           error: "Dashboard auth requires X-Dashboard-Token header",
         });
@@ -385,6 +409,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         });
         const email = payload.email;
         if (typeof email !== "string" || !email) {
+          logSecurity("dashboard_token_invalid", request);
           return reply.code(401).send({ error: "Invalid dashboard token" });
         }
         request.userId = findOrCreateUserByEmail(db, email);
@@ -393,6 +418,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         request.authMethod = "dashboard";
         return;
       } catch {
+        logSecurity("dashboard_token_expired", request);
         return reply.code(401).send({ error: "Invalid or expired dashboard token" });
       }
     }
@@ -422,6 +448,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           path === "/query" ||
           path.startsWith("/agent/");
         if (!allowed) {
+          logSecurity("agent_route_forbidden", request, { vendor, path });
           return reply.code(403).send({
             error: "Agent keys cannot access this endpoint",
           });
@@ -431,6 +458,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
     }
 
+    logSecurity("auth_invalid_key", request);
     return reply.code(401).send({ error: "Invalid API key" });
   });
 
@@ -658,22 +686,27 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // GET /agent/memories/latest — Single most recent memory for agents
   // ===========================================================================
   // Zero-config "most recent" retrieval. No limit parameter, no filter schema.
-  // Unblocks JIT plugins that cannot express ordering + limit cleanly.
+  // Optional ?tag= query param: returns most recent memory with that tag.
+  // Use ?tag=cto_response to always get latest CTO response, even if other
+  // memories were written after. Prevents "latest" from being overwritten by
+  // agent's own writes.
   // ===========================================================================
 
   server.get("/agent/memories/latest", async (request, reply) => {
     const vendorFilter = request.vendor;
+    const tag = (request.query as { tag?: string }).tag?.trim();
+    const filter = tag ? { by: "tags" as const, tags: [tag] } : { by: "all" as const };
     const memories = listMemories(
       db,
       request.userId,
-      { by: "all" },
+      filter,
       vendorFilter,
       { limit: 1 },
     );
     const memory = memories[0] ?? null;
     if (!memory) {
       reply.code(404);
-      return { error: "No memories found" };
+      return { error: tag ? `No memories found with tag "${tag}"` : "No memories found" };
     }
     return memory;
   });
