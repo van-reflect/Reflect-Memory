@@ -3,9 +3,12 @@ info:
   title: Reflect Memory Agent API
   version: 2.0.0
   description: >
-    Cross-agent memory system. Write, browse, and query structured memories.
-    Use /agent/memories/browse to discover available memories (lightweight, no content),
-    then /query with specific filters to get AI responses grounded in relevant context.
+    Cross-agent memory system. Write, browse, retrieve, and query structured memories.
+    Use /agent/memories/browse to discover available memories (lightweight, no content).
+    Use /agent/memories/{id} for surgical full-body retrieval by ID.
+    Use /agent/memories/by-tag for full-body retrieval by topic.
+    Use /agent/memories/latest for the most recent memory.
+    Use /query with specific filters to get AI responses grounded in relevant context.
 servers:
   - url: https://api.reflectmemory.com
 paths:
@@ -90,6 +93,100 @@ paths:
                   updated_at: { type: string }
         "404":
           description: No memories found
+  /agent/memories/{id}:
+    get:
+      operationId: getMemoryById
+      summary: Get a single memory by ID (full body)
+      description: >
+        Deterministic full-body retrieval of a specific memory by its UUID.
+        Use this for surgical access: council reviews, audit, governance,
+        or when you already know the memory ID from browse results.
+        Returns 404 if the memory doesn't exist or you don't have access.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The memory UUID
+      responses:
+        "200":
+          description: The full memory entry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  title: { type: string }
+                  content: { type: string }
+                  tags: { type: array, items: { type: string } }
+                  origin: { type: string }
+                  allowed_vendors: { type: array, items: { type: string } }
+                  created_at: { type: string }
+                  updated_at: { type: string }
+        "404":
+          description: Memory not found or not accessible
+  /agent/memories/by-tag:
+    post:
+      operationId: getMemoriesByTag
+      summary: Get full-body memories filtered by tags
+      description: >
+        Returns complete memory entries (with content) matching any of the given tags.
+        Use this for council retrieval, topic-based audits, or any case where you need
+        full memory bodies by topic. Supports pagination.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tags
+              properties:
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: "Tags to filter by. Returns memories matching ANY of these tags."
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  description: "Max memories to return. Default: 20."
+                offset:
+                  type: integer
+                  minimum: 0
+                  description: "Skip this many results (for pagination). Default: 0."
+      responses:
+        "200":
+          description: Full-body memories matching the tags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        content: { type: string }
+                        tags: { type: array, items: { type: string } }
+                        origin: { type: string }
+                        allowed_vendors: { type: array, items: { type: string } }
+                        created_at: { type: string }
+                        updated_at: { type: string }
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                  has_more:
+                    type: boolean
   /agent/memories/browse:
     post:
       operationId: browseMemories
