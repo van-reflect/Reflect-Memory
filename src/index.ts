@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { createServer, type ServerConfig } from "./server.js";
 import type { ModelGatewayConfig } from "./model-gateway.js";
 import type { ProviderConfig } from "./chat-gateway.js";
+import { isBackupConfigured, runBackup } from "./backup.js";
 
 // =============================================================================
 // Environment loading
@@ -310,7 +311,27 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   console.log(`Model: ${modelGateway.provider}/${modelGateway.model}`);
   console.log(`Agent vendors: ${validVendors.length > 0 ? validVendors.join(", ") : "(none configured)"}`);
   console.log(`Chat providers: ${chatProviderNames.length > 0 ? chatProviderNames.join(", ") : "(none configured)"}`);
+  if (isBackupConfigured()) {
+    console.log("Backup: configured (daily at 06:00 UTC)");
+    scheduleDailyBackup();
+  }
 });
+
+// Daily backup at 06:00 UTC. Runs in-process; has access to the same volume as the API.
+function scheduleDailyBackup() {
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  function runAt6UTC() {
+    const now = new Date();
+    const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 6, 0, 0));
+    if (now >= next) next.setTime(next.getTime() + MS_PER_DAY);
+    return next.getTime() - now.getTime();
+  }
+  function doBackup() {
+    runBackup().catch((e) => console.error("[backup] Scheduled run failed:", e));
+    setTimeout(doBackup, MS_PER_DAY);
+  }
+  setTimeout(doBackup, runAt6UTC());
+}
 
 // =============================================================================
 // Graceful shutdown
