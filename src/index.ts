@@ -198,6 +198,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS _migrations (
   applied_at TEXT NOT NULL
 )`);
 
+// Migration: index for deterministic recency ordering (fixes "latest" returning wrong memory)
+const idxMigrationName = "002_idx_memories_user_created";
+const idxAlreadyRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(idxMigrationName);
+if (!idxAlreadyRan) {
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_user_created ON memories(user_id, created_at DESC)`);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    idxMigrationName,
+    new Date().toISOString(),
+  );
+}
+
 // =============================================================================
 // Owner resolution
 // =============================================================================

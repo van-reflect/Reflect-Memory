@@ -187,7 +187,7 @@ export function listMemories(
           `SELECT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m
            WHERE m.user_id = ? ${vendorClause} ${deletedClause}
-           ORDER BY m.created_at DESC${pagSql}`,
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
         .all(userId, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
@@ -213,7 +213,7 @@ export function listMemories(
           `SELECT DISTINCT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m, json_each(m.tags) t
            WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
-           ORDER BY m.created_at DESC${pagSql}`,
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
         .all(userId, ...filter.tags, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
@@ -227,7 +227,7 @@ export function listMemories(
           `SELECT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m
            WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
-           ORDER BY m.created_at DESC${pagSql}`,
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
         .all(userId, ...filter.ids, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
@@ -241,7 +241,7 @@ export function listMemories(
           `SELECT m.${COLUMNS.split(", ").join(", m.")}
            FROM memories m
            WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
-           ORDER BY m.created_at DESC${pagSql}`,
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
         .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
@@ -386,7 +386,7 @@ export function listMemorySummaries(
           `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
            FROM memories m
            WHERE m.user_id = ? ${vendorClause} ${deletedClause}
-           ORDER BY m.created_at DESC${pagSql}`,
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
         .all(userId, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
@@ -400,7 +400,7 @@ export function listMemorySummaries(
           `SELECT DISTINCT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
            FROM memories m, json_each(m.tags) t
            WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
-           ORDER BY m.created_at DESC${pagSql}`,
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
         .all(userId, ...filter.tags, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
@@ -414,7 +414,7 @@ export function listMemorySummaries(
           `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
            FROM memories m
            WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
-           ORDER BY m.created_at DESC${pagSql}`,
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
         .all(userId, ...filter.ids, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
@@ -428,7 +428,7 @@ export function listMemorySummaries(
           `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
            FROM memories m
            WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
-           ORDER BY m.created_at DESC${pagSql}`,
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
         .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
