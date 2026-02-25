@@ -7,8 +7,9 @@ info:
     Use /agent/memories/browse to discover available memories (lightweight, no content).
     Use /agent/memories/{id} for surgical full-body retrieval by ID.
     Use /agent/memories/by-tag for full-body retrieval by topic.
-    Use /agent/memories/latest for the most recent memory.
+    Use /agent/memories/latest for the single most recent memory (strict chronological by created_at).
     Use /query with specific filters to get AI responses grounded in relevant context.
+    IMPORTANT: For "most recent memory chronologically" always use getLatestMemory — never /query.
 servers:
   - url: https://api.reflectmemory.com
 paths:
@@ -71,12 +72,14 @@ paths:
   /agent/memories/latest:
     get:
       operationId: getLatestMemory
-      summary: Get the single most recent memory
+      summary: Get the single most recent memory (strict chronological)
       description: >
-        Returns the one most recent memory. Optional ?tag= param filters to
-        that tag (e.g. ?tag=cto_response for latest CTO response). Use ?tag=
-        when you need topic-specific "latest" so your own writes don't overwrite
-        the result you need.
+        Returns the one most recently created memory, ordered by created_at DESC.
+        Deterministic — no relevance scoring. Use this when the user asks for
+        "the most recent memory" or "latest regardless of tag".
+        Do NOT use POST /query for recency-based retrieval — /query is for AI
+        summarization of selected memories, not for returning a specific memory by recency.
+        Optional ?tag= filters to that tag only (e.g. ?tag=cto_response).
       parameters:
         - name: tag
           in: query
