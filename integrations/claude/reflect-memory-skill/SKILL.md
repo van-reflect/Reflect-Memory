@@ -1,6 +1,6 @@
 ---
 name: reflect-memory
-description: Read, write, browse, and search Reflect Memory - a cross-agent memory system. Use when the user asks about memories, wants to save something to memory, pull the latest memory, browse what exists, or search for specific information. Also activate when the user mentions "council", "Onyx", "memory", or "Reflect Memory".
+description: Read, write, browse, and search Reflect Memory - a cross-agent memory system. Activate when the user uses words like "pull", "retrieve", "get", "latest memory", "write", "push", "memory", "memories", "council", "Reflect Memory", or mentions getting/writing memories from or for specific agents like ChatGPT, Gemini, Perplexity, Grok, or Claude.
 ---
 
 # Reflect Memory
@@ -15,6 +15,36 @@ Authorization: Bearer {API_KEY}
 ```
 
 The user must provide their API key. If they haven't, ask them for their Reflect Memory API key before making any calls.
+
+## Understanding User Intent
+
+### Retrieval triggers
+Words like "pull", "retrieve", "get", "fetch", "read", "show", "latest memory", "what memories" signal the user wants to READ data.
+
+### Write triggers
+Words like "write", "push", "save", "store", "log", "record" signal the user wants to WRITE data.
+
+### Agent-specific requests
+When the user says "from ChatGPT", "from Gemini", "from Perplexity", "from Grok", or "from Claude", filter by that agent's origin tag. Examples:
+
+| User says | What to do |
+|-----------|-----------|
+| "Pull latest memory" | GET /agent/memories/latest (no filter, returns the single most recent memory) |
+| "Get the latest memory from ChatGPT" | GET /agent/memories/latest?tag=chatgpt OR POST /agent/memories/by-tag with tags matching chatgpt origin |
+| "Get the latest memory from Gemini" | POST /agent/memories/by-tag with tags ["gemini_coo"] |
+| "Pull council memories" | POST /agent/memories/by-tag with tags ["council"] |
+| "Write this memory for Grok" | POST /agent/memories with appropriate tags including "grok" |
+| "Push this to memory" | POST /agent/memories (general write, no agent-specific tag needed) |
+
+### Origin values
+Memories have an `origin` field set server-side that tells you which AI or method created them:
+- `"chatgpt"` - written by ChatGPT/Onyx (CPO)
+- `"claude"` - written by Claude (CTO)
+- `"api"` - written via direct API call (usually by the CEO)
+- `"user"` - written from the dashboard
+
+### Council
+"Council" is a project feature - a shared decision-making space where the AI executive team (ChatGPT as CPO, Claude as CTO, Gemini as COO, Grok as CMO, Perplexity as MIO) collaborates via memory. Council memories are tagged with `"council"`. When the user mentions council, filter by the `"council"` tag.
 
 ## API Endpoints
 
@@ -78,28 +108,32 @@ Content-Type: application/json
 }
 ```
 
-## When to use each endpoint
+## Quick Reference
 
-| User says | Endpoint to use |
-|-----------|----------------|
-| "latest memory" or "pull latest" | GET /agent/memories/latest |
-| "pull council memories" | POST /agent/memories/by-tag with tags ["council"] |
+| User says | Endpoint |
+|-----------|----------|
+| "pull latest memory" | GET /agent/memories/latest |
+| "get latest memory from ChatGPT" | GET /agent/memories/latest?tag=chatgpt |
+| "retrieve council memories" | POST /agent/memories/by-tag with ["council"] |
+| "get memories from Gemini" | POST /agent/memories/by-tag with ["gemini_coo"] |
 | "what memories do I have?" | POST /agent/memories/browse |
-| "search for X" | POST /agent/memories/browse with search filter |
-| "save this to memory" | POST /agent/memories |
+| "search for authentication" | POST /agent/memories/browse with search filter |
+| "write this to memory" | POST /agent/memories |
+| "push this memory for Grok" | POST /agent/memories with tags including "grok" |
+| "save this for Perplexity" | POST /agent/memories with tags including "perplexity" |
 | "get memory [UUID]" | GET /agent/memories/{id} |
 
-## Writing memories
+## Writing Memories
 
 When writing, follow this format:
 - **Title**: Short descriptor. "Topic - Summary"
 - **Content**: Structured text with clear sections.
-- **Tags**: Relevant categorization. Always include "council" for council discussions.
-- **allowed_vendors**: Use `["*"]` to make visible to all AI agents.
+- **Tags**: Relevant categorization. Include agent-specific tags when the user specifies a recipient. Include "council" for council discussions.
+- **allowed_vendors**: Use `["*"]` to make visible to all AI agents unless the user specifies otherwise.
 
-## Important
+## Displaying Results
 
-- Always show the memory title, content, tags, and date when displaying results.
-- For browse results, show as a numbered list with title, tags, and date.
+- Always show the memory title, content, tags, origin, and date when displaying results.
+- For browse results, show as a numbered list with title, tags, origin, and date.
 - When writing, confirm success and show the created memory's ID.
-- The origin field tells you which AI wrote the memory (e.g., "chatgpt", "api", "claude").
+- The `origin` field tells you which AI wrote the memory (e.g., "chatgpt", "api", "claude").
