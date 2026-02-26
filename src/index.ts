@@ -11,6 +11,7 @@ import { createServer, type ServerConfig } from "./server.js";
 import type { ModelGatewayConfig } from "./model-gateway.js";
 import type { ProviderConfig } from "./chat-gateway.js";
 import { isBackupConfigured, runBackup } from "./backup.js";
+import { startMcpServer } from "./mcp-server.js";
 
 // =============================================================================
 // Environment loading
@@ -325,6 +326,13 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   if (isBackupConfigured()) {
     console.log("Backup: configured (daily at 06:00 UTC)");
     scheduleDailyBackup();
+  }
+
+  // Start MCP server for Claude.ai Connectors if a Claude agent key is configured
+  const claudeAgentKey = agentKeys["claude"];
+  if (claudeAgentKey) {
+    const mcpPort = parseInt(optionalEnv("RM_MCP_PORT", "3001"), 10);
+    startMcpServer({ db, userId, agentKey: claudeAgentKey, vendor: "claude" }, mcpPort);
   }
 });
 
