@@ -41,6 +41,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     "read_memories",
     "Get the most recent memories. Returns full content. Use limit to control how many.",
     { limit: z.number().min(1).max(50).default(10).describe("Max memories to return (1-50)") },
+    { title: "Read Memories", readOnlyHint: true },
     async ({ limit }) => {
       const memories = listMemories(db, userId, { by: "all" }, vendor, { limit });
       return {
@@ -53,6 +54,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     "get_memory_by_id",
     "Retrieve a single memory by its UUID. Returns full content.",
     { id: z.string().describe("The memory UUID") },
+    { title: "Get Memory by ID", readOnlyHint: true },
     async ({ id }) => {
       const memory = readMemoryById(db, userId, id);
       if (!memory || memory.deleted_at) {
@@ -70,6 +72,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     "get_latest_memory",
     "Get the single most recent memory, ordered by created_at. Optional tag filter.",
     { tag: z.string().optional().describe("Optional tag to filter by") },
+    { title: "Get Latest Memory", readOnlyHint: true },
     async ({ tag }) => {
       const filter = tag ? { by: "tags" as const, tags: [tag] } : { by: "all" as const };
       const memories = listMemories(db, userId, filter, vendor, { limit: 1 });
@@ -87,6 +90,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       limit: z.number().min(1).max(200).default(50).describe("Max results"),
       offset: z.number().min(0).default(0).describe("Skip this many results"),
     },
+    { title: "Browse Memories", readOnlyHint: true },
     async ({ limit, offset }) => {
       const summaries = listMemorySummaries(db, userId, { by: "all" }, vendor, { limit, offset });
       const total = countMemories(db, userId, { by: "all" }, vendor);
@@ -106,6 +110,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       term: z.string().min(1).describe("Search term"),
       limit: z.number().min(1).max(50).default(10).describe("Max results"),
     },
+    { title: "Search Memories", readOnlyHint: true },
     async ({ term, limit }) => {
       const memories = listMemories(db, userId, { by: "search", term }, vendor, { limit });
       return { content: [{ type: "text", text: JSON.stringify(memories, null, 2) }] };
@@ -120,6 +125,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       limit: z.number().min(1).max(100).default(20).describe("Max results"),
       offset: z.number().min(0).default(0).describe("Skip this many"),
     },
+    { title: "Get Memories by Tag", readOnlyHint: true },
     async ({ tags, limit, offset }) => {
       const memories = listMemories(db, userId, { by: "tags", tags }, vendor, { limit, offset });
       const total = countMemories(db, userId, { by: "tags", tags }, vendor);
@@ -141,6 +147,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       tags: z.array(z.string()).default([]).describe("Tags for categorization"),
       allowed_vendors: z.array(z.string()).default(["*"]).describe("Which vendors can see this. Use ['*'] for all."),
     },
+    { title: "Create Memory", destructiveHint: true },
     async ({ title, content, tags, allowed_vendors }) => {
       const memory = createMemory(db, userId, {
         title,
