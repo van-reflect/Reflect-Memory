@@ -629,7 +629,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         title: body.title,
         content: body.content,
         tags: body.tags,
-        origin: request.authMethod === "dashboard" ? "user" : "api",
+        origin: request.authMethod === "dashboard" ? "dashboard" : "cursor",
         allowed_vendors: allowedVendors,
       };
 

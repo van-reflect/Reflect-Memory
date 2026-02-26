@@ -210,6 +210,18 @@ if (!idxAlreadyRan) {
   );
 }
 
+// Migration: relabel origin "api" to "cursor" (all API-key writes were from Cursor)
+const originMigrationName = "003_relabel_api_origin_to_cursor";
+const originAlreadyRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(originMigrationName);
+if (!originAlreadyRan) {
+  const updated = db.prepare(`UPDATE memories SET origin = 'cursor' WHERE origin = 'api'`).run();
+  console.log(`[migration] Relabeled ${updated.changes} memories from origin "api" to "cursor"`);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    originMigrationName,
+    new Date().toISOString(),
+  );
+}
+
 // =============================================================================
 // Owner resolution
 // =============================================================================

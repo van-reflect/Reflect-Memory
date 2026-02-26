@@ -19,6 +19,16 @@ Reflect Memory is a model-agnostic Memory API and infrastructure primitive. It p
 
 Current state: Alpha live. Gates closed (isolation verified, automated backups to Cloudflare R2). Focus shifting to UX, landing page, and cross-platform integrations.
 
+## Origin Labels
+Each memory has an origin showing which AI wrote it:
+- "chatgpt" = ChatGPT (CPO)
+- "claude" = Claude (CTO)
+- "cursor" = Cursor IDE (CTO's workspace)
+- "gemini" = Gemini (COO)
+- "grok" = Grok (CMO)
+- "perplexity" = Perplexity (MIO)
+- "dashboard" = Reflect Memory dashboard
+
 ## How Memory Works
 You do not have direct API access yet. When you need to read or write memories, ask the CEO to relay. Use this format:
 
