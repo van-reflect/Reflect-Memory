@@ -38,10 +38,14 @@ When the user says "from ChatGPT", "from Gemini", "from Perplexity", "from Grok"
 
 ### Origin values
 Memories have an `origin` field set server-side that tells you which AI or method created them:
-- `"chatgpt"` - written by ChatGPT/Onyx (CPO)
+- `"chatgpt"` - written by ChatGPT (CPO)
 - `"claude"` - written by Claude (CTO)
-- `"api"` - written via direct API call (usually by the CEO)
-- `"user"` - written from the dashboard
+- `"cursor"` - written via Cursor IDE (CTO's workspace)
+- `"gemini"` - written by Gemini (COO)
+- `"grok"` - written by Grok (CMO)
+- `"perplexity"` - written by Perplexity (MIO)
+- `"dashboard"` - written from the Reflect Memory dashboard
+- `"user"` - written from the dashboard (legacy)
 
 ### Council
 "Council" is a project feature - a shared decision-making space where the AI executive team (ChatGPT as CPO, Claude as CTO, Gemini as COO, Grok as CMO, Perplexity as MIO) collaborates via memory. Council memories are tagged with `"council"`. When the user mentions council, filter by the `"council"` tag.
