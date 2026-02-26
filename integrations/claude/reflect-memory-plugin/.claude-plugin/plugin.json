@@ -1,0 +1,13 @@
+{
+  "name": "reflect-memory",
+  "description": "Connect Claude to Reflect Memory — read, write, browse, and search your cross-agent memory system. Works with ChatGPT, Gemini, and any MCP-compatible host.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Reflect Memory",
+    "url": "https://reflectmemory.com"
+  },
+  "homepage": "https://reflectmemory.com",
+  "repository": "https://github.com/reflectmemory/reflect-memory-plugin",
+  "license": "MIT",
+  "keywords": ["memory", "ai-memory", "cross-agent", "mcp", "reflect-memory"]
+}

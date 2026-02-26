@@ -1,0 +1,261 @@
+// Reflect Memory — MCP Server
+// Remote Streamable HTTP MCP server for Claude.ai Connectors.
+// Exposes memory tools (read, write, browse, query) via the Model Context Protocol.
+// Runs as a standalone Express app on RM_MCP_PORT (default: 3001).
+// Auth: Bearer token in the Authorization header, validated against RM_AGENT_KEY_CLAUDE.
+
+import express from "express";
+import { randomUUID } from "node:crypto";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
+import type Database from "better-sqlite3";
+import {
+  listMemories,
+  listMemorySummaries,
+  createMemory,
+  readMemoryById,
+  countMemories,
+  type PaginationOptions,
+} from "./memory-service.js";
+
+interface McpServerConfig {
+  db: Database.Database;
+  userId: string;
+  agentKey: string;
+  vendor: string;
+}
+
+export function startMcpServer(config: McpServerConfig, port: number): void {
+  const { db, userId, agentKey, vendor } = config;
+
+  const mcp = new McpServer(
+    { name: "reflect-memory", version: "1.0.0" },
+    { capabilities: { logging: {}, tools: { listChanged: false } } },
+  );
+
+  // --- Tools ---
+
+  mcp.tool(
+    "read_memories",
+    "Get the most recent memories. Returns full content. Use limit to control how many.",
+    { limit: z.number().min(1).max(50).default(10).describe("Max memories to return (1-50)") },
+    async ({ limit }) => {
+      const memories = listMemories(db, userId, { by: "all" }, vendor, { limit });
+      return {
+        content: [{ type: "text", text: JSON.stringify(memories, null, 2) }],
+      };
+    },
+  );
+
+  mcp.tool(
+    "get_memory_by_id",
+    "Retrieve a single memory by its UUID. Returns full content.",
+    { id: z.string().describe("The memory UUID") },
+    async ({ id }) => {
+      const memory = readMemoryById(db, userId, id);
+      if (!memory || memory.deleted_at) {
+        return { content: [{ type: "text", text: "Memory not found" }], isError: true };
+      }
+      const allowed = memory.allowed_vendors.includes("*") || memory.allowed_vendors.includes(vendor);
+      if (!allowed) {
+        return { content: [{ type: "text", text: "Memory not found" }], isError: true };
+      }
+      return { content: [{ type: "text", text: JSON.stringify(memory, null, 2) }] };
+    },
+  );
+
+  mcp.tool(
+    "get_latest_memory",
+    "Get the single most recent memory, ordered by created_at. Optional tag filter.",
+    { tag: z.string().optional().describe("Optional tag to filter by") },
+    async ({ tag }) => {
+      const filter = tag ? { by: "tags" as const, tags: [tag] } : { by: "all" as const };
+      const memories = listMemories(db, userId, filter, vendor, { limit: 1 });
+      if (memories.length === 0) {
+        return { content: [{ type: "text", text: tag ? `No memories with tag "${tag}"` : "No memories found" }], isError: true };
+      }
+      return { content: [{ type: "text", text: JSON.stringify(memories[0], null, 2) }] };
+    },
+  );
+
+  mcp.tool(
+    "browse_memories",
+    "Browse memory summaries (title, tags, dates - no content). Use to discover what exists before reading specific ones.",
+    {
+      limit: z.number().min(1).max(200).default(50).describe("Max results"),
+      offset: z.number().min(0).default(0).describe("Skip this many results"),
+    },
+    async ({ limit, offset }) => {
+      const summaries = listMemorySummaries(db, userId, { by: "all" }, vendor, { limit, offset });
+      const total = countMemories(db, userId, { by: "all" }, vendor);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ memories: summaries, total, limit, offset, has_more: offset + summaries.length < total }, null, 2),
+        }],
+      };
+    },
+  );
+
+  mcp.tool(
+    "search_memories",
+    "Search memories by text in title or content. Returns full content.",
+    {
+      term: z.string().min(1).describe("Search term"),
+      limit: z.number().min(1).max(50).default(10).describe("Max results"),
+    },
+    async ({ term, limit }) => {
+      const memories = listMemories(db, userId, { by: "search", term }, vendor, { limit });
+      return { content: [{ type: "text", text: JSON.stringify(memories, null, 2) }] };
+    },
+  );
+
+  mcp.tool(
+    "get_memories_by_tag",
+    "Get full-body memories filtered by tags. Returns memories matching ANY of the given tags.",
+    {
+      tags: z.array(z.string()).min(1).describe("Tags to filter by"),
+      limit: z.number().min(1).max(100).default(20).describe("Max results"),
+      offset: z.number().min(0).default(0).describe("Skip this many"),
+    },
+    async ({ tags, limit, offset }) => {
+      const memories = listMemories(db, userId, { by: "tags", tags }, vendor, { limit, offset });
+      const total = countMemories(db, userId, { by: "tags", tags }, vendor);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ memories, total, limit, offset, has_more: offset + memories.length < total }, null, 2),
+        }],
+      };
+    },
+  );
+
+  mcp.tool(
+    "write_memory",
+    "Create a new memory entry. Returns the created memory with its ID.",
+    {
+      title: z.string().min(1).describe("Short title for the memory"),
+      content: z.string().min(1).describe("The memory content"),
+      tags: z.array(z.string()).default([]).describe("Tags for categorization"),
+      allowed_vendors: z.array(z.string()).default(["*"]).describe("Which vendors can see this. Use ['*'] for all."),
+    },
+    async ({ title, content, tags, allowed_vendors }) => {
+      const memory = createMemory(db, userId, {
+        title,
+        content,
+        tags,
+        origin: vendor,
+        allowed_vendors,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(memory, null, 2) }] };
+    },
+  );
+
+  // --- Express app with auth middleware ---
+
+  const app = express();
+  app.use(express.json());
+
+  function timingSafeEqual(a: string, b: string): boolean {
+    if (a.length !== b.length) return false;
+    const bufA = Buffer.from(a);
+    const bufB = Buffer.from(b);
+    let result = 0;
+    for (let i = 0; i < bufA.length; i++) {
+      result |= bufA[i]! ^ bufB[i]!;
+    }
+    return result === 0;
+  }
+
+  app.use("/mcp", (req, res, next) => {
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Missing Authorization header" });
+      return;
+    }
+    const token = auth.slice("Bearer ".length);
+    if (!timingSafeEqual(token, agentKey)) {
+      res.status(401).json({ error: "Invalid API key" });
+      return;
+    }
+    next();
+  });
+
+  // --- Session management ---
+
+  const transports: Record<string, StreamableHTTPServerTransport> = {};
+
+  app.post("/mcp", async (req, res) => {
+    try {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+      if (sessionId && transports[sessionId]) {
+        await transports[sessionId].handleRequest(req, res, req.body);
+        return;
+      }
+
+      if (!sessionId && isInitializeRequest(req.body)) {
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          enableJsonResponse: true,
+          onsessioninitialized: (sid) => {
+            transports[sid] = transport;
+          },
+        });
+
+        transport.onclose = () => {
+          const sid = transport.sessionId;
+          if (sid && transports[sid]) delete transports[sid];
+        };
+
+        await mcp.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Bad Request: No valid session ID" },
+        id: null,
+      });
+    } catch (error) {
+      console.error("[mcp] Error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
+  });
+
+  app.get("/mcp", async (req, res) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    if (!sessionId || !transports[sessionId]) {
+      res.status(400).send("Invalid or missing session ID");
+      return;
+    }
+    await transports[sessionId].handleRequest(req, res);
+  });
+
+  app.delete("/mcp", async (req, res) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    if (!sessionId || !transports[sessionId]) {
+      res.status(400).send("Invalid or missing session ID");
+      return;
+    }
+    await transports[sessionId].handleRequest(req, res);
+  });
+
+  app.get("/health", (_req, res) => {
+    res.json({ service: "reflect-memory-mcp", status: "ok" });
+  });
+
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`MCP server listening on port ${port} (vendor: ${vendor})`);
+    console.log(`Connector URL: https://api.reflectmemory.com/mcp`);
+  });
+}
