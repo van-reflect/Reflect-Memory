@@ -8,6 +8,9 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import proxy from "@fastify/http-proxy";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
 import { findOrCreateUserByEmail } from "./user-service.js";
@@ -383,7 +386,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   }
 
   server.addHook("onRequest", async (request, reply) => {
-    if (request.url === "/health") return;
+    if (request.url === "/health" || request.url === "/openapi.json") return;
 
     const header = request.headers.authorization;
 
@@ -487,6 +490,29 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       uptime_seconds: uptimeSeconds,
       model: modelGateway.model,
     };
+  });
+
+  // ===========================================================================
+  // GET /openapi.json — Public OpenAPI spec for Custom Actions
+  // ===========================================================================
+
+  const openapiSpecPath = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "openapi-agent.yaml",
+  );
+
+  server.get("/openapi.json", async (_request, reply) => {
+    try {
+      const yaml = await import("js-yaml");
+      const raw = readFileSync(openapiSpecPath, "utf-8");
+      const spec = yaml.load(raw);
+      reply.type("application/json");
+      return spec;
+    } catch {
+      reply.code(500);
+      return { error: "Failed to load OpenAPI spec" };
+    }
   });
 
   // ===========================================================================

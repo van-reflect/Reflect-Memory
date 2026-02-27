@@ -98,9 +98,9 @@ paths:
                   id: { type: string }
                   title: { type: string }
                   content: { type: string }
-                  tags: { type: array; items: { type: string } }
+                  tags: { type: array, items: { type: string } }
                   origin: { type: string }
-                  allowed_vendors: { type: array; items: { type: string } }
+                  allowed_vendors: { type: array, items: { type: string } }
                   created_at: { type: string }
                   updated_at: { type: string }
         "404":
