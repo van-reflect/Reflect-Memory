@@ -307,6 +307,10 @@ const chatProviderNames = [
   chatProviders.xaiKey ? "xai" : "",
 ].filter(Boolean);
 
+const mcpPort = agentKeys["claude"]
+  ? parseInt(optionalEnv("RM_MCP_PORT", "3001"), 10)
+  : null;
+
 const config: ServerConfig = {
   db,
   apiKey: API_KEY,
@@ -320,6 +324,7 @@ const config: ServerConfig = {
   chatProviders,
   dashboardServiceKey: dashboardServiceKey || null,
   dashboardJwtSecret: dashboardJwtSecret || null,
+  mcpPort,
 };
 
 const server = await createServer(config);
@@ -342,8 +347,7 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
 
   // Start MCP server for Claude.ai Connectors if a Claude agent key is configured
   const claudeAgentKey = agentKeys["claude"];
-  if (claudeAgentKey) {
-    const mcpPort = parseInt(optionalEnv("RM_MCP_PORT", "3001"), 10);
+  if (claudeAgentKey && mcpPort != null) {
     startMcpServer({ db, userId, agentKey: claudeAgentKey, vendor: "claude" }, mcpPort);
   }
 });
