@@ -27,15 +27,15 @@ interface McpServerConfig {
   vendor: string;
 }
 
-export function startMcpServer(config: McpServerConfig, port: number): void {
-  const { db, userId, agentKey, vendor } = config;
-
+function createMcpServerWithTools(
+  db: Database.Database,
+  userId: string,
+  vendor: string,
+): McpServer {
   const mcp = new McpServer(
     { name: "reflect-memory", version: "1.0.0" },
     { capabilities: { logging: {}, tools: { listChanged: false } } },
   );
-
-  // --- Tools ---
 
   mcp.tool(
     "read_memories",
@@ -160,6 +160,12 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     },
   );
 
+  return mcp;
+}
+
+export function startMcpServer(config: McpServerConfig, port: number): void {
+  const { db, userId, agentKey, vendor } = config;
+
   // --- Express app with auth middleware ---
 
   const app = express();
@@ -217,6 +223,8 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
           if (sid && transports[sid]) delete transports[sid];
         };
 
+        // Each session needs its own McpServer instance (SDK allows only one transport per server)
+        const mcp = createMcpServerWithTools(db, userId, vendor);
         await mcp.connect(transport);
         await transport.handleRequest(req, res, req.body);
         return;
