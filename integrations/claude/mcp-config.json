@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "reflect-memory": {
+      "type": "streamable-http",
+      "url": "https://api.reflectmemory.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${REFLECT_MEMORY_API_KEY}"
+      }
+    }
+  }
+}
