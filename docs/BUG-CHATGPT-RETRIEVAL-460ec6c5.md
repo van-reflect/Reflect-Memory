@@ -35,8 +35,17 @@ In YAML, `;` is a plain character. The parser read `tags.type` as the string lit
 3. Installed `js-yaml` dependency for spec serving
 4. Validated all 7 operations parse correctly with proper types
 
+## Additional Finding: Tag Mismatch + Wrong Endpoint
+
+The YAML fix alone was insufficient. Further investigation revealed:
+
+1. **Missing `project_state` tag** — Memory 460ec6c5 was written with tags `["council", "cpo_update", "anthropic", "mcp", "submission", "cto"]` but the Custom GPT instructions tell ChatGPT to query with `memory_filter: {"by":"tags","tags":["project_state"]}`. The memory was correctly filtered out by the tag filter. **Fixed:** Added `project_state` and `architecture` tags to the memory via `PUT /memories/:id`.
+
+2. **Custom GPT uses wrong endpoint for recency** — The instructions only mention `queryMemory`, which is an AI summarization layer. Even when the correct memories are fed to the model, the AI may summarize older ones as "latest" based on content relevance, not chronological order. The `getLatestMemory` endpoint exists for strict chronological retrieval but was never mentioned in the Custom GPT instructions. **Fixed:** Created updated instructions at `integrations/chatgpt/CUSTOM_GPT_INSTRUCTIONS.md` that teach ChatGPT to use `getLatestMemory` for recency, `browseMemories` for discovery, and `queryMemory` only for AI synthesis.
+
 ## Action Required
 
-After deploying, update the ChatGPT Custom Action:
-- Import from URL: `https://api.reflectmemory.com/openapi.json`
-- Or re-paste the corrected `openapi-agent.yaml` contents
+1. Deploy the YAML fix and `/openapi.json` endpoint (git push)
+2. Re-import the OpenAPI spec in ChatGPT Custom Action from `https://api.reflectmemory.com/openapi.json`
+3. Update the Custom GPT instructions using `integrations/chatgpt/CUSTOM_GPT_INSTRUCTIONS.md`
+4. Going forward, always include `project_state` tag on memories ChatGPT should find via its default query pattern
