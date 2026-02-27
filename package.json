@@ -10,7 +10,8 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "backup": "tsx scripts/backup-db.ts"
+    "backup": "tsx scripts/backup-db.ts",
+    "seed-review": "tsx scripts/seed-review-data.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

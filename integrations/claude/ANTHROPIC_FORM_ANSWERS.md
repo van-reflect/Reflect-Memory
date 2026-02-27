@@ -66,8 +66,22 @@ The test account starts empty. Use the "Create Memory" tool first (e.g. "Write a
 
 ---
 
+## Where Does the API Key Go?
+
+**You** generate a random API key (e.g. `sk-anthropic-review-` + random string, or a UUID). Then:
+
+1. **In Railway** — Add it as the `RM_AGENT_KEY_CLAUDE` env var for your production (or a dedicated test deployment). This lets the MCP server accept that token.
+
+2. **For reviewers** — Paste the key into the Anthropic form field where they ask for test credentials (often labeled "Test API key" or "Credentials for reviewers"). Anthropic gives it to their review team.
+
+3. **Reviewers** paste your key into their MCP config when they follow the setup instructions — in the `Authorization: Bearer <key>` header. They don't generate or sign up for anything; they use the key you provide.
+
+---
+
 ## Before Submitting
 
-1. **Generate a test API key** — Create a dedicated `RM_AGENT_KEY_CLAUDE` value for the review (or use a test deployment). Share it with Anthropic via the channel they specify (form field, email, etc.).
-2. **Pre-seed sample data** (recommended) — Add 3–5 sample memories to the test account so reviewers can exercise read/browse/search immediately. For example: a memory tagged "council", one tagged "preferences", etc.
-3. **Replace placeholders** — In the Setup Instructions, replace `<PASTE_TEST_KEY_HERE>` with instructions for where reviewers get the key (e.g. "the key provided in the Test Credentials field below" or "sent separately to reviewers").
+1. **Generate a test API key** — e.g. `openssl rand -hex 24` or a UUID. Add it to Railway as `RM_AGENT_KEY_CLAUDE` (or to a test deployment). Paste the same key into Anthropic's test credentials field.
+
+2. **Pre-seed sample data** — Run: `npm run seed-review` (with `RM_DB_PATH` and `RM_OWNER_EMAIL` set). Or on Railway: one-off job with those env vars. This adds 8 sample memories so reviewers can test read/browse/search immediately.
+
+3. **Replace placeholders** — In the Setup Instructions, replace `<PASTE_TEST_KEY_HERE>` with "the API key provided in the Test Credentials field below" (or however Anthropic phrases it).
