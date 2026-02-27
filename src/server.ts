@@ -6,6 +6,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import proxy from "@fastify/http-proxy";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
@@ -93,6 +94,7 @@ export interface ServerConfig {
   chatProviders: ProviderConfig;
   dashboardServiceKey: string | null;
   dashboardJwtSecret: string | null;
+  mcpPort: number | null;
 }
 
 // =============================================================================
@@ -308,6 +310,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     chatProviders,
     dashboardServiceKey,
     dashboardJwtSecret,
+    mcpPort,
   } = config;
 
   const server = Fastify({
@@ -327,7 +330,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       ...(process.env.NODE_ENV !== "production" ? ["http://localhost:3000"] : []),
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Dashboard-Token"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Dashboard-Token", "mcp-session-id"],
     credentials: true,
   });
 
@@ -345,6 +348,15 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       })}`);
     },
   });
+
+  // Proxy /mcp to the MCP server when it runs on a separate port (e.g. Railway exposes only one port)
+  if (mcpPort != null) {
+    await server.register(proxy, {
+      upstream: `http://127.0.0.1:${mcpPort}`,
+      prefix: "/mcp",
+      rewritePrefix: "/mcp",
+    });
+  }
 
   server.decorateRequest("userId", "");
   server.decorateRequest("role", "user");
@@ -446,7 +458,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           path === "/health" ||
           path === "/whoami" ||
           path === "/query" ||
-          path.startsWith("/agent/");
+          path.startsWith("/agent/") ||
+          (config.mcpPort != null && path.startsWith("/mcp"));
         if (!allowed) {
           logSecurity("agent_route_forbidden", request, { vendor, path });
           return reply.code(403).send({
