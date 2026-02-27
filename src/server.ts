@@ -545,6 +545,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     return { owner: true };
   });
 
+  server.get("/admin/users", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (request.userId !== userId) {
+      reply.code(403);
+      return { error: "Admin access restricted to owner" };
+    }
+    const rows = db
+      .prepare(`SELECT id, email, created_at FROM users ORDER BY created_at DESC`)
+      .all() as { id: string; email: string | null; created_at: string }[];
+    return { users: rows };
+  });
+
   server.get("/admin/metrics", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
     if (request.userId !== userId) {
       reply.code(403);
