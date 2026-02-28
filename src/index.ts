@@ -1,6 +1,11 @@
 // Reflect Memory — Entrypoint
 // Reads config from environment, opens the database, seeds the user,
 // starts the server. No new logic. No feature code. Just wiring.
+//
+// Load .env from project root for local development. In production,
+// set env vars via Railway, systemd, or docker-compose.
+
+import "dotenv/config";
 
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
