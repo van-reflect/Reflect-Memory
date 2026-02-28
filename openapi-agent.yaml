@@ -73,13 +73,7 @@ paths:
     get:
       operationId: getLatestMemory
       summary: Get the single most recent memory (strict chronological)
-      description: >
-        Returns the one most recently created memory, ordered by created_at DESC.
-        Deterministic — no relevance scoring. Use this when the user asks for
-        "the most recent memory" or "latest regardless of tag".
-        Do NOT use POST /query for recency-based retrieval — /query is for AI
-        summarization of selected memories, not for returning a specific memory by recency.
-        Optional ?tag= filters to that tag only (e.g. ?tag=cto_response).
+      description: "Most recent memory by created_at. Use for 'latest' or 'most recent' — never use /query for recency. Optional ?tag= filters to that tag (e.g. ?tag=project_state)."
       parameters:
         - name: tag
           in: query
@@ -293,12 +287,7 @@ paths:
     post:
       operationId: queryMemory
       summary: Query AI with memory context
-      description: >
-        Queries the AI model with selected memories as context. Use memory_filter
-        to select which memories to include. The response is slim for agents —
-        just the AI answer plus metadata (no full prompt or memory objects echoed back).
-        Use the browse endpoint first to discover relevant memories, then query
-        with specific tags or IDs for best results.
+      description: "AI answer grounded in selected memories. Use memory_filter to select which memories. Returns slim response (answer + metadata). Browse first, then query with tags or IDs."
       requestBody:
         required: true
         content:
