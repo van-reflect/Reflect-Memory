@@ -7,7 +7,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import proxy from "@fastify/http-proxy";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -386,7 +386,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   }
 
   server.addHook("onRequest", async (request, reply) => {
-    if (request.url === "/health" || request.url === "/openapi.json") return;
+    const path = request.url.split("?")[0];
+    if (path === "/health" || path === "/openapi.json") return;
+    if (request.method === "POST" && (path === "/waitlist" || path === "/early-access")) return;
 
     const header = request.headers.authorization;
 
@@ -456,7 +458,6 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         request.authMethod = "agent_key";
 
         // Enforce agent route restrictions.
-        const path = request.url.split("?")[0];
         const allowed =
           path === "/health" ||
           path === "/whoami" ||
@@ -1208,6 +1209,290 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(502);
         return { error: "Chat failed" };
       }
+    },
+  );
+
+  // ===========================================================================
+  // POST /waitlist — Public waitlist signup
+  // ===========================================================================
+
+  const waitlistBodySchema = {
+    type: "object" as const,
+    required: ["email"],
+    additionalProperties: false,
+    properties: {
+      email: { type: "string" as const, minLength: 1, maxLength: 320 },
+    },
+  };
+
+  server.post(
+    "/waitlist",
+    {
+      schema: { body: waitlistBodySchema },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { email } = request.body as { email: string };
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        reply.code(400);
+        return { error: "Invalid email format" };
+      }
+
+      const normalizedEmail = email.toLowerCase().trim();
+
+      const existing = db
+        .prepare(`SELECT position FROM waitlist WHERE email = ?`)
+        .get(normalizedEmail) as { position: number } | undefined;
+
+      if (existing) {
+        return { already_registered: true, position: existing.position };
+      }
+
+      const { count } = db
+        .prepare(`SELECT count(*) as count FROM waitlist`)
+        .get() as { count: number };
+
+      const position = count + 1;
+      const id = randomUUID();
+      const now = new Date().toISOString();
+
+      db.prepare(
+        `INSERT INTO waitlist (id, email, position, created_at) VALUES (?, ?, ?, ?)`,
+      ).run(id, normalizedEmail, position, now);
+
+      return { success: true, position, email: normalizedEmail };
+    },
+  );
+
+  // ===========================================================================
+  // POST /early-access — Public early access request
+  // ===========================================================================
+
+  const earlyAccessBodySchema = {
+    type: "object" as const,
+    required: ["email"],
+    additionalProperties: false,
+    properties: {
+      email: { type: "string" as const, minLength: 1, maxLength: 320 },
+      linkedin: { type: "string" as const, maxLength: 500 },
+      company: { type: "string" as const, maxLength: 200 },
+      use_case: { type: "string" as const, maxLength: 2000 },
+      details: { type: "string" as const, maxLength: 5000 },
+    },
+  };
+
+  server.post(
+    "/early-access",
+    {
+      schema: { body: earlyAccessBodySchema },
+      config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const body = request.body as {
+        email: string;
+        linkedin?: string;
+        company?: string;
+        use_case?: string;
+        details?: string;
+      };
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(body.email)) {
+        reply.code(400);
+        return { error: "Invalid email format" };
+      }
+
+      const normalizedEmail = body.email.toLowerCase().trim();
+      const id = randomUUID();
+      const now = new Date().toISOString();
+
+      db.prepare(
+        `INSERT INTO early_access_requests (id, email, linkedin, company, use_case, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id,
+        normalizedEmail,
+        body.linkedin ?? null,
+        body.company ?? null,
+        body.use_case ?? null,
+        body.details ?? null,
+        now,
+      );
+
+      const existingWaitlist = db
+        .prepare(`SELECT 1 FROM waitlist WHERE email = ?`)
+        .get(normalizedEmail);
+
+      if (!existingWaitlist) {
+        const { count } = db
+          .prepare(`SELECT count(*) as count FROM waitlist`)
+          .get() as { count: number };
+
+        db.prepare(
+          `INSERT INTO waitlist (id, email, position, created_at) VALUES (?, ?, ?, ?)`,
+        ).run(randomUUID(), normalizedEmail, count + 1, now);
+      }
+
+      return { success: true, id };
+    },
+  );
+
+  // ===========================================================================
+  // GET /admin/waitlist — Owner-only waitlist view
+  // ===========================================================================
+
+  server.get(
+    "/admin/waitlist",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.userId !== userId) {
+        reply.code(403);
+        return { error: "Admin access restricted to owner" };
+      }
+
+      const rows = db
+        .prepare(
+          `SELECT id, email, position, notified, created_at FROM waitlist ORDER BY position ASC`,
+        )
+        .all() as { id: string; email: string; position: number; notified: number; created_at: string }[];
+
+      return { waitlist: rows, total: rows.length };
+    },
+  );
+
+  // ===========================================================================
+  // GET /admin/early-access — Owner-only early access requests view
+  // ===========================================================================
+
+  server.get(
+    "/admin/early-access",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.userId !== userId) {
+        reply.code(403);
+        return { error: "Admin access restricted to owner" };
+      }
+
+      const rows = db
+        .prepare(
+          `SELECT id, email, linkedin, company, use_case, details, status, created_at FROM early_access_requests ORDER BY created_at DESC`,
+        )
+        .all() as {
+        id: string;
+        email: string;
+        linkedin: string | null;
+        company: string | null;
+        use_case: string | null;
+        details: string | null;
+        status: string;
+        created_at: string;
+      }[];
+
+      return { requests: rows, total: rows.length };
+    },
+  );
+
+  // ===========================================================================
+  // PUT /admin/early-access/:id — Owner-only status update
+  // ===========================================================================
+
+  const earlyAccessStatusSchema = {
+    type: "object" as const,
+    required: ["status"],
+    additionalProperties: false,
+    properties: {
+      status: { type: "string" as const, enum: ["pending", "approved", "rejected"] },
+    },
+  };
+
+  const earlyAccessIdParamSchema = {
+    type: "object" as const,
+    required: ["id"],
+    additionalProperties: false,
+    properties: {
+      id: { type: "string" as const, minLength: 1 },
+    },
+  };
+
+  server.put(
+    "/admin/early-access/:id",
+    {
+      schema: {
+        params: earlyAccessIdParamSchema,
+        body: earlyAccessStatusSchema,
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      if (request.userId !== userId) {
+        reply.code(403);
+        return { error: "Admin access restricted to owner" };
+      }
+
+      const { id } = request.params as { id: string };
+      const { status } = request.body as { status: string };
+
+      const result = db
+        .prepare(`UPDATE early_access_requests SET status = ? WHERE id = ?`)
+        .run(status, id);
+
+      if (result.changes === 0) {
+        reply.code(404);
+        return { error: "Early access request not found" };
+      }
+
+      const updated = db
+        .prepare(
+          `SELECT id, email, linkedin, company, use_case, details, status, created_at FROM early_access_requests WHERE id = ?`,
+        )
+        .get(id) as {
+        id: string;
+        email: string;
+        linkedin: string | null;
+        company: string | null;
+        use_case: string | null;
+        details: string | null;
+        status: string;
+        created_at: string;
+      };
+
+      return updated;
+    },
+  );
+
+  // ===========================================================================
+  // POST /admin/waitlist/mark-notified — Mark waitlist entries as notified
+  // ===========================================================================
+
+  server.post(
+    "/admin/waitlist/mark-notified",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["ids"],
+          additionalProperties: false,
+          properties: {
+            ids: { type: "array" as const, items: { type: "string" as const }, minItems: 1 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      if (request.userId !== userId) {
+        reply.code(403);
+        return { error: "Admin access restricted to owner" };
+      }
+
+      const { ids } = request.body as { ids: string[] };
+      const placeholders = ids.map(() => "?").join(",");
+      const result = db
+        .prepare(`UPDATE waitlist SET notified = 1 WHERE id IN (${placeholders}) AND notified = 0`)
+        .run(...ids);
+
+      return { updated: result.changes };
     },
   );
 

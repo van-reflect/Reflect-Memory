@@ -227,6 +227,41 @@ if (!originAlreadyRan) {
   );
 }
 
+// Migration: create waitlist and early_access_requests tables
+const waitlistMigrationName = "004_waitlist_and_early_access";
+const waitlistAlreadyRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(waitlistMigrationName);
+if (!waitlistAlreadyRan) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS waitlist (
+        id          TEXT NOT NULL PRIMARY KEY,
+        email       TEXT NOT NULL UNIQUE,
+        position    INTEGER NOT NULL,
+        notified    INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS early_access_requests (
+        id          TEXT NOT NULL PRIMARY KEY,
+        email       TEXT NOT NULL,
+        linkedin    TEXT,
+        company     TEXT,
+        use_case    TEXT,
+        details     TEXT,
+        status      TEXT NOT NULL DEFAULT 'pending',
+        created_at  TEXT NOT NULL
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_waitlist_email ON waitlist(email);
+    CREATE INDEX IF NOT EXISTS idx_waitlist_position ON waitlist(position);
+    CREATE INDEX IF NOT EXISTS idx_early_access_email ON early_access_requests(email);
+    CREATE INDEX IF NOT EXISTS idx_early_access_status ON early_access_requests(status);
+  `);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    waitlistMigrationName,
+    new Date().toISOString(),
+  );
+}
+
 // =============================================================================
 // Owner resolution
 // =============================================================================
