@@ -81,10 +81,34 @@ export interface QuotaStatus {
     total_ops: number;
   };
   limits: {
-    maxMemories: number;
-    maxOpsPerMonth: number;
+    maxWritesPerMonth: number;
+    maxReadsPerMonth: number;
   };
-  remaining: number;
+  writes_remaining: number;
+  reads_remaining: number;
+}
+
+function buildQuotaStatus(
+  plan: string,
+  usage: { writes: number; reads: number; queries: number; total_ops: number } | undefined,
+): QuotaStatus {
+  const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
+  const w = usage?.writes ?? 0;
+  const r = (usage?.reads ?? 0) + (usage?.queries ?? 0);
+
+  return {
+    allowed: w < limits.maxWritesPerMonth && r < limits.maxReadsPerMonth,
+    plan,
+    usage: {
+      writes: usage?.writes ?? 0,
+      reads: usage?.reads ?? 0,
+      queries: usage?.queries ?? 0,
+      total_ops: usage?.total_ops ?? 0,
+    },
+    limits,
+    writes_remaining: Math.max(0, limits.maxWritesPerMonth - w),
+    reads_remaining: Math.max(0, limits.maxReadsPerMonth - r),
+  };
 }
 
 export function checkQuota(
@@ -98,27 +122,12 @@ export function checkQuota(
     .get(userId) as { plan: string } | undefined;
 
   const plan = user?.plan ?? "free";
-  const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
 
   const usage = db
     .prepare(`SELECT writes, reads, queries, total_ops FROM monthly_usage WHERE user_id = ? AND month = ?`)
     .get(userId, month) as { writes: number; reads: number; queries: number; total_ops: number } | undefined;
 
-  const totalOps = usage?.total_ops ?? 0;
-  const remaining = Math.max(0, limits.maxOpsPerMonth - totalOps);
-
-  return {
-    allowed: totalOps < limits.maxOpsPerMonth,
-    plan,
-    usage: {
-      writes: usage?.writes ?? 0,
-      reads: usage?.reads ?? 0,
-      queries: usage?.queries ?? 0,
-      total_ops: totalOps,
-    },
-    limits,
-    remaining,
-  };
+  return buildQuotaStatus(plan, usage);
 }
 
 export function getUsageForMonth(
@@ -133,24 +142,10 @@ export function getUsageForMonth(
     .get(userId) as { plan: string } | undefined;
 
   const plan = user?.plan ?? "free";
-  const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
 
   const usage = db
     .prepare(`SELECT writes, reads, queries, total_ops FROM monthly_usage WHERE user_id = ? AND month = ?`)
     .get(userId, m) as { writes: number; reads: number; queries: number; total_ops: number } | undefined;
 
-  const totalOps = usage?.total_ops ?? 0;
-
-  return {
-    allowed: totalOps < limits.maxOpsPerMonth,
-    plan,
-    usage: {
-      writes: usage?.writes ?? 0,
-      reads: usage?.reads ?? 0,
-      queries: usage?.queries ?? 0,
-      total_ops: totalOps,
-    },
-    limits,
-    remaining: Math.max(0, limits.maxOpsPerMonth - totalOps),
-  };
+  return buildQuotaStatus(plan, usage);
 }
