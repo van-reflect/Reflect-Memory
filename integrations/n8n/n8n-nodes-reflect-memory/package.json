@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-reflect-memory",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "n8n community node for Reflect Memory — read, write, browse, and search AI memories.",
   "keywords": [
     "n8n-community-node-package",
@@ -26,7 +26,8 @@
     "dev": "n8n-node dev",
     "lint": "n8n-node lint",
     "lintfix": "n8n-node lint --fix",
-    "prepublishOnly": "n8n-node build"
+    "postbuild": "cp nodes/ReflectMemory/ReflectMemory.node.json dist/nodes/ReflectMemory/",
+    "prepublishOnly": "n8n-node build && npm run postbuild"
   },
   "files": [
     "dist",
