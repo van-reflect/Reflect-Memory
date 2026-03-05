@@ -3,6 +3,7 @@ import type {
   INodeExecutionData,
   INodeType,
   INodeTypeDescription,
+  IDataObject,
 } from "n8n-workflow";
 import { NodeConnectionTypes } from "n8n-workflow";
 
@@ -26,6 +27,7 @@ export class ReflectMemory implements INodeType {
         required: true,
       },
     ],
+    usableAsTool: true,
     properties: [
       {
         displayName: "Operation",
@@ -34,10 +36,10 @@ export class ReflectMemory implements INodeType {
         noDataExpression: true,
         options: [
           {
-            name: "Get Latest",
-            value: "getLatest",
-            description: "Get the most recent memory",
-            action: "Get the most recent memory",
+            name: "Browse",
+            value: "browse",
+            description: "Browse memory summaries (paginated)",
+            action: "Browse memory summaries",
           },
           {
             name: "Get by ID",
@@ -46,16 +48,16 @@ export class ReflectMemory implements INodeType {
             action: "Retrieve a memory by its UUID",
           },
           {
-            name: "Browse",
-            value: "browse",
-            description: "Browse memory summaries (paginated)",
-            action: "Browse memory summaries",
-          },
-          {
             name: "Get by Tag",
             value: "getByTag",
             description: "Get memories filtered by tags",
             action: "Get memories filtered by tags",
+          },
+          {
+            name: "Get Latest",
+            value: "getLatest",
+            description: "Get the most recent memory",
+            action: "Get the most recent memory",
           },
           {
             name: "Write",
@@ -94,7 +96,7 @@ export class ReflectMemory implements INodeType {
         name: "limit",
         type: "number",
         default: 50,
-        description: "Max number of results to return (1-200)",
+        description: "Max number of results to return",
         typeOptions: { minValue: 1, maxValue: 200 },
         displayOptions: { show: { operation: ["browse"] } },
       },
@@ -123,7 +125,7 @@ export class ReflectMemory implements INodeType {
         name: "tagLimit",
         type: "number",
         default: 20,
-        description: "Max number of results to return (1-100)",
+        description: "Max number of results to return",
         typeOptions: { minValue: 1, maxValue: 100 },
         displayOptions: { show: { operation: ["getByTag"] } },
       },
@@ -186,7 +188,7 @@ export class ReflectMemory implements INodeType {
 
     for (let i = 0; i < items.length; i++) {
       const operation = this.getNodeParameter("operation", i) as string;
-      let responseData: any;
+      let responseData: IDataObject | IDataObject[];
 
       try {
         switch (operation) {
@@ -201,7 +203,7 @@ export class ReflectMemory implements INodeType {
                 url: `${baseUrl}/agent/memories/latest${qs}`,
                 json: true,
               },
-            );
+            ) as IDataObject;
             break;
           }
 
@@ -215,7 +217,7 @@ export class ReflectMemory implements INodeType {
                 url: `${baseUrl}/agent/memories/${memoryId}`,
                 json: true,
               },
-            );
+            ) as IDataObject;
             break;
           }
 
@@ -231,7 +233,7 @@ export class ReflectMemory implements INodeType {
                 body: { limit, offset },
                 json: true,
               },
-            );
+            ) as IDataObject;
             break;
           }
 
@@ -249,7 +251,7 @@ export class ReflectMemory implements INodeType {
                 body: { tags, limit, offset },
                 json: true,
               },
-            );
+            ) as IDataObject;
             break;
           }
 
@@ -279,22 +281,25 @@ export class ReflectMemory implements INodeType {
                 body: { title, content, tags, allowed_vendors },
                 json: true,
               },
-            );
+            ) as IDataObject;
             break;
           }
+
+          default:
+            responseData = {};
         }
 
         if (Array.isArray(responseData)) {
           returnData.push(
-            ...responseData.map((item: any) => ({ json: item })),
+            ...responseData.map((item) => ({ json: item })),
           );
         } else {
           returnData.push({ json: responseData ?? {} });
         }
-      } catch (error: any) {
+      } catch (error) {
         if (this.continueOnFail()) {
           returnData.push({
-            json: { error: error.message },
+            json: { error: (error as Error).message },
             pairedItem: { item: i },
           });
           continue;

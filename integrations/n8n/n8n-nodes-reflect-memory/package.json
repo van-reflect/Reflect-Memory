@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-reflect-memory",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "n8n community node for Reflect Memory — read, write, browse, and search AI memories.",
   "keywords": [
     "n8n-community-node-package",
@@ -12,19 +12,25 @@
   ],
   "license": "MIT",
   "homepage": "https://reflectmemory.com",
+  "author": {
+    "name": "Reflect Memory, Inc.",
+    "email": "support@reflectmemory.com"
+  },
   "repository": {
     "type": "git",
-    "url": "https://github.com/reflectmemory/n8n-nodes-reflect-memory"
+    "url": "https://github.com/van-reflect/n8n-nodes-reflect-memory"
   },
   "main": "index.js",
   "scripts": {
-    "build": "tsc && gulp build:icons",
-    "dev": "tsc --watch",
-    "lint": "tslint -p tsconfig.json -c tslint.json",
-    "prepublishOnly": "npm run build"
+    "build": "n8n-node build",
+    "dev": "n8n-node dev",
+    "lint": "n8n-node lint",
+    "lintfix": "n8n-node lint --fix",
+    "prepublishOnly": "n8n-node build"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "n8n": {
     "n8nNodesApiVersion": 1,
@@ -36,8 +42,9 @@
     ]
   },
   "devDependencies": {
+    "@n8n/node-cli": "*",
     "@types/node": "^22.0.0",
-    "gulp": "^5.0.0",
+    "eslint": "^9.0.0",
     "n8n-workflow": "*",
     "typescript": "^5.7.0"
   },
