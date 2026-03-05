@@ -1663,7 +1663,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           required: ["plan"],
           additionalProperties: false,
           properties: {
-            plan: { type: "string" as const, enum: ["pro", "enterprise"] },
+            plan: { type: "string" as const, enum: ["builder"] },
             success_url: { type: "string" as const },
             cancel_url: { type: "string" as const },
           },
@@ -1677,7 +1677,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
 
       const { plan, success_url, cancel_url } = request.body as {
-        plan: "pro" | "enterprise";
+        plan: "builder";
         success_url?: string;
         cancel_url?: string;
       };

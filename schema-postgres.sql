@@ -16,7 +16,7 @@ CREATE TABLE users (
                         CHECK (role IN ('admin', 'private-alpha', 'user')),
     stripe_customer_id  TEXT UNIQUE,
     plan                TEXT NOT NULL DEFAULT 'free'
-                        CHECK (plan IN ('free', 'pro', 'enterprise')),
+                        CHECK (plan IN ('free', 'builder')),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

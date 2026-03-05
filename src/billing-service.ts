@@ -19,30 +19,28 @@ export function isStripeConfigured(): boolean {
 }
 
 export interface PlanLimits {
-  maxMemories: number;
-  maxOpsPerMonth: number;
+  maxWritesPerMonth: number;
+  maxReadsPerMonth: number;
 }
 
+// Launch plans: Free + Builder only.
+// Pro ($99, 150k writes / 750k reads) and Teams/Enterprise (TBD) added post-Public Beta.
 export const PLAN_LIMITS: Record<string, PlanLimits> = {
-  free: { maxMemories: 100, maxOpsPerMonth: 500 },
-  pro: { maxMemories: 5_000, maxOpsPerMonth: 25_000 },
-  enterprise: { maxMemories: -1, maxOpsPerMonth: 100_000 },
+  free: { maxWritesPerMonth: 1_000, maxReadsPerMonth: 10_000 },
+  builder: { maxWritesPerMonth: 50_000, maxReadsPerMonth: 125_000 },
 };
 
 export async function createCheckoutSession(
   db: Database.Database,
   userId: string,
-  plan: "pro" | "enterprise",
+  plan: "builder",
   successUrl: string,
   cancelUrl: string,
 ): Promise<string | null> {
   const stripe = getStripe();
   if (!stripe) return null;
 
-  const priceId = plan === "pro"
-    ? process.env.STRIPE_PRICE_PRO
-    : process.env.STRIPE_PRICE_ENTERPRISE;
-
+  const priceId = process.env.STRIPE_PRICE_BUILDER;
   if (!priceId) return null;
 
   const user = db
@@ -150,9 +148,8 @@ export function handleStripeWebhook(
 
 function determinePlanFromPrice(priceId: string | undefined): string {
   if (!priceId) return "free";
-  if (priceId === process.env.STRIPE_PRICE_PRO) return "pro";
-  if (priceId === process.env.STRIPE_PRICE_ENTERPRISE) return "enterprise";
-  return "pro";
+  if (priceId === process.env.STRIPE_PRICE_BUILDER) return "builder";
+  return "builder";
 }
 
 export async function constructStripeEvent(

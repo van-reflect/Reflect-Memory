@@ -26,7 +26,7 @@ CREATE TABLE users (
                         CHECK(role IN ('admin', 'private-alpha', 'user')),
     stripe_customer_id  TEXT UNIQUE,                  -- Stripe customer ID (NULL until subscribed)
     plan                TEXT NOT NULL DEFAULT 'free'
-                        CHECK(plan IN ('free', 'pro', 'enterprise')),
+                        CHECK(plan IN ('free', 'builder')),
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 ) STRICT;
