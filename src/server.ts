@@ -15,6 +15,26 @@ import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
 import { findOrCreateUserByEmail } from "./user-service.js";
 import {
+  generateApiKey,
+  listApiKeys,
+  revokeApiKey,
+  authenticateApiKey,
+} from "./api-key-service.js";
+import {
+  isStripeConfigured,
+  createCheckoutSession,
+  createBillingPortalSession,
+  handleStripeWebhook,
+  constructStripeEvent,
+  PLAN_LIMITS,
+} from "./billing-service.js";
+import {
+  recordUsage,
+  checkQuota,
+  getUsageForMonth,
+  type Operation,
+} from "./usage-service.js";
+import {
   createMemory,
   readMemoryById,
   listMemories,
@@ -389,6 +409,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     const path = request.url.split("?")[0];
     if (path === "/health" || path === "/openapi.json") return;
     if (request.method === "POST" && (path === "/waitlist" || path === "/early-access")) return;
+    if (request.method === "POST" && path === "/webhooks/clerk") return;
+    if (request.method === "POST" && path === "/webhooks/stripe") return;
 
     const header = request.headers.authorization;
 
@@ -475,8 +497,63 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
     }
 
+    // Try DB-stored per-user API keys (rm_live_* format)
+    const dbKeyAuth = authenticateApiKey(db, token);
+    if (dbKeyAuth) {
+      request.userId = dbKeyAuth.userId;
+      request.role = "user";
+      request.vendor = null;
+      request.authMethod = "api_key";
+      return;
+    }
+
     logSecurity("auth_invalid_key", request);
     return reply.code(401).send({ error: "Invalid API key" });
+  });
+
+  // ===========================================================================
+  // Usage metering hook — records operations after successful responses
+  // ===========================================================================
+
+  const METERED_ROUTES: Record<string, { method: string; operation: Operation }> = {
+    "/memories": { method: "POST", operation: "memory_write" },
+    "/agent/memories": { method: "POST", operation: "memory_write" },
+    "/memories/list": { method: "POST", operation: "memory_read" },
+    "/agent/memories/browse": { method: "POST", operation: "memory_read" },
+    "/agent/memories/by-tag": { method: "POST", operation: "memory_read" },
+    "/query": { method: "POST", operation: "query" },
+    "/chat": { method: "POST", operation: "chat" },
+  };
+
+  server.addHook("onResponse", async (request, reply) => {
+    if (reply.statusCode >= 400) return;
+    if (!request.userId) return;
+
+    const path = request.url.split("?")[0];
+    const route = METERED_ROUTES[path];
+    if (!route || request.method !== route.method) return;
+
+    // GET routes for single memory reads
+    if (path.startsWith("/memories/") && request.method === "GET" && !path.includes("/list")) {
+      try { recordUsage(db, request.userId, "memory_read", request.vendor ?? "dashboard"); } catch {}
+      return;
+    }
+
+    const origin = request.vendor ?? (request.authMethod === "dashboard" ? "dashboard" : "api");
+    try { recordUsage(db, request.userId, route.operation, origin); } catch {}
+  });
+
+  // Also meter individual memory reads (GET /memories/:id, GET /agent/memories/latest, etc.)
+  server.addHook("onResponse", async (request, reply) => {
+    if (reply.statusCode >= 400 || !request.userId || request.method !== "GET") return;
+    const path = request.url.split("?")[0];
+    if (
+      (path.startsWith("/memories/") && path !== "/memories/list") ||
+      path.startsWith("/agent/memories/")
+    ) {
+      const origin = request.vendor ?? (request.authMethod === "dashboard" ? "dashboard" : "api");
+      try { recordUsage(db, request.userId, "memory_read", origin); } catch {}
+    }
   });
 
   // ===========================================================================
@@ -1493,6 +1570,275 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         .run(...ids);
 
       return { updated: result.changes };
+    },
+  );
+
+  // ===========================================================================
+  // API Key Management — per-user key CRUD
+  // ===========================================================================
+
+  server.post(
+    "/api/keys",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          additionalProperties: false,
+          properties: {
+            label: { type: "string" as const, minLength: 1, maxLength: 100 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request) => {
+      const { label } = (request.body ?? {}) as { label?: string };
+      const result = generateApiKey(db, request.userId, label ?? "Default");
+      return {
+        key: result.key,
+        id: result.record.id,
+        key_prefix: result.record.key_prefix,
+        label: result.record.label,
+        created_at: result.record.created_at,
+      };
+    },
+  );
+
+  server.get(
+    "/api/keys",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request) => {
+      const keys = listApiKeys(db, request.userId);
+      return { keys };
+    },
+  );
+
+  server.delete(
+    "/api/keys/:id",
+    {
+      schema: { params: memoryIdParamSchema },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const revoked = revokeApiKey(db, id, request.userId);
+      if (!revoked) {
+        return reply.code(404).send({ error: "Key not found or already revoked" });
+      }
+      return { revoked: true };
+    },
+  );
+
+  // ===========================================================================
+  // Usage — quota status and monthly breakdown
+  // ===========================================================================
+
+  server.get(
+    "/usage",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request) => {
+      const month = (request.query as { month?: string })?.month;
+      return getUsageForMonth(db, request.userId, month);
+    },
+  );
+
+  server.get(
+    "/usage/check",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request) => {
+      return checkQuota(db, request.userId);
+    },
+  );
+
+  // ===========================================================================
+  // Billing — Stripe checkout and management
+  // ===========================================================================
+
+  server.post(
+    "/billing/checkout",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["plan"],
+          additionalProperties: false,
+          properties: {
+            plan: { type: "string" as const, enum: ["pro", "enterprise"] },
+            success_url: { type: "string" as const },
+            cancel_url: { type: "string" as const },
+          },
+        },
+      },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      if (!isStripeConfigured()) {
+        return reply.code(503).send({ error: "Billing not configured" });
+      }
+
+      const { plan, success_url, cancel_url } = request.body as {
+        plan: "pro" | "enterprise";
+        success_url?: string;
+        cancel_url?: string;
+      };
+
+      const defaultBase = "https://www.reflectmemory.com";
+      const url = await createCheckoutSession(
+        db,
+        request.userId,
+        plan,
+        success_url ?? `${defaultBase}/dashboard?billing=success`,
+        cancel_url ?? `${defaultBase}/dashboard?billing=cancelled`,
+      );
+
+      if (!url) {
+        return reply.code(500).send({ error: "Failed to create checkout session" });
+      }
+
+      return { url };
+    },
+  );
+
+  server.post(
+    "/billing/portal",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (!isStripeConfigured()) {
+        return reply.code(503).send({ error: "Billing not configured" });
+      }
+
+      const body = (request.body ?? {}) as { return_url?: string };
+      const url = await createBillingPortalSession(
+        db,
+        request.userId,
+        body.return_url ?? "https://www.reflectmemory.com/dashboard",
+      );
+
+      if (!url) {
+        return reply.code(400).send({ error: "No billing account found. Subscribe to a plan first." });
+      }
+
+      return { url };
+    },
+  );
+
+  server.get(
+    "/billing/status",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request) => {
+      const user = db
+        .prepare(`SELECT plan, stripe_customer_id FROM users WHERE id = ?`)
+        .get(request.userId) as { plan: string; stripe_customer_id: string | null } | undefined;
+
+      const plan = user?.plan ?? "free";
+      const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
+
+      return {
+        plan,
+        has_billing: Boolean(user?.stripe_customer_id),
+        limits,
+      };
+    },
+  );
+
+  // ===========================================================================
+  // POST /webhooks/stripe — Stripe event handler (public, verified by signature)
+  // ===========================================================================
+
+  server.post(
+    "/webhooks/stripe",
+    {
+      config: {
+        rateLimit: { max: 100, timeWindow: "1 minute" },
+        rawBody: true,
+      },
+    },
+    async (request, reply) => {
+      const signature = request.headers["stripe-signature"];
+      if (typeof signature !== "string") {
+        return reply.code(400).send({ error: "Missing stripe-signature" });
+      }
+
+      const rawBody = typeof request.body === "string"
+        ? request.body
+        : JSON.stringify(request.body);
+
+      const event = await constructStripeEvent(rawBody, signature);
+      if (!event) {
+        return reply.code(400).send({ error: "Invalid webhook signature" });
+      }
+
+      handleStripeWebhook(db, event);
+      return { received: true };
+    },
+  );
+
+  // ===========================================================================
+  // POST /webhooks/clerk — Clerk user sync (public, verified by signing secret)
+  // ===========================================================================
+
+  const clerkWebhookSecret = process.env.CLERK_WEBHOOK_SECRET;
+
+  server.post(
+    "/webhooks/clerk",
+    { config: { rateLimit: { max: 50, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (!clerkWebhookSecret) {
+        return reply.code(404).send({ error: "Not configured" });
+      }
+
+      const payload = request.body as {
+        type?: string;
+        data?: {
+          id?: string;
+          email_addresses?: Array<{ email_address?: string }>;
+          primary_email_address_id?: string;
+        };
+      };
+
+      const eventType = payload?.type;
+      const data = payload?.data;
+      if (!eventType || !data?.id) {
+        return reply.code(400).send({ error: "Invalid webhook payload" });
+      }
+
+      const email = data.email_addresses?.[0]?.email_address?.trim().toLowerCase();
+
+      if (eventType === "user.created" || eventType === "user.updated") {
+        if (!email) {
+          return reply.code(400).send({ error: "No email in webhook" });
+        }
+
+        const existing = db
+          .prepare(`SELECT id FROM users WHERE clerk_id = ?`)
+          .get(data.id) as { id: string } | undefined;
+
+        if (existing) {
+          db.prepare(`UPDATE users SET email = ?, updated_at = ? WHERE clerk_id = ?`)
+            .run(email, new Date().toISOString(), data.id);
+        } else {
+          const byEmail = db
+            .prepare(`SELECT id FROM users WHERE email = ?`)
+            .get(email) as { id: string } | undefined;
+
+          if (byEmail) {
+            db.prepare(`UPDATE users SET clerk_id = ?, updated_at = ? WHERE id = ?`)
+              .run(data.id, new Date().toISOString(), byEmail.id);
+          } else {
+            const newId = randomUUID();
+            const now = new Date().toISOString();
+            db.prepare(
+              `INSERT INTO users (id, clerk_id, email, role, plan, created_at, updated_at)
+               VALUES (?, ?, ?, 'user', 'free', ?, ?)`,
+            ).run(newId, data.id, email, now, now);
+          }
+        }
+
+        console.log(`[clerk] Synced user ${data.id} (${email})`);
+        return { received: true };
+      }
+
+      return { received: true, ignored: true };
     },
   );
 
