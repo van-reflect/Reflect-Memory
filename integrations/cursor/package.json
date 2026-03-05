@@ -1,0 +1,19 @@
+{
+  "name": "reflect-memory-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Reflect Memory — read, write, browse, and search your cross-agent memory from Cursor",
+  "type": "module",
+  "main": "server.mjs",
+  "bin": {
+    "reflect-memory-mcp": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
