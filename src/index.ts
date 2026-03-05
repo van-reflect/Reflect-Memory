@@ -431,7 +431,7 @@ const chatProviderNames = [
   chatProviders.xaiKey ? "xai" : "",
 ].filter(Boolean);
 
-const mcpPort = agentKeys["claude"]
+const mcpPort = validVendors.length > 0
   ? parseInt(optionalEnv("RM_MCP_PORT", "3001"), 10)
   : null;
 
@@ -469,10 +469,9 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
     scheduleDailyBackup();
   }
 
-  // Start MCP server for Claude.ai Connectors if a Claude agent key is configured
-  const claudeAgentKey = agentKeys["claude"];
-  if (claudeAgentKey && mcpPort != null) {
-    startMcpServer({ db, userId, agentKey: claudeAgentKey, vendor: "claude" }, mcpPort);
+  // Start MCP server when any agent key is configured (multi-vendor)
+  if (validVendors.length > 0 && mcpPort != null) {
+    startMcpServer({ db, userId, agentKeys }, mcpPort);
   }
 });
 
