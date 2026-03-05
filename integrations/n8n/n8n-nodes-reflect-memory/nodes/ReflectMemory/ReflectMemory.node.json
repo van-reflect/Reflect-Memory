@@ -1,5 +1,5 @@
 {
-  "node": "n8n-nodes-base.reflectMemory",
+  "node": "n8n-nodes-reflect-memory.reflectMemory",
   "nodeVersion": "1.0",
   "codexVersion": "1.0",
   "categories": ["Miscellaneous"],
