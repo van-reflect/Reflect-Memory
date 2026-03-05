@@ -1,8 +1,8 @@
 // Reflect Memory — MCP Server
-// Remote Streamable HTTP MCP server for Claude.ai Connectors.
+// Remote Streamable HTTP MCP server for any vendor that supports MCP.
 // Exposes memory tools (read, write, browse, query) via the Model Context Protocol.
 // Runs as a standalone Express app on RM_MCP_PORT (default: 3001).
-// Auth: Bearer token in the Authorization header, validated against RM_AGENT_KEY_CLAUDE.
+// Auth: Bearer token in the Authorization header, validated against any RM_AGENT_KEY_*.
 
 import express from "express";
 import { randomUUID } from "node:crypto";
@@ -23,8 +23,7 @@ import {
 interface McpServerConfig {
   db: Database.Database;
   userId: string;
-  agentKey: string;
-  vendor: string;
+  agentKeys: Record<string, string>;
 }
 
 function createMcpServerWithTools(
@@ -164,9 +163,7 @@ function createMcpServerWithTools(
 }
 
 export function startMcpServer(config: McpServerConfig, port: number): void {
-  const { db, userId, agentKey, vendor } = config;
-
-  // --- Express app with auth middleware ---
+  const { db, userId, agentKeys } = config;
 
   const app = express();
   app.use(express.json());
@@ -182,6 +179,14 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     return result === 0;
   }
 
+  function resolveVendor(token: string): string | null {
+    for (const [vendor, key] of Object.entries(agentKeys)) {
+      if (timingSafeEqual(token, key)) return vendor;
+    }
+    return null;
+  }
+
+  // Auth middleware: resolve vendor from bearer token, store on request
   app.use("/mcp", (req, res, next) => {
     const auth = req.headers.authorization;
     if (!auth || !auth.startsWith("Bearer ")) {
@@ -189,16 +194,18 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       return;
     }
     const token = auth.slice("Bearer ".length);
-    if (!timingSafeEqual(token, agentKey)) {
+    const vendor = resolveVendor(token);
+    if (!vendor) {
       res.status(401).json({ error: "Invalid API key" });
       return;
     }
+    (req as any).vendor = vendor;
     next();
   });
 
-  // --- Session management ---
-
+  // Track transports by session ID, and which vendor owns each session
   const transports: Record<string, StreamableHTTPServerTransport> = {};
+  const sessionVendors: Record<string, string> = {};
 
   app.post("/mcp", async (req, res) => {
     try {
@@ -210,20 +217,25 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       }
 
       if (!sessionId && isInitializeRequest(req.body)) {
+        const vendor = (req as any).vendor as string;
+
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
           onsessioninitialized: (sid) => {
             transports[sid] = transport;
+            sessionVendors[sid] = vendor;
           },
         });
 
         transport.onclose = () => {
           const sid = transport.sessionId;
-          if (sid && transports[sid]) delete transports[sid];
+          if (sid) {
+            delete transports[sid];
+            delete sessionVendors[sid];
+          }
         };
 
-        // Each session needs its own McpServer instance (SDK allows only one transport per server)
         const mcp = createMcpServerWithTools(db, userId, vendor);
         await mcp.connect(transport);
         await transport.handleRequest(req, res, req.body);
@@ -269,8 +281,9 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     res.json({ service: "reflect-memory-mcp", status: "ok" });
   });
 
+  const vendors = Object.keys(agentKeys);
   app.listen(port, "0.0.0.0", () => {
-    console.log(`MCP server listening on port ${port} (vendor: ${vendor})`);
+    console.log(`MCP server listening on port ${port} (vendors: ${vendors.join(", ")})`);
     console.log(`Connector URL: https://api.reflectmemory.com/mcp`);
   });
 }

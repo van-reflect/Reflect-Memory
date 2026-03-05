@@ -1,0 +1,13 @@
+{
+  "name": "reflect-memory-gemini-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Gemini API function-calling example for Reflect Memory",
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  }
+}
