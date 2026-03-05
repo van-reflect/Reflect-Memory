@@ -1,5 +1,6 @@
 import type {
   IAuthenticateGeneric,
+  ICredentialTestRequest,
   ICredentialType,
   INodeProperties,
 } from "n8n-workflow";
@@ -8,6 +9,7 @@ export class ReflectMemoryApi implements ICredentialType {
   name = "reflectMemoryApi";
   displayName = "Reflect Memory API";
   documentationUrl = "https://reflectmemory.com/docs";
+  icon = { light: "file:../nodes/ReflectMemory/reflectMemory.svg", dark: "file:../nodes/ReflectMemory/reflectMemory.svg" } as const;
 
   properties: INodeProperties[] = [
     {
@@ -34,6 +36,14 @@ export class ReflectMemoryApi implements ICredentialType {
       headers: {
         Authorization: "=Bearer {{$credentials.apiKey}}",
       },
+    },
+  };
+
+  test: ICredentialTestRequest = {
+    request: {
+      baseURL: "={{$credentials.baseUrl}}",
+      url: "/agent/memories/latest",
+      method: "GET",
     },
   };
 }
