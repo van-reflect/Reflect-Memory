@@ -262,6 +262,76 @@ if (!waitlistAlreadyRan) {
   );
 }
 
+// Migration: v1 schema — add role, plan, clerk_id, stripe_customer_id, updated_at to users
+const v1UsersMigration = "005_v1_users_columns";
+const v1UsersRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(v1UsersMigration);
+if (!v1UsersRan) {
+  const hasRole = (db.prepare(`SELECT count(*) as count FROM pragma_table_info('users') WHERE name = 'role'`).get() as { count: number }).count > 0;
+  if (!hasRole) {
+    db.exec(`ALTER TABLE users ADD COLUMN clerk_id TEXT`);
+    db.exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'`);
+    db.exec(`ALTER TABLE users ADD COLUMN stripe_customer_id TEXT`);
+    db.exec(`ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'`);
+    db.exec(`ALTER TABLE users ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''`);
+    db.exec(`UPDATE users SET updated_at = created_at WHERE updated_at = ''`);
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_clerk_id ON users(clerk_id)`);
+  }
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(v1UsersMigration, new Date().toISOString());
+}
+
+// Migration: v1 schema — create api_keys table
+const v1ApiKeysMigration = "006_v1_api_keys";
+const v1ApiKeysRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(v1ApiKeysMigration);
+if (!v1ApiKeysRan) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS api_keys (
+        id              TEXT NOT NULL PRIMARY KEY,
+        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        key_hash        TEXT NOT NULL UNIQUE,
+        key_prefix      TEXT NOT NULL,
+        label           TEXT NOT NULL DEFAULT 'Default',
+        last_used_at    TEXT,
+        created_at      TEXT NOT NULL,
+        revoked_at      TEXT
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
+  `);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(v1ApiKeysMigration, new Date().toISOString());
+}
+
+// Migration: v1 schema — create usage_events and monthly_usage tables
+const v1UsageMigration = "007_v1_usage_tables";
+const v1UsageRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(v1UsageMigration);
+if (!v1UsageRan) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS usage_events (
+        id              TEXT NOT NULL PRIMARY KEY,
+        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        operation       TEXT NOT NULL,
+        origin          TEXT NOT NULL,
+        request_id      TEXT UNIQUE,
+        created_at      TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_usage_events_user_id ON usage_events(user_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_user_month ON usage_events(user_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS monthly_usage (
+        id              TEXT NOT NULL PRIMARY KEY,
+        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        month           TEXT NOT NULL,
+        writes          INTEGER NOT NULL DEFAULT 0,
+        reads           INTEGER NOT NULL DEFAULT 0,
+        queries         INTEGER NOT NULL DEFAULT 0,
+        total_ops       INTEGER NOT NULL DEFAULT 0,
+        overage_ops     INTEGER NOT NULL DEFAULT 0,
+        synced_to_stripe INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(user_id, month)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_monthly_usage_user_month ON monthly_usage(user_id, month);
+  `);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(v1UsageMigration, new Date().toISOString());
+}
+
 // =============================================================================
 // Owner resolution
 // =============================================================================
@@ -283,12 +353,26 @@ if (ownerEmail) {
   if (!ownerRow) {
     const id = randomUUID();
     const now = new Date().toISOString();
-    db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(
-      id,
-      ownerEmail,
-      now,
-    );
+    const hasUpdatedAt = (db.prepare(
+      `SELECT count(*) as count FROM pragma_table_info('users') WHERE name = 'updated_at'`,
+    ).get() as { count: number }).count > 0;
+
+    if (hasUpdatedAt) {
+      db.prepare(
+        `INSERT INTO users (id, email, role, plan, created_at, updated_at) VALUES (?, ?, 'admin', 'free', ?, ?)`,
+      ).run(id, ownerEmail, now, now);
+    } else {
+      db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(id, ownerEmail, now);
+    }
     ownerRow = { id };
+  } else {
+    // Ensure owner always has admin role
+    const hasRole = (db.prepare(
+      `SELECT count(*) as count FROM pragma_table_info('users') WHERE name = 'role'`,
+    ).get() as { count: number }).count > 0;
+    if (hasRole) {
+      db.prepare(`UPDATE users SET role = 'admin' WHERE id = ? AND role != 'admin'`).run(ownerRow.id);
+    }
   }
 
   userId = ownerRow.id;
