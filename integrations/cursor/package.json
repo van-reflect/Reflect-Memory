@@ -5,7 +5,7 @@
   "type": "module",
   "main": "server.mjs",
   "bin": {
-    "reflect-memory-mcp": "./server.mjs"
+    "reflect-memory-mcp": "server.mjs"
   },
   "scripts": {
     "start": "node server.mjs"
