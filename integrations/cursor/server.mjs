@@ -48,7 +48,7 @@ async function fetchApi(path, options = {}) {
 const server = new Server(
   {
     name: "reflect-memory",
-    version: "1.0.0",
+    version: "1.1.0",
   },
   {
     capabilities: {
@@ -160,6 +160,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             items: { type: "string" },
             description: "Use ['*'] for all agents. Default: ['*']",
           },
+          memory_type: {
+            type: "string",
+            enum: ["semantic", "episodic", "procedural"],
+            description: "Memory type: semantic (facts/knowledge), episodic (events/decisions), procedural (workflows/patterns). Default: semantic",
+          },
         },
         required: ["title", "content", "tags"],
       },
@@ -246,6 +251,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error("title, content, and tags are required");
         }
         const allowed_vendors = args?.allowed_vendors ?? ["*"];
+        const memory_type = args?.memory_type ?? "semantic";
         const data = await fetchApi("/agent/memories", {
           method: "POST",
           body: JSON.stringify({
@@ -253,6 +259,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content,
             tags,
             allowed_vendors,
+            memory_type,
           }),
         });
         return {

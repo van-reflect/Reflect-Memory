@@ -145,15 +145,17 @@ function createMcpServerWithTools(
       content: z.string().min(1).describe("The memory content"),
       tags: z.array(z.string()).default([]).describe("Tags for categorization"),
       allowed_vendors: z.array(z.string()).default(["*"]).describe("Which vendors can see this. Use ['*'] for all."),
+      memory_type: z.enum(["semantic", "episodic", "procedural"]).default("semantic").describe("Type of memory: semantic (facts/knowledge), episodic (events/decisions), procedural (workflows/patterns)"),
     },
     { title: "Create Memory", destructiveHint: true },
-    async ({ title, content, tags, allowed_vendors }) => {
+    async ({ title, content, tags, allowed_vendors, memory_type }) => {
       const memory = createMemory(db, userId, {
         title,
         content,
         tags,
         origin: vendor,
         allowed_vendors,
+        memory_type,
       });
       return { content: [{ type: "text", text: JSON.stringify(memory, null, 2) }] };
     },

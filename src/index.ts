@@ -181,6 +181,16 @@ if (tableExists.count === 0) {
     db.exec(`ALTER TABLE memories ADD COLUMN deleted_at TEXT`);
   }
 
+  const hasMemoryType = db
+    .prepare(
+      `SELECT count(*) as count FROM pragma_table_info('memories') WHERE name = 'memory_type'`,
+    )
+    .get() as { count: number };
+
+  if (hasMemoryType.count === 0) {
+    db.exec(`ALTER TABLE memories ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'semantic'`);
+  }
+
   const hasUserEmail = db
     .prepare(
       `SELECT count(*) as count FROM pragma_table_info('users') WHERE name = 'email'`,
@@ -330,6 +340,49 @@ if (!v1UsageRan) {
     CREATE INDEX IF NOT EXISTS idx_monthly_usage_user_month ON monthly_usage(user_id, month);
   `);
   db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(v1UsageMigration, new Date().toISOString());
+}
+
+// Migration: add memory_type column to memories
+const memoryTypeMigrationName = "008_add_memory_type";
+const memoryTypeMigrationRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(memoryTypeMigrationName);
+if (!memoryTypeMigrationRan) {
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    memoryTypeMigrationName,
+    new Date().toISOString(),
+  );
+}
+
+// Migration: create memory_versions table for version history
+const memoryVersionsMigrationName = "009_memory_versions";
+const memoryVersionsMigrationRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(memoryVersionsMigrationName);
+if (!memoryVersionsMigrationRan) {
+  const hasMemoryVersions = db
+    .prepare(
+      `SELECT count(*) as count FROM sqlite_master WHERE type = 'table' AND name = 'memory_versions'`,
+    )
+    .get() as { count: number };
+
+  if (hasMemoryVersions.count === 0) {
+    db.exec(`CREATE TABLE memory_versions (
+      id              TEXT NOT NULL PRIMARY KEY,
+      memory_id       TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      title           TEXT NOT NULL,
+      content         TEXT NOT NULL,
+      tags            TEXT NOT NULL DEFAULT '[]' CHECK(json_type(tags) = 'array'),
+      memory_type     TEXT NOT NULL DEFAULT 'semantic' CHECK(memory_type IN ('semantic', 'episodic', 'procedural')),
+      origin          TEXT NOT NULL,
+      allowed_vendors TEXT NOT NULL DEFAULT '["*"]' CHECK(json_type(allowed_vendors) = 'array'),
+      version_number  INTEGER NOT NULL,
+      created_at      TEXT NOT NULL
+    ) STRICT`);
+    db.exec(`CREATE INDEX idx_memory_versions_memory_id ON memory_versions(memory_id, version_number)`);
+  }
+
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    memoryVersionsMigrationName,
+    new Date().toISOString(),
+  );
 }
 
 // =============================================================================

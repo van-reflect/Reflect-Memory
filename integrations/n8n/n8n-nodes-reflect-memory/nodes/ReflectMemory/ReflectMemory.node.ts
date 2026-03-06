@@ -141,6 +141,20 @@ export class ReflectMemory implements INodeType {
 
       // --- Write ---
       {
+        displayName: "Memory Type",
+        name: "memory_type",
+        type: "options",
+        options: [
+          { name: "Semantic", value: "semantic" },
+          { name: "Episodic", value: "episodic" },
+          { name: "Procedural", value: "procedural" },
+        ],
+        default: "semantic",
+        description:
+          "Memory classification: Semantic (facts/knowledge), Episodic (events/decisions), Procedural (workflows/patterns)",
+        displayOptions: { show: { operation: ["write"] } },
+      },
+      {
         displayName: "Title",
         name: "title",
         type: "string",
@@ -256,6 +270,7 @@ export class ReflectMemory implements INodeType {
           }
 
           case "write": {
+            const memory_type = this.getNodeParameter("memory_type", i, "semantic") as string;
             const title = this.getNodeParameter("title", i) as string;
             const content = this.getNodeParameter("content", i) as string;
             const tagsStr = this.getNodeParameter("writeTags", i, "") as string;
@@ -278,7 +293,7 @@ export class ReflectMemory implements INodeType {
               {
                 method: "POST",
                 url: `${baseUrl}/agent/memories`,
-                body: { title, content, tags, allowed_vendors },
+                body: { title, content, tags, allowed_vendors, memory_type },
                 json: true,
               },
             ) as IDataObject;

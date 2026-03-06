@@ -33,6 +33,7 @@ const memory = await rm.write({
   content: "We chose event sourcing with CQRS for the order service...",
   tags: ["architecture", "decisions"],
   allowedVendors: ["*"],
+  memoryType: "semantic",
 });
 
 // Retrieve it later
@@ -79,6 +80,7 @@ console.log(memory.id); // "b3f1a2c4-..."
 | `content`        | `string`   | Yes      | Full content body                              |
 | `tags`           | `string[]` | No       | Tags for categorization and filtering          |
 | `allowedVendors` | `string[]` | No       | Vendor allowlist — `["*"]` permits all vendors |
+| `memoryType`     | `"semantic" \| "episodic" \| "procedural"` | No | Memory classification: semantic (facts/knowledge), episodic (events/decisions), procedural (workflows/patterns). Defaults to `"semantic"` |
 
 **Returns:** `Promise<Memory>`
 
@@ -213,6 +215,25 @@ console.log(identity.user_id, identity.email);
 
 **Returns:** `Promise<Identity>`
 
+## Memory Types
+
+Every memory has a `memory_type` that classifies the kind of knowledge it represents. You can set this when writing a memory via the `memoryType` parameter. If omitted, it defaults to `"semantic"`.
+
+| Type          | Description                                                                 |
+| ------------- | --------------------------------------------------------------------------- |
+| `semantic`    | Facts, knowledge, and reference information (e.g. architecture decisions, API specs) |
+| `episodic`    | Events, decisions, and contextual experiences (e.g. meeting notes, incident reports) |
+| `procedural`  | Workflows, patterns, and step-by-step processes (e.g. deployment runbooks, coding conventions) |
+
+```typescript
+await rm.write({
+  title: "Deploy Runbook",
+  content: "1. Run migrations  2. Deploy canary  3. Promote to prod ...",
+  tags: ["ops", "deploy"],
+  memoryType: "procedural",
+});
+```
+
 ## Error Handling
 
 All API errors throw a `ReflectMemoryError` with structured context:
@@ -280,6 +301,7 @@ interface Memory {
   tags: string[];
   origin: string;
   allowed_vendors: string[];
+  memory_type: string;
   created_at: string;
   updated_at: string;
   deleted_at?: string;
@@ -294,6 +316,7 @@ interface MemorySummary {
   title: string;
   tags: string[];
   origin: string;
+  memory_type: string;
   created_at: string;
 }
 ```

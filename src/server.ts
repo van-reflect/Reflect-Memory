@@ -152,6 +152,11 @@ const memoryBodySchema = {
       minItems: 1,
       maxItems: 50,
     },
+    memory_type: {
+      type: "string" as const,
+      enum: ["semantic", "episodic", "procedural"],
+      default: "semantic",
+    },
   },
 };
 
@@ -173,6 +178,11 @@ const agentMemoryBodySchema = {
       minItems: 1,
       maxItems: 50,
     },
+    memory_type: {
+      type: "string" as const,
+      enum: ["semantic", "episodic", "procedural"],
+      default: "semantic",
+    },
   },
 };
 
@@ -193,6 +203,10 @@ const updateMemoryBodySchema = {
       items: { type: "string" as const, minLength: 1, maxLength: 50 },
       minItems: 1,
       maxItems: 50,
+    },
+    memory_type: {
+      type: "string" as const,
+      enum: ["semantic", "episodic", "procedural"],
     },
   },
 };
@@ -783,6 +797,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         content: string;
         tags: string[];
         allowed_vendors?: string[];
+        memory_type?: string;
       };
 
       const allowedVendors = body.allowed_vendors ?? ["*"];
@@ -799,6 +814,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         tags: body.tags,
         origin: request.authMethod === "dashboard" ? "dashboard" : "cursor",
         allowed_vendors: allowedVendors,
+        memory_type: body.memory_type,
       };
 
       const memory = createMemory(db, request.userId, input);
@@ -828,6 +844,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         content: string;
         tags: string[];
         allowed_vendors: string[];
+        memory_type?: string;
       };
 
       const vendorErr = validateAllowedVendors(body.allowed_vendors, validVendors);
@@ -842,6 +859,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         tags: body.tags,
         origin: request.vendor!,
         allowed_vendors: body.allowed_vendors,
+        memory_type: body.memory_type,
       };
 
       const memory = createMemory(db, request.userId, input);

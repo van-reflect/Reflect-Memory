@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Reflect Memory Agent API
-  version: 2.0.0
+  version: 2.1.0
   description: >
     Cross-agent memory system. Write, browse, retrieve, and query structured memories.
     Use /agent/memories/browse to discover available memories (lightweight, no content).
@@ -45,6 +45,14 @@ paths:
                   items:
                     type: string
                   description: "Which vendors can see this. Use ['*'] for all."
+                memory_type:
+                  type: string
+                  enum:
+                    - semantic
+                    - episodic
+                    - procedural
+                  default: semantic
+                  description: "Memory classification. semantic = facts/knowledge, episodic = events/decisions, procedural = workflows/patterns"
       responses:
         "201":
           description: Memory created
@@ -69,6 +77,9 @@ paths:
                     type: array
                     items:
                       type: string
+                  memory_type:
+                    type: string
+                    description: "Memory type: semantic, episodic, or procedural"
   /agent/memories/latest:
     get:
       operationId: getLatestMemory
@@ -95,6 +106,7 @@ paths:
                   tags: { type: array, items: { type: string } }
                   origin: { type: string }
                   allowed_vendors: { type: array, items: { type: string } }
+                  memory_type: { type: string, description: "Memory type: semantic, episodic, or procedural" }
                   created_at: { type: string }
                   updated_at: { type: string }
         "404":
@@ -129,6 +141,7 @@ paths:
                   tags: { type: array, items: { type: string } }
                   origin: { type: string }
                   allowed_vendors: { type: array, items: { type: string } }
+                  memory_type: { type: string, description: "Memory type: semantic, episodic, or procedural" }
                   created_at: { type: string }
                   updated_at: { type: string }
         "404":
@@ -183,6 +196,7 @@ paths:
                         tags: { type: array, items: { type: string } }
                         origin: { type: string }
                         allowed_vendors: { type: array, items: { type: string } }
+                        memory_type: { type: string, description: "Memory type: semantic, episodic, or procedural" }
                         created_at: { type: string }
                         updated_at: { type: string }
                   total:
@@ -270,6 +284,9 @@ paths:
                             type: string
                         origin:
                           type: string
+                        memory_type:
+                          type: string
+                          description: "Memory type: semantic, episodic, or procedural"
                         created_at:
                           type: string
                         updated_at:

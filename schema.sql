@@ -71,6 +71,8 @@ CREATE TABLE memories (
     origin          TEXT NOT NULL DEFAULT 'user',
     allowed_vendors TEXT NOT NULL DEFAULT '["*"]'
                     CHECK(json_type(allowed_vendors) = 'array'),
+    memory_type     TEXT NOT NULL DEFAULT 'semantic'
+                    CHECK(memory_type IN ('semantic', 'episodic', 'procedural')),
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     deleted_at      TEXT
@@ -79,6 +81,32 @@ CREATE TABLE memories (
 CREATE INDEX idx_memories_user_id ON memories(user_id);
 CREATE INDEX idx_memories_deleted_at ON memories(user_id, deleted_at);
 CREATE INDEX idx_memories_user_created ON memories(user_id, created_at DESC);
+
+-- =============================================================================
+-- MEMORY_VERSIONS
+-- =============================================================================
+-- Append-only version history. A new row is created before each update.
+-- The memories table always holds the current version.
+-- =============================================================================
+
+CREATE TABLE memory_versions (
+    id              TEXT NOT NULL PRIMARY KEY,
+    memory_id       TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    title           TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    tags            TEXT NOT NULL DEFAULT '[]'
+                    CHECK(json_type(tags) = 'array'),
+    memory_type     TEXT NOT NULL DEFAULT 'semantic'
+                    CHECK(memory_type IN ('semantic', 'episodic', 'procedural')),
+    origin          TEXT NOT NULL,
+    allowed_vendors TEXT NOT NULL DEFAULT '["*"]'
+                    CHECK(json_type(allowed_vendors) = 'array'),
+    version_number  INTEGER NOT NULL,
+    created_at      TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX idx_memory_versions_memory_id ON memory_versions(memory_id, version_number);
 
 -- =============================================================================
 -- USAGE_EVENTS
@@ -148,4 +176,22 @@ CREATE INDEX idx_waitlist_email ON waitlist(email);
 CREATE INDEX idx_waitlist_position ON waitlist(position);
 CREATE INDEX idx_early_access_email ON early_access_requests(email);
 CREATE INDEX idx_early_access_status ON early_access_requests(status);
+
+-- =============================================================================
+-- RESERVED: Phase 3 — Identity & Governance Primitives
+-- =============================================================================
+-- These columns/tables will be added when multi-user and enterprise features
+-- are implemented. Schema is designed to accommodate them without breaking changes.
+--
+-- memories table additions (future):
+--   principal_id    — canonical user identity across surfaces
+--   actor_id        — agent/workflow/role that performed the action
+--   actor_surface   — surface the actor operated from (chatgpt, claude, cursor, etc.)
+--
+-- New tables (future):
+--   principals      — cross-surface identity mapping
+--   actors          — agent/workflow/role definitions
+--   delegations     — principal-to-actor delegation relationships
+--   visibility_rules — multi-dimensional governance (principal, actor, vendor, operation, temporal scopes)
+-- =============================================================================
 
