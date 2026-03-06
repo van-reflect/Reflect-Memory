@@ -16,6 +16,7 @@ export interface MemoryEntry {
   tags: string[];
   origin: string;
   allowed_vendors: string[];
+  memory_type: string;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
@@ -27,6 +28,7 @@ export interface CreateMemoryInput {
   tags: string[];
   origin: string;
   allowed_vendors: string[];
+  memory_type?: string;
 }
 
 export interface UpdateMemoryInput {
@@ -48,6 +50,7 @@ export interface MemorySummary {
   title: string;
   tags: string[];
   origin: string;
+  memory_type: string;
   created_at: string;
   updated_at: string;
 }
@@ -69,6 +72,7 @@ interface MemoryRow {
   tags: string;
   origin: string;
   allowed_vendors: string;
+  memory_type: string;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
@@ -82,14 +86,15 @@ function rowToMemory(row: MemoryRow): MemoryEntry {
     tags: JSON.parse(row.tags) as string[],
     origin: row.origin,
     allowed_vendors: JSON.parse(row.allowed_vendors) as string[],
+    memory_type: row.memory_type,
     created_at: row.created_at,
     updated_at: row.updated_at,
     deleted_at: row.deleted_at ?? undefined,
   };
 }
 
-const COLUMNS = `id, user_id, title, content, tags, origin, allowed_vendors, created_at, updated_at, deleted_at`;
-const SUMMARY_COLUMNS = `id, user_id, title, tags, origin, created_at, updated_at, deleted_at`;
+const COLUMNS = `id, user_id, title, content, tags, origin, allowed_vendors, memory_type, created_at, updated_at, deleted_at`;
+const SUMMARY_COLUMNS = `id, user_id, title, tags, origin, memory_type, created_at, updated_at, deleted_at`;
 
 function escapeLike(term: string): string {
   return term.replace(/[%_\\]/g, (ch) => `\\${ch}`);
@@ -119,11 +124,12 @@ export function createMemory(
   const now = new Date().toISOString();
   const tagsJson = JSON.stringify(input.tags);
   const allowedVendorsJson = JSON.stringify(input.allowed_vendors);
+  const memoryType = input.memory_type ?? "semantic";
 
   db.prepare(
-    `INSERT INTO memories (id, user_id, title, content, tags, origin, allowed_vendors, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, userId, input.title, input.content, tagsJson, input.origin, allowedVendorsJson, now, now);
+    `INSERT INTO memories (id, user_id, title, content, tags, origin, allowed_vendors, memory_type, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, userId, input.title, input.content, tagsJson, input.origin, allowedVendorsJson, memoryType, now, now);
 
   return {
     id,
@@ -132,6 +138,7 @@ export function createMemory(
     tags: [...input.tags],
     origin: input.origin,
     allowed_vendors: [...input.allowed_vendors],
+    memory_type: memoryType,
     created_at: now,
     updated_at: now,
   };
@@ -350,6 +357,7 @@ interface SummaryRow {
   title: string;
   tags: string;
   origin: string;
+  memory_type: string;
   created_at: string;
   updated_at: string;
 }
@@ -360,6 +368,7 @@ function rowToSummary(row: SummaryRow): MemorySummary {
     title: row.title,
     tags: JSON.parse(row.tags) as string[],
     origin: row.origin,
+    memory_type: row.memory_type,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -459,6 +468,26 @@ export function updateMemory(
   const now = new Date().toISOString();
   const tagsJson = JSON.stringify(input.tags);
   const allowedVendorsJson = JSON.stringify(input.allowed_vendors);
+
+  const current = db
+    .prepare(`SELECT * FROM memories WHERE id = ? AND user_id = ?`)
+    .get(memoryId, userId) as MemoryRow | undefined;
+
+  if (!current) return null;
+
+  const versionCount = db
+    .prepare(`SELECT count(*) as count FROM memory_versions WHERE memory_id = ?`)
+    .get(memoryId) as { count: number };
+
+  const versionId = randomUUID();
+  db.prepare(
+    `INSERT INTO memory_versions (id, memory_id, user_id, title, content, tags, memory_type, origin, allowed_vendors, version_number, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    versionId, memoryId, userId, current.title, current.content,
+    current.tags, current.memory_type ?? "semantic", current.origin, current.allowed_vendors,
+    versionCount.count + 1, now,
+  );
 
   const result = db
     .prepare(

@@ -149,12 +149,16 @@ export class ReflectMemory {
    * ```
    */
   async write(params: WriteMemoryParams): Promise<Memory> {
-    return this.request<Memory>("POST", "/agent/memories", {
+    const body: Record<string, unknown> = {
       title: params.title,
       content: params.content,
       tags: params.tags ?? [],
       allowed_vendors: params.allowedVendors ?? [],
-    });
+    };
+    if (params.memoryType !== undefined) {
+      body.memory_type = params.memoryType;
+    }
+    return this.request<Memory>("POST", "/agent/memories", body);
   }
 
   /**

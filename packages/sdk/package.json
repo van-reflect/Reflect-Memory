@@ -1,6 +1,6 @@
 {
   "name": "reflect-memory-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript client SDK for the Reflect Memory API",
   "author": "Reflect Memory Inc",
   "license": "MIT",

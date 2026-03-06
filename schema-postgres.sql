@@ -54,6 +54,8 @@ CREATE TABLE memories (
     tags            JSONB NOT NULL DEFAULT '[]'::jsonb,
     origin          TEXT NOT NULL DEFAULT 'user',
     allowed_vendors JSONB NOT NULL DEFAULT '["*"]'::jsonb,
+    memory_type     TEXT NOT NULL DEFAULT 'semantic'
+                    CHECK (memory_type IN ('semantic', 'episodic', 'procedural')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     deleted_at      TIMESTAMPTZ
@@ -68,6 +70,30 @@ CREATE INDEX idx_memories_tags ON memories USING GIN (tags);
 ALTER TABLE memories ADD COLUMN search_vector tsvector
     GENERATED ALWAYS AS (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(content, ''))) STORED;
 CREATE INDEX idx_memories_fts ON memories USING GIN (search_vector);
+
+-- =============================================================================
+-- MEMORY_VERSIONS
+-- =============================================================================
+-- Append-only version history. A new row is created before each update.
+-- The memories table always holds the current version.
+-- =============================================================================
+
+CREATE TABLE memory_versions (
+    id              UUID NOT NULL PRIMARY KEY DEFAULT uuid_generate_v4(),
+    memory_id       UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    title           TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    tags            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    memory_type     TEXT NOT NULL DEFAULT 'semantic'
+                    CHECK (memory_type IN ('semantic', 'episodic', 'procedural')),
+    origin          TEXT NOT NULL,
+    allowed_vendors JSONB NOT NULL DEFAULT '["*"]'::jsonb,
+    version_number  INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_memory_versions_memory ON memory_versions(memory_id, version_number);
 
 -- =============================================================================
 -- USAGE_EVENTS (partitioned by month)
@@ -158,3 +184,21 @@ CREATE TABLE _migrations (
     name        TEXT PRIMARY KEY,
     applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- =============================================================================
+-- RESERVED: Phase 3 — Identity & Governance Primitives
+-- =============================================================================
+-- These columns/tables will be added when multi-user and enterprise features
+-- are implemented. Schema is designed to accommodate them without breaking changes.
+--
+-- memories table additions (future):
+--   principal_id    — canonical user identity across surfaces
+--   actor_id        — agent/workflow/role that performed the action
+--   actor_surface   — surface the actor operated from (chatgpt, claude, cursor, etc.)
+--
+-- New tables (future):
+--   principals      — cross-surface identity mapping
+--   actors          — agent/workflow/role definitions
+--   delegations     — principal-to-actor delegation relationships
+--   visibility_rules — multi-dimensional governance (principal, actor, vendor, operation, temporal scopes)
+-- =============================================================================

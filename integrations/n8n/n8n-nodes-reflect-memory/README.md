@@ -48,7 +48,7 @@ To set up credentials:
 | **Get by ID** | Retrieve a specific memory by its UUID |
 | **Browse** | Browse memory summaries with pagination (limit & offset) |
 | **Get by Tag** | Get memories matching any of the given tags |
-| **Write** | Create a new memory with title, content, tags, and vendor visibility |
+| **Write** | Create a new memory with type, title, content, tags, and vendor visibility |
 
 ## Usage
 
@@ -72,6 +72,7 @@ Provide a comma-separated list of tags. Returns memories matching any of the giv
 
 Create a new memory with:
 
+- **Memory Type** — Classification for the memory: `Semantic` (facts/knowledge), `Episodic` (events/decisions), or `Procedural` (workflows/patterns). Defaults to `Semantic`.
 - **Title** — Short descriptive title
 - **Content** — The memory content (supports multi-line)
 - **Tags** — Comma-separated tags for categorization

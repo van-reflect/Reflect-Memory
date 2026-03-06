@@ -7,6 +7,7 @@ export interface Memory {
   tags: string[];
   origin: string;
   allowed_vendors: string[];
+  memory_type: string;
   created_at: string;
   updated_at: string;
   deleted_at?: string;
@@ -18,6 +19,7 @@ export interface MemorySummary {
   title: string;
   tags: string[];
   origin: string;
+  memory_type: string;
   created_at: string;
 }
 
@@ -44,6 +46,8 @@ export interface WriteMemoryParams {
   tags?: string[];
   /** Vendor allowlist. Pass `["*"]` to allow all vendors. */
   allowedVendors?: string[];
+  /** Memory classification: semantic (facts/knowledge), episodic (events/decisions), procedural (workflows/patterns). */
+  memoryType?: "semantic" | "episodic" | "procedural";
 }
 
 /** Parameters for browsing memory summaries via {@link ReflectMemory.browse}. */
