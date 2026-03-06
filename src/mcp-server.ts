@@ -5,7 +5,7 @@
 // Auth: Bearer token in the Authorization header, validated against any RM_AGENT_KEY_*.
 
 import express from "express";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash, timingSafeEqual as cryptoTimingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -168,20 +168,15 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   const app = express();
   app.use(express.json());
 
-  function timingSafeEqual(a: string, b: string): boolean {
-    if (a.length !== b.length) return false;
-    const bufA = Buffer.from(a);
-    const bufB = Buffer.from(b);
-    let result = 0;
-    for (let i = 0; i < bufA.length; i++) {
-      result |= bufA[i]! ^ bufB[i]!;
-    }
-    return result === 0;
+  function constantTimeEqual(a: string, b: string): boolean {
+    const hashA = createHash("sha256").update(a).digest();
+    const hashB = createHash("sha256").update(b).digest();
+    return cryptoTimingSafeEqual(hashA, hashB);
   }
 
   function resolveVendor(token: string): string | null {
     for (const [vendor, key] of Object.entries(agentKeys)) {
-      if (timingSafeEqual(token, key)) return vendor;
+      if (constantTimeEqual(token, key)) return vendor;
     }
     return null;
   }
