@@ -512,6 +512,46 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
+  // Quota enforcement — reject requests when plan limits are exceeded
+  // ===========================================================================
+
+  const WRITE_ROUTES = new Set(["/memories", "/agent/memories"]);
+  const READ_ROUTES = new Set([
+    "/memories/list", "/agent/memories/browse", "/agent/memories/by-tag",
+    "/query", "/chat",
+  ]);
+
+  server.addHook("preHandler", async (request, reply) => {
+    if (!request.userId) return;
+    const path = request.url.split("?")[0];
+    if (request.method !== "POST") return;
+
+    const isWrite = WRITE_ROUTES.has(path);
+    const isRead = READ_ROUTES.has(path);
+    if (!isWrite && !isRead) return;
+
+    const quota = checkQuota(db, request.userId);
+    if (isWrite && quota.writes_remaining <= 0) {
+      return reply.code(429).send({
+        error: "Monthly write limit reached",
+        plan: quota.plan,
+        writes_used: quota.usage.writes,
+        limit: quota.limits.maxWritesPerMonth,
+        upgrade_url: "https://reflectmemory.com/dashboard",
+      });
+    }
+    if (isRead && quota.reads_remaining <= 0) {
+      return reply.code(429).send({
+        error: "Monthly read limit reached",
+        plan: quota.plan,
+        reads_used: quota.usage.reads + quota.usage.queries,
+        limit: quota.limits.maxReadsPerMonth,
+        upgrade_url: "https://reflectmemory.com/dashboard",
+      });
+    }
+  });
+
+  // ===========================================================================
   // Usage metering hook — records operations after successful responses
   // ===========================================================================
 
@@ -1774,7 +1814,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /webhooks/clerk — Clerk user sync (public, verified by signing secret)
+  // POST /webhooks/clerk — Clerk user sync (public, verified by Svix signature)
   // ===========================================================================
 
   const clerkWebhookSecret = process.env.CLERK_WEBHOOK_SECRET;
@@ -1787,17 +1827,40 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return reply.code(404).send({ error: "Not configured" });
       }
 
-      const payload = request.body as {
-        type?: string;
-        data?: {
-          id?: string;
-          email_addresses?: Array<{ email_address?: string }>;
-          primary_email_address_id?: string;
-        };
-      };
+      // Verify Svix signature — Clerk signs every webhook with svix-id, svix-timestamp, svix-signature
+      const svixId = request.headers["svix-id"] as string | undefined;
+      const svixTimestamp = request.headers["svix-timestamp"] as string | undefined;
+      const svixSignature = request.headers["svix-signature"] as string | undefined;
 
-      const eventType = payload?.type;
-      const data = payload?.data;
+      if (!svixId || !svixTimestamp || !svixSignature) {
+        logSecurity("clerk_webhook_missing_headers", request);
+        return reply.code(400).send({ error: "Missing Svix verification headers" });
+      }
+
+      let verifiedPayload: Record<string, unknown>;
+      try {
+        const { Webhook } = await import("svix");
+        const wh = new Webhook(clerkWebhookSecret);
+        const rawBody = typeof request.body === "string"
+          ? request.body
+          : JSON.stringify(request.body);
+        verifiedPayload = wh.verify(rawBody, {
+          "svix-id": svixId,
+          "svix-timestamp": svixTimestamp,
+          "svix-signature": svixSignature,
+        }) as Record<string, unknown>;
+      } catch (err) {
+        logSecurity("clerk_webhook_invalid_signature", request);
+        return reply.code(400).send({ error: "Invalid webhook signature" });
+      }
+
+      const eventType = verifiedPayload.type as string | undefined;
+      const data = verifiedPayload.data as {
+        id?: string;
+        email_addresses?: Array<{ email_address?: string }>;
+        primary_email_address_id?: string;
+      } | undefined;
+
       if (!eventType || !data?.id) {
         return reply.code(400).send({ error: "Invalid webhook payload" });
       }
