@@ -1,13 +1,14 @@
-# dependencies
 node_modules/
-
-# build output
 dist/
 
-# SQLite database files
 *.db
 *.db-shm
 *.db-wal
 
-# environment secrets
 .env
+.env.*
+.env.local
+.env.production
+
+.cursor/
+SENIOR-REVIEW-GUIDE.md
