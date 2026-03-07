@@ -1,4 +1,5 @@
-/** A full memory record returned by the Reflect Memory API. */
+export type MemoryType = "semantic" | "episodic" | "procedural";
+
 export interface Memory {
   id: string;
   user_id: string;
@@ -7,28 +8,25 @@ export interface Memory {
   tags: string[];
   origin: string;
   allowed_vendors: string[];
-  memory_type: string;
+  memory_type: MemoryType;
   created_at: string;
   updated_at: string;
   deleted_at?: string;
 }
 
-/** A lightweight memory summary (no content field). Returned by browse endpoints. */
 export interface MemorySummary {
   id: string;
   title: string;
   tags: string[];
   origin: string;
-  memory_type: string;
+  memory_type: MemoryType;
   created_at: string;
 }
 
-/** Identity information returned by the /whoami endpoint. */
 export interface Identity {
   user_id: string;
   email?: string;
   name?: string;
-  [key: string]: unknown;
 }
 
 /** Options for constructing a {@link ReflectMemory} client. */

@@ -47,6 +47,7 @@ import {
   type CreateMemoryInput,
   type UpdateMemoryInput,
   type MemoryFilter,
+  type MemoryType,
   type PaginationOptions,
 } from "./memory-service.js";
 import { buildPrompt, type PromptResult } from "./context-builder.js";
@@ -351,6 +352,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   } = config;
 
   const server = Fastify({
+    bodyLimit: 262_144,
     ajv: {
       customOptions: {
         discriminator: true,
@@ -620,7 +622,6 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       service: "reflect-memory",
       status: "ok",
       uptime_seconds: uptimeSeconds,
-      model: modelGateway.model,
     };
   });
 
@@ -814,7 +815,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         tags: body.tags,
         origin: request.authMethod === "dashboard" ? "dashboard" : "cursor",
         allowed_vendors: allowedVendors,
-        memory_type: body.memory_type,
+        memory_type: body.memory_type as MemoryType | undefined,
       };
 
       const memory = createMemory(db, request.userId, input);
@@ -853,13 +854,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return { error: vendorErr };
       }
 
+      if (!request.vendor) {
+        return reply.code(403).send({ error: "Agent key required for this endpoint" });
+      }
+
       const input: CreateMemoryInput = {
         title: body.title,
         content: body.content,
         tags: body.tags,
-        origin: request.vendor!,
+        origin: request.vendor,
         allowed_vendors: body.allowed_vendors,
-        memory_type: body.memory_type,
+        memory_type: body.memory_type as MemoryType | undefined,
       };
 
       const memory = createMemory(db, request.userId, input);
@@ -1741,12 +1746,23 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       };
 
       const defaultBase = "https://www.reflectmemory.com";
+
+      function validateRedirectUrl(url: string | undefined, fallback: string): string {
+        if (!url) return fallback;
+        try {
+          const parsed = new URL(url);
+          const allowed = new Set(["www.reflectmemory.com", "reflectmemory.com", "localhost"]);
+          if (allowed.has(parsed.hostname)) return url;
+        } catch {}
+        return fallback;
+      }
+
       const url = await createCheckoutSession(
         db,
         request.userId,
         plan,
-        success_url ?? `${defaultBase}/dashboard?billing=success`,
-        cancel_url ?? `${defaultBase}/dashboard?billing=cancelled`,
+        validateRedirectUrl(success_url, `${defaultBase}/dashboard?billing=success`),
+        validateRedirectUrl(cancel_url, `${defaultBase}/dashboard?billing=cancelled`),
       );
 
       if (!url) {

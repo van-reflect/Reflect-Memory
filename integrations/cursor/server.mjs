@@ -193,7 +193,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_memory_by_id": {
         const id = args?.id;
         if (!id) throw new Error("id is required");
-        const data = await fetchApi(`/agent/memories/${id}`);
+        const data = await fetchApi(`/agent/memories/${encodeURIComponent(id)}`);
         return {
           content: [
             {
