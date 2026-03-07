@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  typecheck:
+    name: TypeScript Compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      REFLECT_TEST_API_KEY: ${{ secrets.REFLECT_TEST_API_KEY }}
+      REFLECT_TEST_BASE_URL: ${{ vars.REFLECT_TEST_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Run API integration tests
+        run: node tests/api.test.mjs
+
+  security:
+    name: Security Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify .env files are gitignored
+        run: |
+          MISSING=0
+          for pattern in '.env' '.env.local' '.env.production'; do
+            if ! grep -q "^${pattern}$" .gitignore 2>/dev/null && \
+               ! grep -q "^\.env\*$" .gitignore 2>/dev/null; then
+              echo "::warning::${pattern} not explicitly in .gitignore"
+            fi
+          done
+          if ! grep -q '\.env' .gitignore 2>/dev/null; then
+            echo "::error::.env is not in .gitignore"
+            exit 1
+          fi
+
+      - name: Verify no sensitive files are tracked
+        run: |
+          SENSITIVE=(.env .env.local .env.production credentials.json serviceAccountKey.json)
+          for f in "${SENSITIVE[@]}"; do
+            if git ls-files --error-unmatch "$f" 2>/dev/null; then
+              echo "::error::Sensitive file '${f}' is tracked by git — remove it and rotate credentials"
+              exit 1
+            fi
+          done
+
+      - name: Scan for hardcoded secrets
+        run: |
+          PATTERNS=(
+            'AKIA[0-9A-Z]{16}'
+            'sk-[a-zA-Z0-9]{20,}'
+            'sk_live_[a-zA-Z0-9]{20,}'
+            'rk_live_[a-zA-Z0-9]{20,}'
+            'ghp_[a-zA-Z0-9]{36}'
+            'gho_[a-zA-Z0-9]{36}'
+            'github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}'
+            'glpat-[a-zA-Z0-9\-]{20,}'
+            'xox[bpors]-[a-zA-Z0-9\-]+'
+            'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'
+            'rm_live_[a-f0-9]{48}'
+          )
+
+          FAILED=0
+          for pattern in "${PATTERNS[@]}"; do
+            MATCHES=$(grep -rEn "$pattern" \
+              --include='*.ts' --include='*.js' --include='*.mjs' \
+              --include='*.json' --include='*.yml' --include='*.yaml' \
+              --include='*.md' --include='*.env.*' \
+              --exclude-dir=node_modules --exclude-dir=dist \
+              --exclude-dir=.git --exclude='package-lock.json' \
+              --exclude='ci.yml' --exclude='security.yml' \
+              . 2>/dev/null || true)
+
+            if [ -n "$MATCHES" ]; then
+              echo "::error::Potential secret matching: ${pattern:0:20}..."
+              echo "$MATCHES" | head -5
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            exit 1
+          fi
+
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm audit --production --audit-level=high

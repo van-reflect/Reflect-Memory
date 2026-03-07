@@ -1,0 +1,82 @@
+# Reflect Memory — Security Scanner
+# Runs on the public repo. Scans all files for accidentally committed secrets.
+
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  secrets-scan:
+    name: Scan for Secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan all files for hardcoded secrets
+        run: |
+          echo "Scanning repository for hardcoded secrets..."
+
+          PATTERNS=(
+            'AKIA[0-9A-Z]{16}'                                                    # AWS access key ID
+            'sk-[a-zA-Z0-9]{20,}'                                                 # OpenAI / Stripe secret key
+            'sk_live_[a-zA-Z0-9]{20,}'                                             # Stripe live secret key
+            'rk_live_[a-zA-Z0-9]{20,}'                                             # Stripe restricted key
+            'ghp_[a-zA-Z0-9]{36}'                                                  # GitHub PAT
+            'gho_[a-zA-Z0-9]{36}'                                                  # GitHub OAuth
+            'github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}'                           # GitHub fine-grained PAT
+            'glpat-[a-zA-Z0-9\-]{20,}'                                             # GitLab PAT
+            'xox[bpors]-[a-zA-Z0-9\-]+'                                            # Slack token
+            'hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+'       # Slack webhook
+            'sq0atp-[a-zA-Z0-9\-_]{22}'                                            # Square access token
+            'eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}'      # JWT
+            'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'                            # SendGrid API key
+            'key-[a-zA-Z0-9]{32}'                                                  # Mailgun key
+            'rm_live_[a-f0-9]{48}'                                                 # Reflect Memory live key
+          )
+
+          FAILED=0
+          for pattern in "${PATTERNS[@]}"; do
+            MATCHES=$(grep -rEn "$pattern" \
+              --exclude-dir=node_modules --exclude-dir=dist \
+              --exclude-dir=.git --exclude='package-lock.json' \
+              --exclude='security.yml' --exclude='ci.yml' \
+              . 2>/dev/null || true)
+
+            if [ -n "$MATCHES" ]; then
+              echo "::error::Potential secret matching pattern: ${pattern:0:30}..."
+              echo "$MATCHES" | head -20
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "::error::Secrets detected in repository. Remove them and rotate the credentials."
+            exit 1
+          fi
+
+          echo "✓ No hardcoded secrets detected"
+
+      - name: Verify sensitive files are gitignored
+        run: |
+          SENSITIVE_FILES=(.env .env.local .env.production credentials.json serviceAccountKey.json)
+          FAILED=0
+
+          for f in "${SENSITIVE_FILES[@]}"; do
+            if git ls-files --error-unmatch "$f" 2>/dev/null; then
+              echo "::error::Sensitive file '$f' is tracked by git"
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            exit 1
+          fi
+
+          echo "✓ No sensitive files tracked"
