@@ -168,7 +168,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   const { db, userId, agentKeys } = config;
 
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "256kb" }));
 
   function constantTimeEqual(a: string, b: string): boolean {
     const hashA = createHash("sha256").update(a).digest();

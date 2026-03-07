@@ -6,6 +6,7 @@ export type {
   Identity,
   Memory,
   MemorySummary,
+  MemoryType,
   PaginatedResponse,
   ReflectMemoryOptions,
   SearchParams,

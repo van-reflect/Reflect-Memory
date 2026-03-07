@@ -153,7 +153,7 @@ export class ReflectMemory {
       title: params.title,
       content: params.content,
       tags: params.tags ?? [],
-      allowed_vendors: params.allowedVendors ?? [],
+      allowed_vendors: params.allowedVendors ?? ["*"],
     };
     if (params.memoryType !== undefined) {
       body.memory_type = params.memoryType;

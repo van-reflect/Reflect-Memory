@@ -1,13 +1,7 @@
-// Reflect Memory — Memory Service
-// Pure data access layer. No HTTP, no AI, no logging, no side effects beyond SQL.
-// Every function requires an explicit user_id. No function infers ownership.
-
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 
-// =============================================================================
-// Types
-// =============================================================================
+export type MemoryType = "semantic" | "episodic" | "procedural";
 
 export interface MemoryEntry {
   id: string;
@@ -16,7 +10,7 @@ export interface MemoryEntry {
   tags: string[];
   origin: string;
   allowed_vendors: string[];
-  memory_type: string;
+  memory_type: MemoryType;
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
@@ -28,7 +22,7 @@ export interface CreateMemoryInput {
   tags: string[];
   origin: string;
   allowed_vendors: string[];
-  memory_type?: string;
+  memory_type?: MemoryType;
 }
 
 export interface UpdateMemoryInput {
@@ -50,7 +44,7 @@ export interface MemorySummary {
   title: string;
   tags: string[];
   origin: string;
-  memory_type: string;
+  memory_type: MemoryType;
   created_at: string;
   updated_at: string;
 }
@@ -59,10 +53,6 @@ export interface PaginationOptions {
   limit?: number;
   offset?: number;
 }
-
-// =============================================================================
-// Internal: row mapping
-// =============================================================================
 
 interface MemoryRow {
   id: string;
@@ -78,30 +68,44 @@ interface MemoryRow {
   deleted_at?: string | null;
 }
 
+function safeJsonArray(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function rowToMemory(row: MemoryRow): MemoryEntry {
   return {
     id: row.id,
     title: row.title,
     content: row.content,
-    tags: JSON.parse(row.tags) as string[],
+    tags: safeJsonArray(row.tags),
     origin: row.origin,
-    allowed_vendors: JSON.parse(row.allowed_vendors) as string[],
-    memory_type: row.memory_type,
+    allowed_vendors: safeJsonArray(row.allowed_vendors),
+    memory_type: row.memory_type as MemoryType,
     created_at: row.created_at,
     updated_at: row.updated_at,
     deleted_at: row.deleted_at ?? undefined,
   };
 }
 
-const COLUMNS = `id, user_id, title, content, tags, origin, allowed_vendors, memory_type, created_at, updated_at, deleted_at`;
-const SUMMARY_COLUMNS = `id, user_id, title, tags, origin, memory_type, created_at, updated_at, deleted_at`;
+const MEMORY_COLUMNS = ["id", "user_id", "title", "content", "tags", "origin", "allowed_vendors", "memory_type", "created_at", "updated_at", "deleted_at"] as const;
+const COLUMNS = MEMORY_COLUMNS.join(", ");
+const COLUMNS_ALIASED = MEMORY_COLUMNS.map(c => `m.${c}`).join(", ");
+
+const SUMMARY_COLUMN_LIST = ["id", "user_id", "title", "tags", "origin", "memory_type", "created_at", "updated_at"] as const;
+const SUMMARY_COLUMNS = SUMMARY_COLUMN_LIST.join(", ");
+const SUMMARY_COLUMNS_ALIASED = SUMMARY_COLUMN_LIST.map(c => `m.${c}`).join(", ");
 
 function escapeLike(term: string): string {
   return term.replace(/[%_\\]/g, (ch) => `\\${ch}`);
 }
 
 function buildPaginationClause(opts?: PaginationOptions): { sql: string; params: number[] } {
-  if (!opts?.limit) return { sql: "", params: [] };
+  if (opts?.limit == null) return { sql: "", params: [] };
   const params: number[] = [opts.limit];
   let sql = " LIMIT ?";
   if (opts.offset) {
@@ -110,10 +114,6 @@ function buildPaginationClause(opts?: PaginationOptions): { sql: string; params:
   }
   return { sql, params };
 }
-
-// =============================================================================
-// createMemory
-// =============================================================================
 
 export function createMemory(
   db: Database.Database,
@@ -144,10 +144,6 @@ export function createMemory(
   };
 }
 
-// =============================================================================
-// readMemoryById
-// =============================================================================
-
 export function readMemoryById(
   db: Database.Database,
   userId: string,
@@ -160,15 +156,6 @@ export function readMemoryById(
   if (!row) return null;
   return rowToMemory(row);
 }
-
-// =============================================================================
-// listMemories
-// =============================================================================
-// Optional vendor parameter: when set, only returns memories where
-// allowed_vendors contains "*" or the given vendor name.
-// When null/undefined (user path), returns all memories for the user.
-// Supports pagination via limit/offset.
-// =============================================================================
 
 export function listMemories(
   db: Database.Database,
@@ -191,7 +178,7 @@ export function listMemories(
     case "all": {
       const rows = db
         .prepare(
-          `SELECT m.${COLUMNS.split(", ").join(", m.")}
+          `SELECT ${COLUMNS_ALIASED}
            FROM memories m
            WHERE m.user_id = ? ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
@@ -203,7 +190,7 @@ export function listMemories(
     case "trashed": {
       const rows = db
         .prepare(
-          `SELECT m.${COLUMNS.split(", ").join(", m.")}
+          `SELECT ${COLUMNS_ALIASED}
            FROM memories m
            WHERE m.user_id = ? ${vendorClause} ${deletedClause}
            ORDER BY m.deleted_at DESC${pagSql}`,
@@ -217,7 +204,7 @@ export function listMemories(
       const placeholders = filter.tags.map(() => "?").join(", ");
       const rows = db
         .prepare(
-          `SELECT DISTINCT m.${COLUMNS.split(", ").join(", m.")}
+          `SELECT DISTINCT ${COLUMNS_ALIASED}
            FROM memories m, json_each(m.tags) t
            WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
@@ -231,7 +218,7 @@ export function listMemories(
       const placeholders = filter.ids.map(() => "?").join(", ");
       const rows = db
         .prepare(
-          `SELECT m.${COLUMNS.split(", ").join(", m.")}
+          `SELECT ${COLUMNS_ALIASED}
            FROM memories m
            WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
@@ -245,7 +232,7 @@ export function listMemories(
       const likeTerm = `%${escapeLike(filter.term)}%`;
       const rows = db
         .prepare(
-          `SELECT m.${COLUMNS.split(", ").join(", m.")}
+          `SELECT ${COLUMNS_ALIASED}
            FROM memories m
            WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
@@ -260,10 +247,6 @@ export function listMemories(
     }
   }
 }
-
-// =============================================================================
-// countMemories
-// =============================================================================
 
 export function countMemories(
   db: Database.Database,
@@ -343,14 +326,6 @@ export function countMemories(
   }
 }
 
-// =============================================================================
-// listMemorySummaries
-// =============================================================================
-// Lightweight listing: returns metadata only (no content field).
-// Designed for browse/discovery endpoints where the agent needs to see
-// what exists before fetching full entries.
-// =============================================================================
-
 interface SummaryRow {
   id: string;
   user_id: string;
@@ -366,9 +341,9 @@ function rowToSummary(row: SummaryRow): MemorySummary {
   return {
     id: row.id,
     title: row.title,
-    tags: JSON.parse(row.tags) as string[],
+    tags: safeJsonArray(row.tags),
     origin: row.origin,
-    memory_type: row.memory_type,
+    memory_type: row.memory_type as MemoryType,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -392,7 +367,7 @@ export function listMemorySummaries(
     case "all": {
       const rows = db
         .prepare(
-          `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
+          `SELECT ${SUMMARY_COLUMNS_ALIASED}
            FROM memories m
            WHERE m.user_id = ? ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
@@ -406,7 +381,7 @@ export function listMemorySummaries(
       const placeholders = filter.tags.map(() => "?").join(", ");
       const rows = db
         .prepare(
-          `SELECT DISTINCT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
+          `SELECT DISTINCT ${SUMMARY_COLUMNS_ALIASED}
            FROM memories m, json_each(m.tags) t
            WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
@@ -420,7 +395,7 @@ export function listMemorySummaries(
       const placeholders = filter.ids.map(() => "?").join(", ");
       const rows = db
         .prepare(
-          `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
+          `SELECT ${SUMMARY_COLUMNS_ALIASED}
            FROM memories m
            WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
@@ -434,7 +409,7 @@ export function listMemorySummaries(
       const likeTerm = `%${escapeLike(filter.term)}%`;
       const rows = db
         .prepare(
-          `SELECT m.${SUMMARY_COLUMNS.split(", ").join(", m.")}
+          `SELECT ${SUMMARY_COLUMNS_ALIASED}
            FROM memories m
            WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
@@ -453,59 +428,52 @@ export function listMemorySummaries(
   }
 }
 
-// =============================================================================
-// updateMemory
-// =============================================================================
-// Full replacement. Origin is immutable — not included in the update.
-// =============================================================================
-
+/** Full replacement update. Origin is immutable. Snapshots current state before writing. */
 export function updateMemory(
   db: Database.Database,
   userId: string,
   memoryId: string,
   input: UpdateMemoryInput,
 ): MemoryEntry | null {
-  const now = new Date().toISOString();
-  const tagsJson = JSON.stringify(input.tags);
-  const allowedVendorsJson = JSON.stringify(input.allowed_vendors);
+  const txn = db.transaction(() => {
+    const now = new Date().toISOString();
+    const tagsJson = JSON.stringify(input.tags);
+    const allowedVendorsJson = JSON.stringify(input.allowed_vendors);
 
-  const current = db
-    .prepare(`SELECT * FROM memories WHERE id = ? AND user_id = ?`)
-    .get(memoryId, userId) as MemoryRow | undefined;
+    const current = db
+      .prepare(`SELECT * FROM memories WHERE id = ? AND user_id = ?`)
+      .get(memoryId, userId) as MemoryRow | undefined;
 
-  if (!current) return null;
+    if (!current) return null;
 
-  const versionCount = db
-    .prepare(`SELECT count(*) as count FROM memory_versions WHERE memory_id = ?`)
-    .get(memoryId) as { count: number };
+    // Snapshot current state before mutation
+    const maxVersion = db
+      .prepare(`SELECT COALESCE(MAX(version_number), 0) as max_ver FROM memory_versions WHERE memory_id = ?`)
+      .get(memoryId) as { max_ver: number };
 
-  const versionId = randomUUID();
-  db.prepare(
-    `INSERT INTO memory_versions (id, memory_id, user_id, title, content, tags, memory_type, origin, allowed_vendors, version_number, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    versionId, memoryId, userId, current.title, current.content,
-    current.tags, current.memory_type ?? "semantic", current.origin, current.allowed_vendors,
-    versionCount.count + 1, now,
-  );
+    db.prepare(
+      `INSERT INTO memory_versions (id, memory_id, user_id, title, content, tags, memory_type, origin, allowed_vendors, version_number, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      randomUUID(), memoryId, userId, current.title, current.content,
+      current.tags, current.memory_type ?? "semantic", current.origin, current.allowed_vendors,
+      maxVersion.max_ver + 1, now,
+    );
 
-  const result = db
-    .prepare(
-      `UPDATE memories
-       SET title = ?, content = ?, tags = ?, allowed_vendors = ?, updated_at = ?
-       WHERE id = ? AND user_id = ?`,
-    )
-    .run(input.title, input.content, tagsJson, allowedVendorsJson, now, memoryId, userId);
+    const result = db
+      .prepare(
+        `UPDATE memories
+         SET title = ?, content = ?, tags = ?, allowed_vendors = ?, updated_at = ?
+         WHERE id = ? AND user_id = ?`,
+      )
+      .run(input.title, input.content, tagsJson, allowedVendorsJson, now, memoryId, userId);
 
-  if (result.changes === 0) return null;
-  return readMemoryById(db, userId, memoryId);
+    if (result.changes === 0) return null;
+    return readMemoryById(db, userId, memoryId);
+  });
+
+  return txn();
 }
-
-// =============================================================================
-// softDeleteMemory
-// =============================================================================
-// Moves memory to trash. Sets deleted_at. Used by dashboard "Delete" action.
-// =============================================================================
 
 export function softDeleteMemory(
   db: Database.Database,
@@ -525,12 +493,6 @@ export function softDeleteMemory(
   return readMemoryById(db, userId, memoryId);
 }
 
-// =============================================================================
-// restoreMemory
-// =============================================================================
-// Clears deleted_at. Used by dashboard "Restore" from trash.
-// =============================================================================
-
 export function restoreMemory(
   db: Database.Database,
   userId: string,
@@ -549,20 +511,18 @@ export function restoreMemory(
   return readMemoryById(db, userId, memoryId);
 }
 
-// =============================================================================
-// deleteMemory
-// =============================================================================
-// Hard delete by primary key. For purge job (30-day auto-delete). Not used by dashboard.
-// =============================================================================
-
+/** Hard delete + version cleanup. Self-contained — does not rely on FK cascade. */
 export function deleteMemory(
   db: Database.Database,
   userId: string,
   memoryId: string,
 ): boolean {
-  const result = db
-    .prepare(`DELETE FROM memories WHERE id = ? AND user_id = ?`)
-    .run(memoryId, userId);
-
-  return result.changes > 0;
+  const txn = db.transaction(() => {
+    db.prepare(`DELETE FROM memory_versions WHERE memory_id = ?`).run(memoryId);
+    const result = db
+      .prepare(`DELETE FROM memories WHERE id = ? AND user_id = ?`)
+      .run(memoryId, userId);
+    return result.changes > 0;
+  });
+  return txn();
 }
