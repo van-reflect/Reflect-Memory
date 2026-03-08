@@ -286,6 +286,20 @@ await test("GET /health -- response has Content-Type application/json", async ()
   assert.ok(ct.includes("application/json"), `unexpected content-type: ${ct}`);
 });
 
+// --- Cleanup ---
+
+console.log("\nCleanup");
+
+for (const id of createdIds) {
+  await test(`DELETE /memories/${id} -- cleanup`, async () => {
+    const { status } = await api("DELETE", `/memories/${id}`);
+    assert.ok(
+      status === 200 || status === 204 || status === 404,
+      `expected 200/204/404, got ${status}`,
+    );
+  });
+}
+
 // ===========================================================================
 // Summary
 // ===========================================================================
