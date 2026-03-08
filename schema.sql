@@ -1,4 +1,4 @@
--- Reflect Memory v1 — Canonical Schema
+-- Reflect Memory v1 -- Canonical Schema
 -- SQLite 3.37+ required (STRICT tables)
 -- SQLite 3.38+ required (json_valid, json_type)
 --
@@ -178,20 +178,20 @@ CREATE INDEX idx_early_access_email ON early_access_requests(email);
 CREATE INDEX idx_early_access_status ON early_access_requests(status);
 
 -- =============================================================================
--- RESERVED: Phase 3 — Identity & Governance Primitives
+-- RESERVED: Phase 3 -- Identity & Governance Primitives
 -- =============================================================================
 -- These columns/tables will be added when multi-user and enterprise features
 -- are implemented. Schema is designed to accommodate them without breaking changes.
 --
 -- memories table additions (future):
---   principal_id    — canonical user identity across surfaces
---   actor_id        — agent/workflow/role that performed the action
---   actor_surface   — surface the actor operated from (chatgpt, claude, cursor, etc.)
+--   principal_id    -- canonical user identity across surfaces
+--   actor_id        -- agent/workflow/role that performed the action
+--   actor_surface   -- surface the actor operated from (chatgpt, claude, cursor, etc.)
 --
 -- New tables (future):
---   principals      — cross-surface identity mapping
---   actors          — agent/workflow/role definitions
---   delegations     — principal-to-actor delegation relationships
---   visibility_rules — multi-dimensional governance (principal, actor, vendor, operation, temporal scopes)
+--   principals      -- cross-surface identity mapping
+--   actors          -- agent/workflow/role definitions
+--   delegations     -- principal-to-actor delegation relationships
+--   visibility_rules -- multi-dimensional governance (principal, actor, vendor, operation, temporal scopes)
 -- =============================================================================
 

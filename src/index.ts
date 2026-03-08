@@ -1,4 +1,4 @@
-// Reflect Memory — Entrypoint
+// Reflect Memory -- Entrypoint
 // Reads config from environment, opens the database, seeds the user,
 // starts the server. No new logic. No feature code. Just wiring.
 //
@@ -217,7 +217,7 @@ if (!waitlistAlreadyRan) {
   );
 }
 
-// Migration: v1 schema — add role, plan, clerk_id, stripe_customer_id, updated_at to users
+// Migration: v1 schema -- add role, plan, clerk_id, stripe_customer_id, updated_at to users
 const v1UsersMigration = "005_v1_users_columns";
 const v1UsersRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(v1UsersMigration);
 if (!v1UsersRan) {
@@ -234,7 +234,7 @@ if (!v1UsersRan) {
   db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(v1UsersMigration, new Date().toISOString());
 }
 
-// Migration: v1 schema — create api_keys table
+// Migration: v1 schema -- create api_keys table
 const v1ApiKeysMigration = "006_v1_api_keys";
 const v1ApiKeysRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(v1ApiKeysMigration);
 if (!v1ApiKeysRan) {
@@ -254,7 +254,7 @@ if (!v1ApiKeysRan) {
   db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(v1ApiKeysMigration, new Date().toISOString());
 }
 
-// Migration: v1 schema — create usage_events and monthly_usage tables
+// Migration: v1 schema -- create usage_events and monthly_usage tables
 const v1UsageMigration = "007_v1_usage_tables";
 const v1UsageRan = db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(v1UsageMigration);
 if (!v1UsageRan) {
@@ -487,9 +487,9 @@ function scheduleDailyBackup() {
 }
 
 function shutdown(signal: string) {
-  console.log(`\n${signal} received — shutting down`);
+  console.log(`\n${signal} received -- shutting down`);
   const forceExit = setTimeout(() => {
-    console.error("Shutdown timed out — forcing exit");
+    console.error("Shutdown timed out -- forcing exit");
     try { db.pragma("optimize"); } catch {}
     try { db.close(); } catch {}
     process.exit(1);

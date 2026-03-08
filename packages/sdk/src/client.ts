@@ -17,7 +17,7 @@ const DEFAULT_BASE_URL = "https://api.reflectmemory.com";
  * TypeScript client for the Reflect Memory API.
  *
  * Provides typed methods for creating, retrieving, browsing, and searching
- * memories stored in Reflect Memory. Uses native `fetch` — no external
+ * memories stored in Reflect Memory. Uses native `fetch` -- no external
  * HTTP dependencies required (Node 18+).
  *
  * @example

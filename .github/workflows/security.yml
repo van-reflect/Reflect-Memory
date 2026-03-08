@@ -1,4 +1,4 @@
-# Reflect Memory — Security Scanner
+# Reflect Memory -- Security Scanner
 # Runs on the public repo. Scans all files for accidentally committed secrets.
 
 name: Security Scan

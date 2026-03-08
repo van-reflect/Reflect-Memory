@@ -1,4 +1,4 @@
-// Reflect Memory — User Service
+// Reflect Memory -- User Service
 // Find or create users by email. Used for dashboard multi-tenant auth.
 
 import type Database from "better-sqlite3";

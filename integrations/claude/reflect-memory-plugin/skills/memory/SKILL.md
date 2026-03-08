@@ -12,7 +12,7 @@ You have access to Reflect Memory, a cross-agent memory system. Use the MCP tool
 - **read_memories**: Get recent memories with full content. Use `limit` to control how many (default 10, max 50).
 - **get_memory_by_id**: Retrieve a specific memory by its UUID.
 - **get_latest_memory**: Get the single most recent memory. Use `tag` to filter by a specific tag.
-- **browse_memories**: Browse memory summaries (title, tags, dates — no content). Use to discover what exists before reading specific ones.
+- **browse_memories**: Browse memory summaries (title, tags, dates -- no content). Use to discover what exists before reading specific ones.
 - **search_memories**: Search by text in title or content.
 - **get_memories_by_tag**: Get full memories filtered by tags. Returns memories matching ANY of the given tags.
 - **write_memory**: Create a new memory entry with title, content, tags, and allowed_vendors.

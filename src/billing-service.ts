@@ -1,4 +1,4 @@
-// Reflect Memory — Billing Service
+// Reflect Memory -- Billing Service
 // Stripe integration for subscription management and checkout.
 
 import Stripe from "stripe";

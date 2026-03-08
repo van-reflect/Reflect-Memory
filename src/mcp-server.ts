@@ -1,4 +1,4 @@
-// Reflect Memory — MCP Server
+// Reflect Memory -- MCP Server
 // Remote Streamable HTTP MCP server for any vendor that supports MCP.
 // Exposes memory tools (read, write, browse, query) via the Model Context Protocol.
 // Runs as a standalone Express app on RM_MCP_PORT (default: 3001).

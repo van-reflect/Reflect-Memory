@@ -1,6 +1,6 @@
 # Reflect Memory MCP Server for Cursor
 
-Connect Cursor to Reflect Memory — read, write, browse, and search your cross-agent memory without manual API calls.
+Connect Cursor to Reflect Memory -- read, write, browse, and search your cross-agent memory without manual API calls.
 
 ## Prerequisites
 
@@ -84,7 +84,7 @@ Ask Cursor naturally:
 
 ## Troubleshooting
 
-- **"REFLECT_MEMORY_API_KEY must be set"** — Add the key to `env` in mcp.json or export it in your shell.
-- **401 Unauthorized** — Wrong or expired agent key. Get `RM_AGENT_KEY_CURSOR` from Railway.
-- **Server not showing** — Restart Cursor fully (quit and reopen).
-- **Path issues** — Use the absolute path to `server.mjs` in your mcp.json args.
+- **"REFLECT_MEMORY_API_KEY must be set"** -- Add the key to `env` in mcp.json or export it in your shell.
+- **401 Unauthorized** -- Wrong or expired agent key. Get `RM_AGENT_KEY_CURSOR` from Railway.
+- **Server not showing** -- Restart Cursor fully (quit and reopen).
+- **Path issues** -- Use the absolute path to `server.mjs` in your mcp.json args.

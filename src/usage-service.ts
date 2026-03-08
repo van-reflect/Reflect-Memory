@@ -1,6 +1,6 @@
-// Reflect Memory — Usage Service
+// Reflect Memory -- Usage Service
 // Append-only usage event logging with atomic monthly aggregation.
-// request_id provides idempotency — duplicate events are silently ignored.
+// request_id provides idempotency -- duplicate events are silently ignored.
 
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
@@ -42,12 +42,12 @@ export function recordUsage(
       ).run(eventId, userId, operation, origin, rid, now);
     } catch (e: unknown) {
       if (e instanceof Error && e.message.includes("UNIQUE constraint failed")) {
-        return; // idempotent — duplicate request_id
+        return; // idempotent -- duplicate request_id
       }
       throw e;
     }
 
-    // Upsert monthly_usage — increment the relevant counter atomically
+    // Upsert monthly_usage -- increment the relevant counter atomically
     const existing = db
       .prepare(`SELECT id FROM monthly_usage WHERE user_id = ? AND month = ?`)
       .get(userId, month) as { id: string } | undefined;

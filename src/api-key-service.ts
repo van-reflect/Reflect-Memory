@@ -1,4 +1,4 @@
-// Reflect Memory — API Key Service
+// Reflect Memory -- API Key Service
 // Per-user API key generation, validation, and management.
 // Keys are prefixed with "rm_live_" followed by 48 random hex chars.
 // Only the SHA-256 hash is stored; the raw key is returned once at creation.

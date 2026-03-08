@@ -8,7 +8,7 @@ Grok supports **Remote MCP Tools** via Streaming HTTP. Reflect Memory runs a
 multi-vendor MCP server alongside the main API. Grok connects to it as a Remote
 MCP Tool, giving it native access to read, write, browse, and search memories.
 
-No Grok-specific code is needed — Grok uses the same MCP server and protocol as
+No Grok-specific code is needed -- Grok uses the same MCP server and protocol as
 Claude and any other MCP-compatible client.
 
 ## Environment Variable
@@ -66,7 +66,7 @@ Once connected, Grok has access to these tools:
 ## Architecture
 
 Grok connects to the same multi-vendor MCP server that Claude uses. The server
-resolves the calling vendor from the Bearer token — each `RM_AGENT_KEY_*`
+resolves the calling vendor from the Bearer token -- each `RM_AGENT_KEY_*`
 maps to a vendor name. This means:
 
 - Memories written by Grok have `origin: "grok"`
@@ -92,7 +92,7 @@ Grok ──[Streaming HTTP]──> https://api.reflectmemory.com/mcp
 If you are building a custom application with the xAI API (not using Grok's
 built-in MCP support), you can use xAI's function calling feature to integrate
 with Reflect Memory's REST API directly. The pattern is the same as the Gemini
-function-calling example in `../gemini/function-calling-example.ts` — define
+function-calling example in `../gemini/function-calling-example.ts` -- define
 tool schemas, let the model call them, and execute the corresponding HTTP
 requests against the `/agent/*` endpoints.
 

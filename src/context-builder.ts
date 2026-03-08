@@ -1,4 +1,4 @@
-// Reflect Memory — Context Builder
+// Reflect Memory -- Context Builder
 // Pure function. No I/O. No database. No network. No side effects.
 // Takes data in, returns data out. Nothing else.
 
@@ -22,15 +22,15 @@ export interface PromptResult {
 // Assembles a complete prompt string from a system prompt, memory entries,
 // and a user query.
 //
-// Guarantees (Invariant 3 — Pure Function):
+// Guarantees (Invariant 3 -- Pure Function):
 // - The function signature accepts only data. No Database handle, no config
 //   object, no logger, no request context.
 // - Given the same inputs, it always produces the same output.
-// - It does not fetch data — memories are passed in by the caller.
-// - It does not decide which memories to include — that decision was made
+// - It does not fetch data -- memories are passed in by the caller.
+// - It does not decide which memories to include -- that decision was made
 //   upstream based on the user's explicit intent (Invariant 1).
 // - It does not transform or summarize memory content. What the user wrote
-//   is what the model sees — within the character budget.
+//   is what the model sees -- within the character budget.
 // - The output is suitable for inspection in a QueryReceipt (Invariant 5).
 //
 // Character budget:

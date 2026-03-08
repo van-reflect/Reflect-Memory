@@ -1,6 +1,6 @@
 # n8n-nodes-reflect-memory
 
-This is an [n8n](https://n8n.io/) community node that integrates with [Reflect Memory](https://reflectmemory.com) — a cross-agent memory layer for AI tools.
+This is an [n8n](https://n8n.io/) community node that integrates with [Reflect Memory](https://reflectmemory.com) -- a cross-agent memory layer for AI tools.
 
 It lets you read, write, browse, and search AI memories from any n8n workflow.
 
@@ -72,18 +72,18 @@ Provide a comma-separated list of tags. Returns memories matching any of the giv
 
 Create a new memory with:
 
-- **Memory Type** — Classification for the memory: `Semantic` (facts/knowledge), `Episodic` (events/decisions), or `Procedural` (workflows/patterns). Defaults to `Semantic`.
-- **Title** — Short descriptive title
-- **Content** — The memory content (supports multi-line)
-- **Tags** — Comma-separated tags for categorization
-- **Allowed Vendors** — Comma-separated vendor names that can access this memory, or `*` for all
+- **Memory Type** -- Classification for the memory: `Semantic` (facts/knowledge), `Episodic` (events/decisions), or `Procedural` (workflows/patterns). Defaults to `Semantic`.
+- **Title** -- Short descriptive title
+- **Content** -- The memory content (supports multi-line)
+- **Tags** -- Comma-separated tags for categorization
+- **Allowed Vendors** -- Comma-separated vendor names that can access this memory, or `*` for all
 
 ## Example Workflow
 
-1. **Schedule Trigger** — Run every hour
-2. **Reflect Memory** node — Browse recent memories
-3. **IF** node — Check if memories contain a specific tag
-4. **Reflect Memory** node — Write a summary memory with results
+1. **Schedule Trigger** -- Run every hour
+2. **Reflect Memory** node -- Browse recent memories
+3. **IF** node -- Check if memories contain a specific tag
+4. **Reflect Memory** node -- Write a summary memory with results
 
 ## Compatibility
 

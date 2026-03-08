@@ -1,6 +1,6 @@
 # Reflect Memory Plugin for Claude
 
-Connect Claude to your Reflect Memory instance — read, write, browse, and search your cross-agent memory system.
+Connect Claude to your Reflect Memory instance -- read, write, browse, and search your cross-agent memory system.
 
 ## Setup
 

@@ -1,6 +1,6 @@
 # Reflect Memory
 
-Privacy-first AI memory system. All memory is explicitly user-authored, structured, editable, and deletable. The AI model is stateless — it sees only what you choose to show it.
+Privacy-first AI memory system. All memory is explicitly user-authored, structured, editable, and deletable. The AI model is stateless -- it sees only what you choose to show it.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ npm install
 Required:
 
 ```bash
-export RM_API_KEY="your-secret-api-key"        # User key — full access to all endpoints
+export RM_API_KEY="your-secret-api-key"        # User key -- full access to all endpoints
 export RM_MODEL_API_KEY="sk-..."               # Your OpenAI (or compatible) API key
 export RM_MODEL_NAME="gpt-4o-mini"             # Model identifier
 ```
@@ -39,7 +39,7 @@ Agent keys (per-vendor, optional):
 ```bash
 export RM_AGENT_KEY_CHATGPT="agent-key-for-chatgpt"   # Registers vendor "chatgpt"
 export RM_AGENT_KEY_CLAUDE="agent-key-for-claude"      # Registers vendor "claude"
-# RM_AGENT_KEY_<NAME> — any env var matching this pattern registers a vendor
+# RM_AGENT_KEY_<NAME> -- any env var matching this pattern registers a vendor
 ```
 
 Dashboard multi-user auth (required for dashboard deployment):
@@ -49,7 +49,7 @@ export RM_DASHBOARD_SERVICE_KEY="..."   # Shared with dashboard. Generate: opens
 export RM_DASHBOARD_JWT_SECRET="..."    # Must match dashboard AUTH_SECRET. Same value for JWT verification.
 ```
 
-Multi-vendor chat (dashboard Chat tab — enables GPT, Claude, Gemini, Perplexity, Grok):
+Multi-vendor chat (dashboard Chat tab -- enables GPT, Claude, Gemini, Perplexity, Grok):
 
 ```bash
 export RM_CHAT_OPENAI_KEY="sk-..."        # Defaults to RM_MODEL_API_KEY if omitted
@@ -142,7 +142,7 @@ curl -s -X POST http://localhost:3000/memories \
 
 ### Create a memory (agent path)
 
-Agents must use `POST /agent/memories`. The `origin` field is set server-side from the agent's key — it cannot be self-reported. `allowed_vendors` is required.
+Agents must use `POST /agent/memories`. The `origin` field is set server-side from the agent's key -- it cannot be self-reported. `allowed_vendors` is required.
 
 ```bash
 curl -s -X POST http://localhost:3000/agent/memories \
@@ -201,7 +201,7 @@ curl -s -X POST http://localhost:3000/memories/list \
 
 ### Update a memory (full replacement)
 
-Now requires `allowed_vendors` in the body (full replacement — all fields required).
+Now requires `allowed_vendors` in the body (full replacement -- all fields required).
 
 ```bash
 curl -s -X PUT http://localhost:3000/memories/MEMORY_ID \
@@ -267,11 +267,11 @@ Set these in the Railway service's **Variables** tab:
 | `RM_AGENT_KEY_CHATGPT` | No | Agent key for ChatGPT integration |
 | `RM_AGENT_KEY_CLAUDE` | No | Agent key for Claude integration |
 
-Railway sets `PORT` automatically — the app picks it up.
+Railway sets `PORT` automatically -- the app picks it up.
 
 ### 2. Attach a volume (persistent storage)
 
-Without a volume, Railway containers are ephemeral — the SQLite database resets on every deploy or restart. To persist data:
+Without a volume, Railway containers are ephemeral -- the SQLite database resets on every deploy or restart. To persist data:
 
 1. Click on the **Reflect-Memory** service in Railway
 2. Go to the **Volumes** section (or **Settings > Volumes**)
@@ -366,7 +366,7 @@ curl -s -X POST https://api.reflectmemory.com/memories \
 
 1. Create a memory, note the ID
 2. Trigger a redeploy in Railway
-3. Read the memory by ID — should still exist
+3. Read the memory by ID -- should still exist
 
 ## Architecture
 
@@ -388,11 +388,11 @@ Both      → GET /health           (no auth)
 
 ## Hard Invariants
 
-1. **Explicit Intent** — No defaults, no inferred behavior. Every request declares exactly what it wants.
-2. **Hard Deletion** — Delete means delete. One row, one table, gone. No soft deletes.
-3. **Pure Context Builder** — No I/O. Same inputs, same output. Always.
-4. **No AI Write Path** — The model cannot create, modify, or delete memories. One-directional data flow.
-5. **Deterministic Visibility** — Every query response includes the full receipt: memories used, prompt sent, model config, vendor filter.
+1. **Explicit Intent** -- No defaults, no inferred behavior. Every request declares exactly what it wants.
+2. **Hard Deletion** -- Delete means delete. One row, one table, gone. No soft deletes.
+3. **Pure Context Builder** -- No I/O. Same inputs, same output. Always.
+4. **No AI Write Path** -- The model cannot create, modify, or delete memories. One-directional data flow.
+5. **Deterministic Visibility** -- Every query response includes the full receipt: memories used, prompt sent, model config, vendor filter.
 
 ## Hard Security Constraints
 

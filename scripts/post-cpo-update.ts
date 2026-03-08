@@ -15,7 +15,7 @@ const memory = {
 **What was done:**
 - MCP Directory submission form submitted (form completed, all pages)
 - Reflect Memory MCP server verified working in Claude Code (Browse Memories, Create Memory tools functional)
-- Technical fixes deployed: (1) Main server now proxies /mcp to MCP server so single-port Railway deployment works; (2) McpServer per-session fix — SDK requires one instance per transport, was causing 500 errors
+- Technical fixes deployed: (1) Main server now proxies /mcp to MCP server so single-port Railway deployment works; (2) McpServer per-session fix -- SDK requires one instance per transport, was causing 500 errors
 - Terms of Service page added at /terms (future-proofing clause for pre-incorporation)
 - Test account setup: seed script (npm run seed-review), sample data, setup instructions documented in ANTHROPIC_FORM_ANSWERS.md
 
@@ -23,7 +23,7 @@ const memory = {
 - MCP server live at https://api.reflectmemory.com/mcp
 - Claude Code tested and working
 - Claude.ai and Claude Desktop not testable pre-approval (connectors only appear after directory listing)
-- Form required "at least 2" testing surfaces — Claude Code + Claude Desktop checked (Desktop config reverted after it caused launch failure; explained if flagged)
+- Form required "at least 2" testing surfaces -- Claude Code + Claude Desktop checked (Desktop config reverted after it caused launch failure; explained if flagged)
 - Favicon: updated with cache-busting ?v=2; Google cache may still show old one
 
 **Next:** Await Anthropic review (~7 business days). Rotate exposed API key after testing.`,
