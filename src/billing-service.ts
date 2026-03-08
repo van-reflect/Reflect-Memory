@@ -149,7 +149,7 @@ export function handleStripeWebhook(
 function determinePlanFromPrice(priceId: string | undefined): string {
   if (!priceId) return "free";
   if (priceId === process.env.STRIPE_PRICE_BUILDER) return "builder";
-  return "builder";
+  return "free";
 }
 
 export async function constructStripeEvent(

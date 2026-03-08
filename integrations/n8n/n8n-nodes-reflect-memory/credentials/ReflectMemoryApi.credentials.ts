@@ -42,7 +42,7 @@ export class ReflectMemoryApi implements ICredentialType {
   test: ICredentialTestRequest = {
     request: {
       baseURL: "={{$credentials.baseUrl}}",
-      url: "/agent/memories/latest",
+      url: "/whoami",
       method: "GET",
     },
   };

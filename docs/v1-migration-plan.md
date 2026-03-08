@@ -23,7 +23,7 @@
 - `clerk_id TEXT UNIQUE` -- Clerk user ID, populated when Clerk is integrated
 - `role TEXT NOT NULL DEFAULT 'user'` -- `'admin'`, `'private-alpha'`, or `'user'`
 - `stripe_customer_id TEXT UNIQUE` -- Stripe customer ID, populated on subscription
-- `plan TEXT NOT NULL DEFAULT 'free'` -- `'free'`, `'pro'`, or `'enterprise'`
+- `plan TEXT NOT NULL DEFAULT 'free'` -- `'free'` or `'builder'`
 - `updated_at TEXT NOT NULL` -- backfilled from `created_at` for existing rows
 
 ### Backward Compatibility
