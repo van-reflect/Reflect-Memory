@@ -11,5 +11,10 @@ dist/
 .env.production
 
 .cursor/
+.cursor-plugin/
+.mcp.json
+assets/
+rules/
+skills/
 SENIOR-REVIEW-GUIDE.md
 content/
