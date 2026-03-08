@@ -18,7 +18,7 @@ export function isBackupConfigured(): boolean {
 
 export async function runBackup(): Promise<void> {
   if (!isBackupConfigured()) {
-    console.log("[backup] Skipped — RM_BACKUP_S3_* not configured");
+    console.log("[backup] Skipped -- RM_BACKUP_S3_* not configured");
     return;
   }
 

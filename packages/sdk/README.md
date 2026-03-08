@@ -1,6 +1,6 @@
 # reflect-memory-sdk
 
-TypeScript client SDK for the [Reflect Memory](https://reflectmemory.com) API — persistent, searchable memory for AI agents.
+TypeScript client SDK for the [Reflect Memory](https://reflectmemory.com) API -- persistent, searchable memory for AI agents.
 
 Zero dependencies. Works with Node 18+ using native `fetch`.
 
@@ -45,14 +45,14 @@ console.log(latest?.title); // "Project Architecture"
 
 ```typescript
 const rm = new ReflectMemory({
-  apiKey: "rm_live_...",           // Required — your Reflect Memory API key
-  baseUrl: "https://custom.host",  // Optional — defaults to https://api.reflectmemory.com
+  apiKey: "rm_live_...",           // Required -- your Reflect Memory API key
+  baseUrl: "https://custom.host",  // Optional -- defaults to https://api.reflectmemory.com
 });
 ```
 
 | Option    | Type     | Required | Default                              |
 | --------- | -------- | -------- | ------------------------------------ |
-| `apiKey`  | `string` | Yes      | —                                    |
+| `apiKey`  | `string` | Yes      | --                                    |
 | `baseUrl` | `string` | No       | `https://api.reflectmemory.com`      |
 
 ## API Reference
@@ -79,7 +79,7 @@ console.log(memory.id); // "b3f1a2c4-..."
 | `title`          | `string`   | Yes      | Title of the memory                            |
 | `content`        | `string`   | Yes      | Full content body                              |
 | `tags`           | `string[]` | No       | Tags for categorization and filtering          |
-| `allowedVendors` | `string[]` | No       | Vendor allowlist — `["*"]` permits all vendors |
+| `allowedVendors` | `string[]` | No       | Vendor allowlist -- `["*"]` permits all vendors |
 | `memoryType`     | `"semantic" \| "episodic" \| "procedural"` | No | Memory classification: semantic (facts/knowledge), episodic (events/decisions), procedural (workflows/patterns). Defaults to `"semantic"` |
 
 **Returns:** `Promise<Memory>`
@@ -131,7 +131,7 @@ console.log(memory.title, memory.content);
 
 ### `rm.browse(params?)`
 
-Browse memory summaries with pagination. Returns lightweight objects without the `content` field — ideal for listing UIs.
+Browse memory summaries with pagination. Returns lightweight objects without the `content` field -- ideal for listing UIs.
 
 ```typescript
 const page = await rm.browse({ limit: 50, offset: 0 });
@@ -339,4 +339,4 @@ interface Identity {
 
 ## License
 
-MIT — [Reflect Memory Inc](https://reflectmemory.com)
+MIT -- [Reflect Memory Inc](https://reflectmemory.com)

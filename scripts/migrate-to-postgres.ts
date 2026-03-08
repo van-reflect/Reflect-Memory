@@ -1,5 +1,5 @@
 #!/usr/bin/env npx tsx
-// Reflect Memory — SQLite to Postgres Migration Script
+// Reflect Memory -- SQLite to Postgres Migration Script
 //
 // Usage:
 //   RM_DB_PATH=/data/reflect-memory.db DATABASE_URL=postgres://... npx tsx scripts/migrate-to-postgres.ts

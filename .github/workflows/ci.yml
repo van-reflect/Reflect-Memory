@@ -63,7 +63,7 @@ jobs:
           SENSITIVE=(.env .env.local .env.production credentials.json serviceAccountKey.json)
           for f in "${SENSITIVE[@]}"; do
             if git ls-files --error-unmatch "$f" 2>/dev/null; then
-              echo "::error::Sensitive file '${f}' is tracked by git — remove it and rotate credentials"
+              echo "::error::Sensitive file '${f}' is tracked by git -- remove it and rotate credentials"
               exit 1
             fi
           done

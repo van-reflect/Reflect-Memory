@@ -15,9 +15,9 @@ Use the right endpoint for the right task:
 - **Most recent memory (chronological):** Use `getLatestMemory`. This returns the single newest memory by `created_at`. Add `?tag=project_state` to get the latest with that tag.
 - **Discover what memories exist:** Use `browseMemories` with `filter: {"by":"all"}` (lightweight, no content). Then use `getMemoryById` to fetch full content for specific IDs.
 - **Full memories by topic:** Use `getMemoriesByTag` with the relevant tags.
-- **AI-summarized answer grounded in memories:** Use `queryMemory`. This passes memories to an AI model and returns a summary — it does NOT return raw memory data.
+- **AI-summarized answer grounded in memories:** Use `queryMemory`. This passes memories to an AI model and returns a summary -- it does NOT return raw memory data.
 
-IMPORTANT: Never use `queryMemory` when the user asks for "the latest memory" or "most recent update." Use `getLatestMemory` instead — `queryMemory` is an AI summarization layer that may not surface the chronologically newest entry.
+IMPORTANT: Never use `queryMemory` when the user asks for "the latest memory" or "most recent update." Use `getLatestMemory` instead -- `queryMemory` is an AI summarization layer that may not surface the chronologically newest entry.
 
 ## Writing Memories
 

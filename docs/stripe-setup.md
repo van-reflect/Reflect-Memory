@@ -11,7 +11,7 @@ In the Stripe dashboard → Products, create:
 
 ### Free Plan
 - Name: "Reflect Memory Free"
-- Price: $0/month (or skip — no Stripe subscription needed for free tier)
+- Price: $0/month (or skip -- no Stripe subscription needed for free tier)
 - Limits (enforced by app): 1,000 writes/month, 10,000 reads/month
 
 ### Builder Plan
@@ -19,7 +19,7 @@ In the Stripe dashboard → Products, create:
 - Price: $20/month
 - Limits: 50,000 writes/month, 125,000 reads/month
 
-> Pro ($99/mo — 150k writes / 750k reads) and Teams/Enterprise (TBD) plans will be added post-Public Beta.
+> Pro ($99/mo -- 150k writes / 750k reads) and Teams/Enterprise (TBD) plans will be added post-Public Beta.
 
 **Copy the Price ID** (starts with `price_`) for the Builder plan.
 
@@ -27,8 +27,8 @@ In the Stripe dashboard → Products, create:
 
 From Stripe dashboard → Developers → API Keys:
 
-- **Publishable Key** — `pk_test_...` (client-side, for Checkout)
-- **Secret Key** — `sk_test_...` (server-side only)
+- **Publishable Key** -- `pk_test_...` (client-side, for Checkout)
+- **Secret Key** -- `sk_test_...` (server-side only)
 
 ## Step 4: Configure Webhooks
 
@@ -40,7 +40,7 @@ From Stripe dashboard → Developers → API Keys:
    - `invoice.payment_failed`
    - `customer.subscription.updated`
    - `customer.subscription.deleted`
-4. Copy the **Webhook Signing Secret** — `whsec_...`
+4. Copy the **Webhook Signing Secret** -- `whsec_...`
 
 ## Step 5: Set Environment Variables
 

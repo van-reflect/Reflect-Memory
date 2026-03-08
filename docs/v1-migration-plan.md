@@ -1,4 +1,4 @@
-# Reflect Memory v1 — Migration Plan
+# Reflect Memory v1 -- Migration Plan
 
 ## Current State (Pre-v1)
 
@@ -20,11 +20,11 @@
 ### Column Details
 
 **users (enhanced)**
-- `clerk_id TEXT UNIQUE` — Clerk user ID, populated when Clerk is integrated
-- `role TEXT NOT NULL DEFAULT 'user'` — `'admin'`, `'private-alpha'`, or `'user'`
-- `stripe_customer_id TEXT UNIQUE` — Stripe customer ID, populated on subscription
-- `plan TEXT NOT NULL DEFAULT 'free'` — `'free'`, `'pro'`, or `'enterprise'`
-- `updated_at TEXT NOT NULL` — backfilled from `created_at` for existing rows
+- `clerk_id TEXT UNIQUE` -- Clerk user ID, populated when Clerk is integrated
+- `role TEXT NOT NULL DEFAULT 'user'` -- `'admin'`, `'private-alpha'`, or `'user'`
+- `stripe_customer_id TEXT UNIQUE` -- Stripe customer ID, populated on subscription
+- `plan TEXT NOT NULL DEFAULT 'free'` -- `'free'`, `'pro'`, or `'enterprise'`
+- `updated_at TEXT NOT NULL` -- backfilled from `created_at` for existing rows
 
 ### Backward Compatibility
 

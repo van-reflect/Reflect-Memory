@@ -1,4 +1,4 @@
-// Reflect Memory — Chat Gateway
+// Reflect Memory -- Chat Gateway
 // Multi-provider chat with Reflect Memory tool calling.
 // Supports OpenAI-compatible (GPT, Perplexity, Grok), Anthropic (Claude), Google (Gemini).
 // Tools are injected server-side. Models read/write memories mid-conversation.
@@ -524,7 +524,7 @@ async function chatGoogle(
 // Main chat function
 // =============================================================================
 
-const CHAT_SYSTEM_PROMPT = `You are a helpful assistant with access to the user's Reflect Memory — a cross-model memory system that persists context across AI tools.
+const CHAT_SYSTEM_PROMPT = `You are a helpful assistant with access to the user's Reflect Memory -- a cross-model memory system that persists context across AI tools.
 
 When the user asks a question, check their memories first using read_memories to provide context-aware answers.
 When the user shares something worth remembering (preferences, goals, project updates, decisions), use write_memory to save it.

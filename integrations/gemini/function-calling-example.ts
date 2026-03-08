@@ -82,7 +82,7 @@ const memoryFunctions: FunctionDeclaration[] = [
   {
     name: "browse_memories",
     description:
-      "Browse memory summaries (title, tags, dates — no full content). Use to discover what exists before reading specific ones.",
+      "Browse memory summaries (title, tags, dates -- no full content). Use to discover what exists before reading specific ones.",
     parameters: {
       type: FunctionDeclarationSchemaType.OBJECT,
       properties: {
@@ -153,7 +153,7 @@ const memoryFunctions: FunctionDeclaration[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Function execution — routes Gemini function calls to the REST API
+// Function execution -- routes Gemini function calls to the REST API
 // ---------------------------------------------------------------------------
 
 async function executeFunction(call: FunctionCall): Promise<unknown> {
@@ -206,7 +206,7 @@ async function executeFunction(call: FunctionCall): Promise<unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Main — interactive loop with Gemini + function calling
+// Main -- interactive loop with Gemini + function calling
 // ---------------------------------------------------------------------------
 
 async function main() {

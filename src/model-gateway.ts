@@ -1,4 +1,4 @@
-// Reflect Memory — Model Gateway
+// Reflect Memory -- Model Gateway
 // Stateless adapter for AI model API calls.
 // No reference to Memory Service. No write path back to any store.
 // Prompt in, text out. Nothing else.
@@ -9,7 +9,7 @@
 
 /**
  * Full configuration for making a model API call. Includes secrets.
- * This is server-side config — never sent to the client.
+ * This is server-side config -- never sent to the client.
  */
 export interface ModelGatewayConfig {
   /** Only "openai" is supported. Covers any OpenAI-compatible API. */
@@ -74,7 +74,7 @@ export function getConfigReceipt(config: ModelGatewayConfig): ModelConfigReceipt
 // Sends an assembled prompt to the configured model API and returns the
 // response text.
 //
-// Guarantees (Invariant 4 — No AI Write Path):
+// Guarantees (Invariant 4 -- No AI Write Path):
 // - This module does not import, reference, or know about the Memory Service.
 // - The return value is a plain string. Not a structured object, not a
 //   tool-call response, not a command. A string.

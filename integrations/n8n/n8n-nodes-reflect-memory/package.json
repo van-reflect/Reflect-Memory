@@ -1,7 +1,7 @@
 {
   "name": "n8n-nodes-reflect-memory",
   "version": "1.0.3",
-  "description": "n8n community node for Reflect Memory — read, write, browse, and search AI memories.",
+  "description": "n8n community node for Reflect Memory -- read, write, browse, and search AI memories.",
   "keywords": [
     "n8n-community-node-package",
     "n8n",

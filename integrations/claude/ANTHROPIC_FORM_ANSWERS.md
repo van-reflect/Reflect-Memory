@@ -1,4 +1,4 @@
-# Anthropic Form Answers — Testing Section
+# Anthropic Form Answers -- Testing Section
 
 Use these for the Testing credentials page of your MCP Connector submission.
 
@@ -21,9 +21,9 @@ Same as main server URL. Use https://api.reflectmemory.com/mcp
 **Your answer:**
 
 ```
-REFLECT MEMORY MCP — SETUP FOR CLAUDE CODE TESTING
+REFLECT MEMORY MCP -- SETUP FOR CLAUDE CODE TESTING
 
-1. You will receive a test API key (Bearer token) by [email / secure link — specify how you'll provide it].
+1. You will receive a test API key (Bearer token) by [email / secure link -- specify how you'll provide it].
 
 2. Add the MCP server in Claude Code:
 
@@ -70,18 +70,18 @@ The test account starts empty. Use the "Create Memory" tool first (e.g. "Write a
 
 **You** generate a random API key (e.g. `sk-anthropic-review-` + random string, or a UUID). Then:
 
-1. **In Railway** — Add it as the `RM_AGENT_KEY_CLAUDE` env var for your production (or a dedicated test deployment). This lets the MCP server accept that token.
+1. **In Railway** -- Add it as the `RM_AGENT_KEY_CLAUDE` env var for your production (or a dedicated test deployment). This lets the MCP server accept that token.
 
-2. **For reviewers** — Paste the key into the Anthropic form field where they ask for test credentials (often labeled "Test API key" or "Credentials for reviewers"). Anthropic gives it to their review team.
+2. **For reviewers** -- Paste the key into the Anthropic form field where they ask for test credentials (often labeled "Test API key" or "Credentials for reviewers"). Anthropic gives it to their review team.
 
-3. **Reviewers** paste your key into their MCP config when they follow the setup instructions — in the `Authorization: Bearer <key>` header. They don't generate or sign up for anything; they use the key you provide.
+3. **Reviewers** paste your key into their MCP config when they follow the setup instructions -- in the `Authorization: Bearer <key>` header. They don't generate or sign up for anything; they use the key you provide.
 
 ---
 
 ## Before Submitting
 
-1. **Generate a test API key** — e.g. `openssl rand -hex 24` or a UUID. Add it to Railway as `RM_AGENT_KEY_CLAUDE` (or to a test deployment). Paste the same key into Anthropic's test credentials field.
+1. **Generate a test API key** -- e.g. `openssl rand -hex 24` or a UUID. Add it to Railway as `RM_AGENT_KEY_CLAUDE` (or to a test deployment). Paste the same key into Anthropic's test credentials field.
 
-2. **Pre-seed sample data** — Run: `npm run seed-review` (with `RM_DB_PATH` and `RM_OWNER_EMAIL` set). Or on Railway: one-off job with those env vars. This adds 8 sample memories so reviewers can test read/browse/search immediately.
+2. **Pre-seed sample data** -- Run: `npm run seed-review` (with `RM_DB_PATH` and `RM_OWNER_EMAIL` set). Or on Railway: one-off job with those env vars. This adds 8 sample memories so reviewers can test read/browse/search immediately.
 
-3. **Replace placeholders** — In the Setup Instructions, replace `<PASTE_TEST_KEY_HERE>` with "the API key provided in the Test Credentials field below" (or however Anthropic phrases it).
+3. **Replace placeholders** -- In the Setup Instructions, replace `<PASTE_TEST_KEY_HERE>` with "the API key provided in the Test Credentials field below" (or however Anthropic phrases it).

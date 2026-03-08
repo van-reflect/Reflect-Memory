@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Reflect Memory — API Integration Tests
+// Reflect Memory -- API Integration Tests
 // Zero dependencies. Uses native fetch + node:assert.
 // Run: REFLECT_TEST_API_KEY=your-key node tests/api.test.mjs
 
@@ -107,7 +107,7 @@ console.log(`Run tag: ${RUN_TAG}\n`);
 
 console.log("Health");
 
-await test("GET /health — 200 with status ok", async () => {
+await test("GET /health -- 200 with status ok", async () => {
   const { status, json } = await api("GET", "/health");
   assert.equal(status, 200);
   assert.equal(json.status, "ok");
@@ -117,26 +117,26 @@ await test("GET /health — 200 with status ok", async () => {
 
 console.log("\nAuthentication");
 
-await test("Missing Authorization header — 401", async () => {
+await test("Missing Authorization header -- 401", async () => {
   const { status } = await apiRaw("GET", "/whoami");
   assert.equal(status, 401);
 });
 
-await test("Invalid API key — 401", async () => {
+await test("Invalid API key -- 401", async () => {
   const { status } = await apiRaw("GET", "/whoami", {
     Authorization: "Bearer rm_invalid_000000000000000000000000",
   });
   assert.equal(status, 401);
 });
 
-await test("Malformed Authorization header (no Bearer prefix) — 401", async () => {
+await test("Malformed Authorization header (no Bearer prefix) -- 401", async () => {
   const { status } = await apiRaw("GET", "/whoami", {
     Authorization: API_KEY,
   });
   assert.equal(status, 401);
 });
 
-await test("GET /whoami — returns role and vendor", async () => {
+await test("GET /whoami -- returns role and vendor", async () => {
   const { status, json } = await api("GET", "/whoami");
   assert.equal(status, 200);
   assert.ok("role" in json, "missing role");
@@ -148,7 +148,7 @@ await test("GET /whoami — returns role and vendor", async () => {
 console.log("\nWrite Memories");
 
 for (const memoryType of ["semantic", "episodic", "procedural"]) {
-  await test(`POST /agent/memories — memory_type=${memoryType}`, async () => {
+  await test(`POST /agent/memories -- memory_type=${memoryType}`, async () => {
     const { status, json } = await api(
       "POST",
       "/agent/memories",
@@ -161,7 +161,7 @@ for (const memoryType of ["semantic", "episodic", "procedural"]) {
   });
 }
 
-await test("POST /agent/memories — omitted memory_type defaults to semantic", async () => {
+await test("POST /agent/memories -- omitted memory_type defaults to semantic", async () => {
   const body = writeBody({ title: `CI default-type ${RUN_TAG}` });
   delete body.memory_type;
   const { status, json } = await api("POST", "/agent/memories", body);
@@ -174,12 +174,12 @@ await test("POST /agent/memories — omitted memory_type defaults to semantic", 
 
 console.log("\nInput Validation");
 
-await test("Empty title — 400", async () => {
+await test("Empty title -- 400", async () => {
   const { status } = await api("POST", "/agent/memories", writeBody({ title: "" }));
   assert.equal(status, 400, `expected 400, got ${status}`);
 });
 
-await test("Invalid memory_type value — 400", async () => {
+await test("Invalid memory_type value -- 400", async () => {
   const { status } = await api(
     "POST",
     "/agent/memories",
@@ -188,14 +188,14 @@ await test("Invalid memory_type value — 400", async () => {
   assert.equal(status, 400, `expected 400, got ${status}`);
 });
 
-await test("Missing content field — 400", async () => {
+await test("Missing content field -- 400", async () => {
   const body = writeBody();
   delete body.content;
   const { status } = await api("POST", "/agent/memories", body);
   assert.equal(status, 400, `expected 400, got ${status}`);
 });
 
-await test("Missing title field — 400", async () => {
+await test("Missing title field -- 400", async () => {
   const body = writeBody();
   delete body.title;
   const { status } = await api("POST", "/agent/memories", body);
@@ -206,14 +206,14 @@ await test("Missing title field — 400", async () => {
 
 console.log("\nRead Memories");
 
-await test("GET /agent/memories/latest — returns memory with memory_type", async () => {
+await test("GET /agent/memories/latest -- returns memory with memory_type", async () => {
   const { status, json } = await api("GET", `/agent/memories/latest?tag=${RUN_TAG}`);
   assert.equal(status, 200);
   assert.ok(json.id, "missing id");
   assert.ok(json.memory_type, "missing memory_type");
 });
 
-await test("GET /agent/memories/:id — returns correct memory", async () => {
+await test("GET /agent/memories/:id -- returns correct memory", async () => {
   const id = createdIds[1]; // episodic
   assert.ok(id, "no episodic memory was created");
   const { status, json } = await api("GET", `/agent/memories/${id}`);
@@ -223,7 +223,7 @@ await test("GET /agent/memories/:id — returns correct memory", async () => {
   assert.ok(json.content.includes(RUN_TAG));
 });
 
-await test("GET /agent/memories/:id — nonexistent ID returns 404", async () => {
+await test("GET /agent/memories/:id -- nonexistent ID returns 404", async () => {
   const { status } = await api(
     "GET",
     "/agent/memories/00000000-0000-0000-0000-000000000000",
@@ -235,7 +235,7 @@ await test("GET /agent/memories/:id — nonexistent ID returns 404", async () =>
 
 console.log("\nBrowse & Filter");
 
-await test("POST /agent/memories/browse — paginated response with memory_type", async () => {
+await test("POST /agent/memories/browse -- paginated response with memory_type", async () => {
   const { status, json } = await api("POST", "/agent/memories/browse", {
     filter: { by: "tags", tags: [RUN_TAG] },
     limit: 10,
@@ -253,7 +253,7 @@ await test("POST /agent/memories/browse — paginated response with memory_type"
   }
 });
 
-await test("POST /agent/memories/by-tag — filters by tag", async () => {
+await test("POST /agent/memories/by-tag -- filters by tag", async () => {
   const { status, json } = await api("POST", "/agent/memories/by-tag", {
     tags: [RUN_TAG],
     limit: 10,
@@ -280,7 +280,7 @@ await test("Error responses do not leak stack traces or file paths", async () =>
   assert.ok(!body.includes(".ts:"), "response contains TypeScript source reference");
 });
 
-await test("GET /health — response has Content-Type application/json", async () => {
+await test("GET /health -- response has Content-Type application/json", async () => {
   const { headers: h } = await api("GET", "/health");
   const ct = h.get("content-type") || "";
   assert.ok(ct.includes("application/json"), `unexpected content-type: ${ct}`);
@@ -290,7 +290,7 @@ await test("GET /health — response has Content-Type application/json", async (
 // Summary
 // ===========================================================================
 
-console.log(`\n${"—".repeat(50)}`);
+console.log(`\n${"--".repeat(50)}`);
 console.log(`Results: ${passed} passed, ${failed} failed, ${passed + failed} total`);
 
 if (failures.length > 0) {

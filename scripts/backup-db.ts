@@ -3,12 +3,12 @@
 // Uses SQLite's .backup API for a consistent snapshot (safe during writes).
 //
 // Required env vars:
-//   RM_DB_PATH              — SQLite database path (default: /data/reflect-memory.db)
-//   RM_BACKUP_S3_ENDPOINT   — S3 endpoint (e.g. https://<account>.r2.cloudflarestorage.com)
-//   RM_BACKUP_S3_BUCKET     — Bucket name
-//   RM_BACKUP_S3_KEY_ID     — Access key ID
-//   RM_BACKUP_S3_KEY_SECRET — Secret access key
-//   RM_BACKUP_S3_REGION     — Region (default: auto)
+//   RM_DB_PATH              -- SQLite database path (default: /data/reflect-memory.db)
+//   RM_BACKUP_S3_ENDPOINT   -- S3 endpoint (e.g. https://<account>.r2.cloudflarestorage.com)
+//   RM_BACKUP_S3_BUCKET     -- Bucket name
+//   RM_BACKUP_S3_KEY_ID     -- Access key ID
+//   RM_BACKUP_S3_KEY_SECRET -- Secret access key
+//   RM_BACKUP_S3_REGION     -- Region (default: auto)
 
 import { createReadStream, statSync, unlinkSync } from "node:fs";
 import { createHash, createHmac } from "node:crypto";

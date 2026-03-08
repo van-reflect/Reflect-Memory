@@ -9,7 +9,7 @@ info:
     Use /agent/memories/by-tag for full-body retrieval by topic.
     Use /agent/memories/latest for the single most recent memory (strict chronological by created_at).
     Use /query with specific filters to get AI responses grounded in relevant context.
-    IMPORTANT: For "most recent memory chronologically" always use getLatestMemory — never /query.
+    IMPORTANT: For "most recent memory chronologically" always use getLatestMemory -- never /query.
 servers:
   - url: https://api.reflectmemory.com
 paths:
@@ -84,7 +84,7 @@ paths:
     get:
       operationId: getLatestMemory
       summary: Get the single most recent memory (strict chronological)
-      description: "Most recent memory by created_at. Use for 'latest' or 'most recent' — never use /query for recency. Optional ?tag= filters to that tag (e.g. ?tag=project_state)."
+      description: "Most recent memory by created_at. Use for 'latest' or 'most recent' -- never use /query for recency. Optional ?tag= filters to that tag (e.g. ?tag=project_state)."
       parameters:
         - name: tag
           in: query

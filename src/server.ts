@@ -1,4 +1,4 @@
-// Reflect Memory — HTTP API Layer
+// Reflect Memory -- HTTP API Layer
 // Fastify server with memory CRUD, agent connector, and AI query route.
 // No UI. No logging. No default behavior.
 // Every request requires auth and explicit intent.
@@ -528,7 +528,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
-  // Quota enforcement — reject requests when plan limits are exceeded
+  // Quota enforcement -- reject requests when plan limits are exceeded
   // ===========================================================================
 
   const WRITE_ROUTES = new Set(["/memories", "/agent/memories"]);
@@ -568,7 +568,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
-  // Usage metering hook — records operations after successful responses
+  // Usage metering hook -- records operations after successful responses
   // ===========================================================================
 
   const METERED_ROUTES: Record<string, { method: string; operation: Operation }> = {
@@ -613,7 +613,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
-  // GET /health — Public health check
+  // GET /health -- Public health check
   // ===========================================================================
 
   server.get("/health", async () => {
@@ -626,7 +626,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
-  // GET /openapi.json — Public OpenAPI spec for Custom Actions
+  // GET /openapi.json -- Public OpenAPI spec for Custom Actions
   // ===========================================================================
 
   const openapiSpecPath = resolve(
@@ -649,7 +649,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
-  // GET /whoami — Identity debugging
+  // GET /whoami -- Identity debugging
   // ===========================================================================
   // Returns the caller's resolved role and vendor from their auth key.
   // No sensitive data. Just what the server sees for this key.
@@ -663,7 +663,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
-  // GET /admin/metrics — Owner-only usage stats
+  // GET /admin/metrics -- Owner-only usage stats
   // ===========================================================================
   // Dashboard auth or API key. Only the owner (userId) can access.
   // Returns user counts, memory counts, and growth metrics for alpha tracking
@@ -779,10 +779,10 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
-  // POST /memories — Create a memory (user path)
+  // POST /memories -- Create a memory (user path)
   // ===========================================================================
   // allowed_vendors is optional. Defaults to ["*"] server-side.
-  // origin is always "user" — set server-side, never from the body.
+  // origin is always "user" -- set server-side, never from the body.
   // ===========================================================================
 
   server.post(
@@ -825,10 +825,10 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /agent/memories — Create a memory (agent path)
+  // POST /agent/memories -- Create a memory (agent path)
   // ===========================================================================
   // allowed_vendors is required. origin is set server-side from the auth key.
-  // The body schema does NOT include origin — additionalProperties: false
+  // The body schema does NOT include origin -- additionalProperties: false
   // rejects it with a 400 if present.
   // ===========================================================================
 
@@ -874,7 +874,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // GET /agent/memories/latest — Single most recent memory for agents
+  // GET /agent/memories/latest -- Single most recent memory for agents
   // ===========================================================================
   // Zero-config "most recent" retrieval. No limit parameter, no filter schema.
   // Optional ?tag= query param: returns most recent memory with that tag.
@@ -903,7 +903,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
-  // GET /agent/memories/:id — Full-body retrieval by ID for agents
+  // GET /agent/memories/:id -- Full-body retrieval by ID for agents
   // ===========================================================================
   // Deterministic, surgical access to a single memory. Vendor-filtered:
   // agents only see memories where allowed_vendors contains "*" or their vendor.
@@ -938,7 +938,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /agent/memories/by-tag — Full-body retrieval by tags for agents
+  // POST /agent/memories/by-tag -- Full-body retrieval by tags for agents
   // ===========================================================================
   // Returns complete memory entries (with content) filtered by tags.
   // Vendor-filtered. Supports pagination. Use for council retrieval,
@@ -1004,7 +1004,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /agent/memories/browse — Lightweight memory listing for agents
+  // POST /agent/memories/browse -- Lightweight memory listing for agents
   // ===========================================================================
   // Returns memory summaries (title, tags, origin, timestamps) without content.
   // Agents use this to discover what memories exist, then selectively fetch
@@ -1045,7 +1045,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // GET /memories/:id — Read a single memory
+  // GET /memories/:id -- Read a single memory
   // ===========================================================================
 
   server.get(
@@ -1067,7 +1067,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /memories/list — List memories with an explicit filter
+  // POST /memories/list -- List memories with an explicit filter
   // ===========================================================================
 
   server.post(
@@ -1099,7 +1099,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // PUT /memories/:id — Update a memory (full replacement)
+  // PUT /memories/:id -- Update a memory (full replacement)
   // ===========================================================================
   // Now requires allowed_vendors in the body. origin is immutable.
   // ===========================================================================
@@ -1144,7 +1144,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // DELETE /memories/:id — Soft delete (move to trash)
+  // DELETE /memories/:id -- Soft delete (move to trash)
   // ===========================================================================
   // Sets deleted_at. Memory can be restored within 30 days.
   // ===========================================================================
@@ -1168,7 +1168,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /memories/:id/restore — Restore from trash
+  // POST /memories/:id/restore -- Restore from trash
   // ===========================================================================
 
   server.post(
@@ -1190,7 +1190,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /query — AI query with explicit memory selection
+  // POST /query -- AI query with explicit memory selection
   // ===========================================================================
   // Vendor filtering is determined by the caller's auth key:
   // - User key: no vendor filter (sees all memories)
@@ -1237,7 +1237,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return { error: "Model API call failed" };
       }
 
-      // Agents get a slim receipt — no full prompt or memory objects echoed back.
+      // Agents get a slim receipt -- no full prompt or memory objects echoed back.
       // This keeps the response small enough for ChatGPT Custom Actions to handle.
       if (request.role === "agent") {
         const agentReceipt: AgentQueryReceipt = {
@@ -1267,7 +1267,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // GET /chat/models — Available chat models
+  // GET /chat/models -- Available chat models
   // ===========================================================================
   // Returns models that have API keys configured. Dashboard uses this to
   // populate the model selector.
@@ -1295,7 +1295,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
-  // POST /chat — Multi-model chat with Reflect Memory tool calling
+  // POST /chat -- Multi-model chat with Reflect Memory tool calling
   // ===========================================================================
   // User-only. Agents cannot use this endpoint.
   // The model reads/writes memories mid-conversation via server-side tools.
@@ -1353,7 +1353,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /waitlist — Public waitlist signup
+  // POST /waitlist -- Public waitlist signup
   // ===========================================================================
 
   const waitlistBodySchema = {
@@ -1407,7 +1407,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /early-access — Public early access request
+  // POST /early-access -- Public early access request
   // ===========================================================================
 
   const earlyAccessBodySchema = {
@@ -1479,7 +1479,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // GET /admin/waitlist — Owner-only waitlist view
+  // GET /admin/waitlist -- Owner-only waitlist view
   // ===========================================================================
 
   server.get(
@@ -1502,7 +1502,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // GET /admin/early-access — Owner-only early access requests view
+  // GET /admin/early-access -- Owner-only early access requests view
   // ===========================================================================
 
   server.get(
@@ -1534,7 +1534,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // PUT /admin/early-access/:id — Owner-only status update
+  // PUT /admin/early-access/:id -- Owner-only status update
   // ===========================================================================
 
   const earlyAccessStatusSchema = {
@@ -1602,7 +1602,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /admin/waitlist/mark-notified — Mark waitlist entries as notified
+  // POST /admin/waitlist/mark-notified -- Mark waitlist entries as notified
   // ===========================================================================
 
   server.post(
@@ -1637,7 +1637,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // API Key Management — per-user key CRUD
+  // API Key Management -- per-user key CRUD
   // ===========================================================================
 
   server.post(
@@ -1693,7 +1693,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // Usage — quota status and monthly breakdown
+  // Usage -- quota status and monthly breakdown
   // ===========================================================================
 
   server.get(
@@ -1714,7 +1714,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // Billing — Stripe checkout and management
+  // Billing -- Stripe checkout and management
   // ===========================================================================
 
   server.post(
@@ -1816,7 +1816,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /webhooks/stripe — Stripe event handler (public, verified by signature)
+  // POST /webhooks/stripe -- Stripe event handler (public, verified by signature)
   // ===========================================================================
 
   server.post(
@@ -1848,7 +1848,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
-  // POST /webhooks/clerk — Clerk user sync (public, verified by Svix signature)
+  // POST /webhooks/clerk -- Clerk user sync (public, verified by Svix signature)
   // ===========================================================================
 
   const clerkWebhookSecret = process.env.CLERK_WEBHOOK_SECRET;
@@ -1861,7 +1861,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return reply.code(404).send({ error: "Not configured" });
       }
 
-      // Verify Svix signature — Clerk signs every webhook with svix-id, svix-timestamp, svix-signature
+      // Verify Svix signature -- Clerk signs every webhook with svix-id, svix-timestamp, svix-signature
       const svixId = request.headers["svix-id"] as string | undefined;
       const svixTimestamp = request.headers["svix-timestamp"] as string | undefined;
       const svixSignature = request.headers["svix-signature"] as string | undefined;

@@ -511,7 +511,7 @@ export function restoreMemory(
   return readMemoryById(db, userId, memoryId);
 }
 
-/** Hard delete + version cleanup. Self-contained — does not rely on FK cascade. */
+/** Hard delete + version cleanup. Self-contained -- does not rely on FK cascade. */
 export function deleteMemory(
   db: Database.Database,
   userId: string,

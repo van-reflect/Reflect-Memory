@@ -31,4 +31,4 @@ Once connected, try:
 
 ## Server logo
 
-For the Anthropic form: the server logo is at `https://reflectmemory.com/logo.png`. Anthropic requires SVG format — if they reject PNG, convert the logo using a tool like [CloudConvert](https://cloudconvert.com/png-to-svg) and upload the SVG.
+For the Anthropic form: the server logo is at `https://reflectmemory.com/logo.png`. Anthropic requires SVG format -- if they reject PNG, convert the logo using a tool like [CloudConvert](https://cloudconvert.com/png-to-svg) and upload the SVG.
