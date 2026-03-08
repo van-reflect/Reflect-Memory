@@ -1,5 +1,10 @@
 # Reflect Memory
 
+[![npm: reflect-memory-sdk](https://img.shields.io/npm/dm/reflect-memory-sdk?label=reflect-memory-sdk&color=blue)](https://www.npmjs.com/package/reflect-memory-sdk)
+[![npm: reflect-memory-mcp](https://img.shields.io/npm/dm/reflect-memory-mcp?label=reflect-memory-mcp&color=blue)](https://www.npmjs.com/package/reflect-memory-mcp)
+[![npm: n8n-nodes-reflect-memory](https://img.shields.io/npm/dm/n8n-nodes-reflect-memory?label=n8n-nodes-reflect-memory&color=blue)](https://www.npmjs.com/package/n8n-nodes-reflect-memory)
+[![GitHub stars](https://img.shields.io/github/stars/van-reflect/Reflect-Memory?style=social)](https://github.com/van-reflect/Reflect-Memory)
+
 Privacy-first AI memory system. All memory is explicitly user-authored, structured, editable, and deletable. The AI model is stateless -- it sees only what you choose to show it.
 
 ## Requirements
