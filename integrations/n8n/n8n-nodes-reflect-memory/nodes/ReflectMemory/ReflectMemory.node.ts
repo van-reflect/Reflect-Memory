@@ -228,7 +228,7 @@ export class ReflectMemory implements INodeType {
               "reflectMemoryApi",
               {
                 method: "GET",
-                url: `${baseUrl}/agent/memories/${memoryId}`,
+                url: `${baseUrl}/agent/memories/${encodeURIComponent(memoryId)}`,
                 json: true,
               },
             ) as IDataObject;
@@ -244,7 +244,7 @@ export class ReflectMemory implements INodeType {
               {
                 method: "POST",
                 url: `${baseUrl}/agent/memories/browse`,
-                body: { limit, offset },
+                body: { limit, offset, filter: { by: "all" } },
                 json: true,
               },
             ) as IDataObject;

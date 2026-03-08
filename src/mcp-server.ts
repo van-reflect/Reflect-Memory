@@ -200,20 +200,45 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     next();
   });
 
-  // Track transports by session ID, and which vendor owns each session
+  const MAX_SESSIONS = 500;
+  const SESSION_TTL_MS = 30 * 60 * 1000;
+
   const transports: Record<string, StreamableHTTPServerTransport> = {};
   const sessionVendors: Record<string, string> = {};
+  const sessionLastSeen: Record<string, number> = {};
+
+  setInterval(() => {
+    const now = Date.now();
+    for (const sid of Object.keys(sessionLastSeen)) {
+      if (now - sessionLastSeen[sid] > SESSION_TTL_MS) {
+        transports[sid]?.close?.();
+        delete transports[sid];
+        delete sessionVendors[sid];
+        delete sessionLastSeen[sid];
+      }
+    }
+  }, 60_000);
 
   app.post("/mcp", async (req, res) => {
     try {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
       if (sessionId && transports[sessionId]) {
+        sessionLastSeen[sessionId] = Date.now();
         await transports[sessionId].handleRequest(req, res, req.body);
         return;
       }
 
       if (!sessionId && isInitializeRequest(req.body)) {
+        if (Object.keys(transports).length >= MAX_SESSIONS) {
+          res.status(503).json({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "Too many active sessions" },
+            id: null,
+          });
+          return;
+        }
+
         const vendor = (req as any).vendor as string;
 
         const transport = new StreamableHTTPServerTransport({
@@ -222,6 +247,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
           onsessioninitialized: (sid) => {
             transports[sid] = transport;
             sessionVendors[sid] = vendor;
+            sessionLastSeen[sid] = Date.now();
           },
         });
 
@@ -230,6 +256,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
           if (sid) {
             delete transports[sid];
             delete sessionVendors[sid];
+            delete sessionLastSeen[sid];
           }
         };
 
@@ -257,21 +284,44 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   });
 
   app.get("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    if (!sessionId || !transports[sessionId]) {
-      res.status(400).send("Invalid or missing session ID");
-      return;
+    try {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      if (!sessionId || !transports[sessionId]) {
+        res.status(400).send("Invalid or missing session ID");
+        return;
+      }
+      sessionLastSeen[sessionId] = Date.now();
+      await transports[sessionId].handleRequest(req, res);
+    } catch (error) {
+      console.error("[mcp] GET error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
     }
-    await transports[sessionId].handleRequest(req, res);
   });
 
   app.delete("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    if (!sessionId || !transports[sessionId]) {
-      res.status(400).send("Invalid or missing session ID");
-      return;
+    try {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      if (!sessionId || !transports[sessionId]) {
+        res.status(400).send("Invalid or missing session ID");
+        return;
+      }
+      await transports[sessionId].handleRequest(req, res);
+    } catch (error) {
+      console.error("[mcp] DELETE error:", error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
     }
-    await transports[sessionId].handleRequest(req, res);
   });
 
   app.get("/health", (_req, res) => {

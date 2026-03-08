@@ -635,13 +635,24 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     "openapi-agent.yaml",
   );
 
+  let cachedOpenApiSpec: unknown = null;
+  try {
+    const yaml = require("js-yaml");
+    cachedOpenApiSpec = yaml.load(readFileSync(openapiSpecPath, "utf-8"));
+  } catch {
+    console.warn("Could not pre-load OpenAPI spec; will attempt on first request");
+  }
+
   server.get("/openapi.json", async (_request, reply) => {
+    if (cachedOpenApiSpec) {
+      reply.type("application/json");
+      return cachedOpenApiSpec;
+    }
     try {
       const yaml = await import("js-yaml");
-      const raw = readFileSync(openapiSpecPath, "utf-8");
-      const spec = yaml.load(raw);
+      cachedOpenApiSpec = yaml.load(readFileSync(openapiSpecPath, "utf-8"));
       reply.type("application/json");
-      return spec;
+      return cachedOpenApiSpec;
     } catch {
       reply.code(500);
       return { error: "Failed to load OpenAPI spec" };
@@ -1782,10 +1793,18 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
 
       const body = (request.body ?? {}) as { return_url?: string };
+      let returnUrl = "https://www.reflectmemory.com/dashboard";
+      if (body.return_url) {
+        try {
+          const parsed = new URL(body.return_url);
+          const allowed = new Set(["www.reflectmemory.com", "reflectmemory.com", "localhost"]);
+          if (allowed.has(parsed.hostname)) returnUrl = body.return_url;
+        } catch { /* invalid URL, use default */ }
+      }
       const url = await createBillingPortalSession(
         db,
         request.userId,
-        body.return_url ?? "https://www.reflectmemory.com/dashboard",
+        returnUrl,
       );
 
       if (!url) {

@@ -168,7 +168,7 @@ async function executeFunction(call: FunctionCall): Promise<unknown> {
     }
 
     case "get_memory_by_id":
-      return fetchApi(`/agent/memories/${args.id}`);
+      return fetchApi(`/agent/memories/${encodeURIComponent(args.id as string)}`);
 
     case "browse_memories":
       return fetchApi("/agent/memories/browse", {
@@ -176,6 +176,7 @@ async function executeFunction(call: FunctionCall): Promise<unknown> {
         body: JSON.stringify({
           limit: args.limit ?? 50,
           offset: args.offset ?? 0,
+          filter: { by: "all" },
         }),
       });
 
