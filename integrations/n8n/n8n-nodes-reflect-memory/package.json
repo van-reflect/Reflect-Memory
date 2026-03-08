@@ -8,7 +8,13 @@
     "reflect-memory",
     "memory",
     "ai",
-    "mcp"
+    "ai-memory",
+    "ai-agents",
+    "mcp",
+    "model-context-protocol",
+    "llm",
+    "automation",
+    "developer-tools"
   ],
   "license": "MIT",
   "homepage": "https://reflectmemory.com",
