@@ -1,11 +1,16 @@
 /**
  * Shared core for Reflect Memory browser extension.
  *
- * Architecture: "Lazy Priming" with selective write-back.
+ * Architecture: "Lazy Priming" with intent-based write-back.
+ * - Primes on first message in a new conversation if relevant memories exist.
+ * - Writes back only when the conversation contains substantive content
+ *   (decisions, conclusions, plans) and has settled (no new AI output for 30s).
+ * - Writes at most once per conversation to avoid dashboard clutter.
  */
 
 const PRIMED_KEY = "reflect_memory_primed";
 const WRITE_ENABLED_KEY = "reflect_memory_write_enabled";
+const WRITTEN_KEY = "reflect_memory_written";
 const DEBUG = true;
 
 let isPriming = false;
@@ -51,18 +56,21 @@ function formatMemoriesForPriming(memories) {
 function isAlreadyPrimed() {
   return sessionStorage.getItem(PRIMED_KEY) === "true";
 }
-
 function markAsPrimed() {
   sessionStorage.setItem(PRIMED_KEY, "true");
 }
-
 function isWriteEnabled() {
   return sessionStorage.getItem(WRITE_ENABLED_KEY) === "true";
 }
-
 function enableWrite() {
   sessionStorage.setItem(WRITE_ENABLED_KEY, "true");
   log("Write-back ENABLED for this session");
+}
+function hasAlreadyWritten() {
+  return sessionStorage.getItem(WRITTEN_KEY) === "true";
+}
+function markAsWritten() {
+  sessionStorage.setItem(WRITTEN_KEY, "true");
 }
 
 // --- Keyword extraction for search ---
@@ -98,6 +106,26 @@ function memoriesMatchKeywords(memories, keywords) {
 }
 
 // --- Priming flow ---
+
+function waitForReadyResponse(timeoutMs = 12000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = setInterval(() => {
+      const text = document.body.innerText || "";
+      if (text.includes("Pulled memories from Reflect")) {
+        clearInterval(check);
+        log("AI acknowledged priming in", Date.now() - start, "ms");
+        resolve(true);
+        return;
+      }
+      if (Date.now() - start > timeoutMs) {
+        clearInterval(check);
+        log("Timed out waiting for AI acknowledgment after", timeoutMs, "ms");
+        resolve(false);
+      }
+    }, 400);
+  });
+}
 
 async function interceptFirstMessage(adapter, userMessage) {
   if (isPriming || isAlreadyPrimed()) {
@@ -145,7 +173,6 @@ async function interceptFirstMessage(adapter, userMessage) {
         type: "GET_MEMORIES",
         limit: 8,
       });
-      log("Fallback raw response:", JSON.stringify(fallback)?.slice(0, 300));
       const allRecent = fallback?.memories || [];
       log("Fetched", allRecent.length, "recent memories. Filtering by relevance...");
       memories = memoriesMatchKeywords(allRecent, keywords);
@@ -164,25 +191,21 @@ async function interceptFirstMessage(adapter, userMessage) {
       return false;
     }
 
-    // Step 1: Send priming message
     log("Setting priming text...");
     adapter.setInputValue(primingText);
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 200));
     log("Sending priming message...");
     adapter.triggerSend();
 
-    // Step 2: Wait for Claude to respond with "Ready"
-    log("Waiting 7s for AI to process context...");
-    await new Promise((r) => setTimeout(r, 7000));
+    log("Waiting for AI to acknowledge...");
+    await waitForReadyResponse(12000);
 
-    // Step 3: Try to hide priming exchange
     log("Hiding priming exchange...");
     adapter.hideLastExchange();
 
-    // Step 4: Send the user's actual message
     log("Setting user's real message:", userMessage.slice(0, 60));
     adapter.setInputValue(userMessage);
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 200));
     log("Sending user's real message...");
     adapter.triggerSend();
 
@@ -198,56 +221,159 @@ async function interceptFirstMessage(adapter, userMessage) {
   return true;
 }
 
-// --- Write-back: capture conversation to Reflect Memory ---
+// --- Write-back: structured conversation extraction ---
 
-let lastWrittenText = "";
+const SIGNAL_WORDS = [
+  "decide", "decided", "decision", "conclusion", "direction",
+  "priority", "prioritize", "focus", "strategy", "plan",
+  "launch", "ship", "build", "implement", "architecture",
+  "approach", "recommend", "suggestion", "action item",
+  "next step", "takeaway", "key insight", "bottom line",
+  "going with", "settled on", "committed to", "moving forward",
+  "the play is", "let's go with", "final answer",
+  "milestone", "deadline", "timeline", "roadmap",
+  "trade-off", "tradeoff", "pros and cons", "versus",
+  "pivot", "shift", "change direction", "reframe",
+];
 
-async function writeConversationToMemory(vendor) {
-  if (!isWriteEnabled()) return;
+function conversationHasSubstance(turns) {
+  if (turns.length < 2) return false;
 
-  const text = document.body.innerText || "";
-  if (text.length < 200) {
-    log("writeBack: page text too short:", text.length);
-    return;
+  const fullText = turns.map((t) => t.text).join(" ").toLowerCase();
+  const matchCount = SIGNAL_WORDS.filter((w) => fullText.includes(w)).length;
+
+  if (matchCount >= 2) {
+    log("writeBack: substance check passed with", matchCount, "signal words");
+    return true;
   }
 
-  const lines = text.split("\n").filter((l) => l.trim().length > 5);
-  const clean = lines.filter((l) => {
-    const lower = l.toLowerCase();
-    if (lower.includes("returning user") && lower.includes("shared memory")) return false;
-    if (lower.includes("pulled memories from reflect") && l.length < 200) return false;
-    if (lower.includes("claude is ai and can make mistakes")) return false;
-    if (lower.includes("free plan") && l.length < 30) return false;
-    if (lower.includes("sonnet") && l.length < 30) return false;
-    if (l.trim() === "Reply..." || l.trim() === "Reply") return false;
+  const totalChars = turns.reduce((sum, t) => sum + t.text.length, 0);
+  if (turns.length >= 4 && totalChars > 1500) {
+    log("writeBack: substance check passed on length:", turns.length, "turns,", totalChars, "chars");
     return true;
+  }
+
+  log("writeBack: substance check failed. Signals:", matchCount, "Turns:", turns.length, "Chars:", totalChars);
+  return false;
+}
+
+function extractConversationTurns(adapter) {
+  const turns = [];
+
+  const messages = adapter.getMessages();
+  if (messages.length > 0) {
+    for (const msg of messages) {
+      if (!msg.text || msg.text.length < 10) continue;
+      const lower = msg.text.toLowerCase();
+      if (lower.includes("returning user") && lower.includes("shared memory")) continue;
+      if (lower.includes("pulled memories from reflect") && msg.text.length < 200) continue;
+      turns.push({ role: msg.role || "unknown", text: msg.text.trim() });
+    }
+    return turns;
+  }
+
+  const container =
+    document.querySelector("main") ||
+    document.querySelector("[role='main']") ||
+    document.querySelector("[class*='conversation']") ||
+    document.body;
+
+  const humanEls = container.querySelectorAll("[data-is-streaming='false'][class*='human'], [class*='user-message'], [data-testid*='human'], [data-testid*='user']");
+  const assistantEls = container.querySelectorAll("[data-is-streaming='false'][class*='assistant'], [class*='ai-message'], [data-testid*='assistant'], [data-testid*='ai']");
+
+  const allEls = [...humanEls, ...assistantEls].sort((a, b) => {
+    const posA = a.compareDocumentPosition(b);
+    return posA & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
   });
 
-  const content = clean.join("\n").trim();
-  if (content.length < 200) {
-    log("writeBack: cleaned text too short:", content.length);
+  for (const el of allEls) {
+    const text = el.innerText?.trim();
+    if (!text || text.length < 10) continue;
+    const lower = text.toLowerCase();
+    if (lower.includes("returning user") && lower.includes("shared memory")) continue;
+    if (lower.includes("pulled memories from reflect") && text.length < 200) continue;
+
+    const isHuman = el.className?.includes("human") ||
+      el.className?.includes("user") ||
+      el.dataset?.testid?.includes("human") ||
+      el.dataset?.testid?.includes("user");
+
+    turns.push({ role: isHuman ? "user" : "assistant", text });
+  }
+
+  if (turns.length === 0) {
+    const text = container.innerText || "";
+    const lines = text.split("\n").filter((l) => l.trim().length > 20);
+    const clean = lines.filter((l) => {
+      const lower = l.toLowerCase();
+      if (lower.includes("returning user") && lower.includes("shared memory")) return false;
+      if (lower.includes("pulled memories from reflect") && l.length < 200) return false;
+      if (lower.includes("claude is ai and can make mistakes")) return false;
+      if (lower.includes("free plan") && l.length < 30) return false;
+      if (lower.includes("new chat") && l.length < 20) return false;
+      if (lower.includes("search") && l.length < 15) return false;
+      if (lower.includes("customize") && l.length < 20) return false;
+      if (lower.includes("projects") && l.length < 15) return false;
+      if (lower.includes("artifacts") && l.length < 15) return false;
+      if (lower.includes("recents") && l.length < 15) return false;
+      if (l.trim() === "Reply..." || l.trim() === "Reply") return false;
+      if (/^(Sonnet|Opus|Haiku)\s/i.test(l.trim()) && l.length < 30) return false;
+      return true;
+    });
+    if (clean.length > 0) {
+      turns.push({ role: "mixed", text: clean.join("\n") });
+    }
+  }
+
+  return turns;
+}
+
+function buildMemoryFromTurns(turns, vendor) {
+  const userTurns = turns.filter((t) => t.role === "user" || t.role === "mixed");
+  const assistantTurns = turns.filter((t) => t.role === "assistant" || t.role === "mixed");
+
+  const firstUserMsg = userTurns[0]?.text || "";
+  const titleSource = firstUserMsg.split("\n")[0] || "Conversation";
+  const title = `${vendor} -- ${titleSource.slice(0, 80)}`;
+
+  const parts = [];
+  for (const turn of turns) {
+    const prefix = turn.role === "user" ? "User:" : turn.role === "assistant" ? "AI:" : "";
+    const snippet = turn.text.length > 400 ? turn.text.slice(0, 400) + "..." : turn.text;
+    parts.push(prefix ? `${prefix} ${snippet}` : snippet);
+  }
+
+  const content = parts.join("\n\n").slice(0, 2000);
+  return { title, content };
+}
+
+async function writeConversationToMemory(adapter, vendor) {
+  if (!isWriteEnabled() || hasAlreadyWritten()) return;
+
+  const turns = extractConversationTurns(adapter);
+  log("writeBack: extracted", turns.length, "turns");
+
+  if (!conversationHasSubstance(turns)) return;
+
+  const { title, content } = buildMemoryFromTurns(turns, vendor);
+  if (content.length < 100) {
+    log("writeBack: content too short after formatting:", content.length);
     return;
   }
 
-  if (content === lastWrittenText) return;
-
-  const titleLine = clean.find((l) => l.length > 20 && l.length < 120) || clean[0] || "Conversation";
-  const title = `${vendor} -- ${titleLine.slice(0, 80).replace(/\n/g, " ")}`;
-  const snippet = content.slice(0, 1200);
-
-  log("writeBack: writing memory. Title:", title.slice(0, 60), "Length:", snippet.length);
+  log("writeBack: writing memory. Title:", title.slice(0, 60));
   const result = await sendToBackground({
     type: "WRITE_MEMORY",
     data: {
       title,
-      content: snippet,
+      content,
       tags: ["auto_captured", vendor.toLowerCase()],
       origin: vendor.toLowerCase(),
     },
   });
 
   if (result?.id) {
-    lastWrittenText = content;
+    markAsWritten();
     log("writeBack: SUCCESS. Memory ID:", result.id);
   } else {
     log("writeBack: FAILED.", JSON.stringify(result));
@@ -330,20 +456,22 @@ function initVendor(adapter, vendorName) {
   });
   bodyObserver.observe(document.body, { childList: true, subtree: true });
 
-  // Write-back observer: fires 8 seconds after the last DOM change
-  let writeTimer = null;
-  let lastLen = 0;
+  // Write-back: waits for conversation to settle (30s of no new AI output),
+  // then checks for substance before writing. Fires at most once.
+  let settleTimer = null;
+  let lastTextLen = 0;
   const writeObserver = new MutationObserver(() => {
-    if (isPriming || !isWriteEnabled()) return;
+    if (isPriming || !isWriteEnabled() || hasAlreadyWritten()) return;
 
     const len = document.body.innerText?.length || 0;
-    if (len === lastLen) return;
-    lastLen = len;
+    if (Math.abs(len - lastTextLen) < 50) return;
+    lastTextLen = len;
 
-    clearTimeout(writeTimer);
-    writeTimer = setTimeout(() => {
-      writeConversationToMemory(vendorName);
-    }, 8000);
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      log("writeBack: conversation settled. Checking substance...");
+      writeConversationToMemory(adapter, vendorName);
+    }, 30000);
   });
   writeObserver.observe(document.body, { childList: true, subtree: true });
 }
