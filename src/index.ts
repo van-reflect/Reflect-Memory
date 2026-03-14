@@ -340,6 +340,32 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(uniqueVersionMig
   );
 }
 
+// Migration: bulk soft-delete existing CI integration test memories
+const ciTrashMigrationName = "011_bulk_trash_ci_test_memories";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(ciTrashMigrationName)) {
+  const now = new Date().toISOString();
+  const stmt = db.prepare(`
+    UPDATE memories
+    SET deleted_at = ?, updated_at = ?
+    WHERE deleted_at IS NULL
+    AND (
+      title LIKE 'CI %' OR title LIKE '%ci-%'
+      OR EXISTS (
+        SELECT 1 FROM json_each(tags)
+        WHERE value LIKE 'ci_%' OR value LIKE '%integration_test%'
+      )
+    )
+  `);
+  const result = stmt.run(now, now);
+  if (result.changes > 0) {
+    console.log(`[migration] Soft-deleted ${result.changes} CI test memories`);
+  }
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    ciTrashMigrationName,
+    now,
+  );
+}
+
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 
 let userId: string;
