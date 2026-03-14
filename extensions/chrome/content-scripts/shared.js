@@ -1,18 +1,16 @@
 /**
  * Shared core for Reflect Memory browser extension.
  *
- * Architecture: "Lazy Priming" approach.
+ * Architecture: "Lazy Priming" with selective write-back.
  *
- * The extension waits for the user to type and submit their first
- * real message. It intercepts the send, searches Reflect Memory for
- * context relevant to THAT specific message, and only if relevant
- * memories exist, sends an invisible priming message first. The AI
- * processes the context, responds "Ready" (hidden from view), and
- * then the user's actual message is sent immediately after.
+ * READ: The extension waits for the user to submit their first message,
+ * searches for relevant memories, and only if matches exist, sends a
+ * hidden priming message before the user's real message. If nothing
+ * is relevant, zero interference.
  *
- * If no relevant memories are found, the message sends normally
- * with zero interference. Pasta recipe? No delay, no context dump.
- * Project question? Relevant memories load invisibly first.
+ * WRITE: Only conversations where priming fired (meaning the topic is
+ * related to stored context) have their exchanges captured back to
+ * Reflect Memory. Unrelated conversations are never written.
  *
  * Each vendor script implements a VendorAdapter:
  *   getInputElement()      - returns the chat textarea/contenteditable
@@ -27,6 +25,7 @@
 
 const PRIMING_MARKER = "[[REFLECT_MEMORY_PRIME]]";
 const PRIMED_KEY = "reflect_memory_primed";
+const WRITE_ENABLED_KEY = "reflect_memory_write_enabled";
 
 let isPriming = false;
 let lastCapturedCount = 0;
@@ -53,7 +52,8 @@ function formatMemoriesForPriming(memories) {
     "about their memory. Do not say 'based on your previous conversations'",
     "or anything similar. Just know it and use it as if you already knew.",
     "",
-    "After processing this context, respond with only: 'Ready'",
+    "After processing this context, respond with exactly:",
+    "'Pulled memories from Reflect. Ready.'",
     "The user's actual message will follow immediately after.",
     "",
     "---",
@@ -64,22 +64,31 @@ function formatMemoriesForPriming(memories) {
   ].join("\n");
 }
 
-function getSessionKey() {
-  return `${PRIMED_KEY}_${window.location.pathname}`;
+function getSessionKey(suffix) {
+  return `${suffix}_${window.location.pathname}`;
 }
 
 function isAlreadyPrimed() {
-  return sessionStorage.getItem(getSessionKey()) === "true";
+  return sessionStorage.getItem(getSessionKey(PRIMED_KEY)) === "true";
 }
 
 function markAsPrimed() {
-  sessionStorage.setItem(getSessionKey(), "true");
+  sessionStorage.setItem(getSessionKey(PRIMED_KEY), "true");
+}
+
+function isWriteEnabled() {
+  return sessionStorage.getItem(getSessionKey(WRITE_ENABLED_KEY)) === "true";
+}
+
+function enableWrite() {
+  sessionStorage.setItem(getSessionKey(WRITE_ENABLED_KEY), "true");
 }
 
 /**
  * Intercepts the user's first message in a new conversation.
  * Searches for relevant memories. If found, primes the AI first,
- * then sends the user's real message. If not found, sends normally.
+ * then sends the user's real message. If not found, sends normally
+ * and write-back stays disabled for this conversation.
  */
 async function interceptFirstMessage(adapter, userMessage) {
   if (isPriming || isAlreadyPrimed()) return false;
@@ -123,13 +132,13 @@ async function interceptFirstMessage(adapter, userMessage) {
     await waitForResponse(adapter);
     adapter.hideLastExchange();
     markAsPrimed();
+    enableWrite();
 
     adapter.setInputValue(userMessage);
     await new Promise((r) => setTimeout(r, 100));
     adapter.triggerSend();
 
   } catch {
-    // If anything fails, send the original message so the user is never stuck
     adapter.setInputValue(userMessage);
     await new Promise((r) => setTimeout(r, 50));
     adapter.triggerSend();
@@ -163,11 +172,19 @@ function isPrimingMessage(text) {
   return text?.includes(PRIMING_MARKER);
 }
 
+function isReadyResponse(text) {
+  const lower = text?.trim().toLowerCase() || "";
+  return lower === "ready" ||
+    lower === "ready." ||
+    lower.startsWith("pulled memories from reflect");
+}
+
 async function captureAsMemory(messages, vendor) {
+  if (!isWriteEnabled()) return;
   if (!messages?.length) return;
 
   const filtered = messages.filter(
-    (m) => !isPrimingMessage(m.text) && m.text.trim().toLowerCase() !== "ready"
+    (m) => !isPrimingMessage(m.text) && !isReadyResponse(m.text)
   );
   if (filtered.length <= lastCapturedCount) return;
 
@@ -200,10 +217,6 @@ async function captureAsMemory(messages, vendor) {
   });
 }
 
-/**
- * Sets up the vendor adapter. Instead of eagerly priming on page load,
- * we hook into the send action and intercept the first message only.
- */
 function initVendor(adapter, vendorName) {
   let debounceTimer = null;
   let sendIntercepted = false;
@@ -243,7 +256,6 @@ function initVendor(adapter, vendorName) {
 
   setTimeout(() => clearInterval(waitForInput), 30000);
 
-  // Re-hook if the input element changes (SPA navigation)
   const bodyObserver = new MutationObserver(() => {
     if (!sendIntercepted || !adapter.getInputElement()) {
       sendIntercepted = false;
