@@ -325,100 +325,57 @@ function conversationHasSubstance(turns) {
   return false;
 }
 
-function extractConversationTurns(adapter) {
-  const turns = [];
+const NOISE_PATTERNS = [
+  /^(new chat|search|customize|projects|artifacts|recents|reply\.{0,3})$/i,
+  /^(sonnet|opus|haiku|claude)\s/i,
+  /claude is ai and can make mistakes/i,
+  /free plan/i,
+  /^share$/i,
+  /^show more$/i,
+  /^skip$/i,
+  /^\d+ of \d+$/,
+  /^something else$/i,
+];
 
-  const messages = adapter.getMessages();
-  if (messages.length > 0) {
-    for (const msg of messages) {
-      if (!msg.text || msg.text.length < 10) continue;
-      const lower = msg.text.toLowerCase();
-      if (lower.includes("returning user") && lower.includes("shared memory")) continue;
-      if (lower.includes("pulled memories from reflect") && msg.text.length < 200) continue;
-      turns.push({ role: msg.role || "unknown", text: msg.text.trim() });
-    }
-    return turns;
-  }
+function isNoiseLine(line) {
+  if (line.length < 15) return true;
+  return NOISE_PATTERNS.some((p) => p.test(line.trim()));
+}
 
-  const container =
-    document.querySelector("main") ||
-    document.querySelector("[role='main']") ||
-    document.querySelector("[class*='conversation']") ||
-    document.body;
+function isPrimingContent(text) {
+  const lower = text.toLowerCase();
+  return (lower.includes("returning user") && lower.includes("shared memory")) ||
+    (lower.includes("pulled memories from reflect") && text.length < 200);
+}
 
-  const humanEls = container.querySelectorAll("[data-is-streaming='false'][class*='human'], [class*='user-message'], [data-testid*='human'], [data-testid*='user']");
-  const assistantEls = container.querySelectorAll("[data-is-streaming='false'][class*='assistant'], [class*='ai-message'], [data-testid*='assistant'], [data-testid*='ai']");
+function extractConversationTurns() {
+  const main = document.querySelector("main") || document.body;
+  const text = main.innerText || "";
 
-  const allEls = [...humanEls, ...assistantEls].sort((a, b) => {
-    const posA = a.compareDocumentPosition(b);
-    return posA & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
-  });
+  const lines = text.split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .filter((l) => !isNoiseLine(l))
+    .filter((l) => !isPrimingContent(l));
 
-  for (const el of allEls) {
-    const text = el.innerText?.trim();
-    if (!text || text.length < 10) continue;
-    const lower = text.toLowerCase();
-    if (lower.includes("returning user") && lower.includes("shared memory")) continue;
-    if (lower.includes("pulled memories from reflect") && text.length < 200) continue;
+  if (lines.length === 0) return [];
 
-    const isHuman = el.className?.includes("human") ||
-      el.className?.includes("user") ||
-      el.dataset?.testid?.includes("human") ||
-      el.dataset?.testid?.includes("user");
-
-    turns.push({ role: isHuman ? "user" : "assistant", text });
-  }
-
-  if (turns.length === 0) {
-    const text = container.innerText || "";
-    const lines = text.split("\n").filter((l) => l.trim().length > 20);
-    const clean = lines.filter((l) => {
-      const lower = l.toLowerCase();
-      if (lower.includes("returning user") && lower.includes("shared memory")) return false;
-      if (lower.includes("pulled memories from reflect") && l.length < 200) return false;
-      if (lower.includes("claude is ai and can make mistakes")) return false;
-      if (lower.includes("free plan") && l.length < 30) return false;
-      if (lower.includes("new chat") && l.length < 20) return false;
-      if (lower.includes("search") && l.length < 15) return false;
-      if (lower.includes("customize") && l.length < 20) return false;
-      if (lower.includes("projects") && l.length < 15) return false;
-      if (lower.includes("artifacts") && l.length < 15) return false;
-      if (lower.includes("recents") && l.length < 15) return false;
-      if (l.trim() === "Reply..." || l.trim() === "Reply") return false;
-      if (/^(Sonnet|Opus|Haiku)\s/i.test(l.trim()) && l.length < 30) return false;
-      return true;
-    });
-    if (clean.length > 0) {
-      turns.push({ role: "mixed", text: clean.join("\n") });
-    }
-  }
-
-  return turns;
+  const content = lines.join("\n");
+  return [{ role: "mixed", text: content }];
 }
 
 function buildMemoryFromTurns(turns, vendor) {
-  const userTurns = turns.filter((t) => t.role === "user" || t.role === "mixed");
-  const assistantTurns = turns.filter((t) => t.role === "assistant" || t.role === "mixed");
-
-  const firstUserMsg = userTurns[0]?.text || "";
-  const titleSource = firstUserMsg.split("\n")[0] || "Conversation";
-  const title = `${vendor} -- ${titleSource.slice(0, 80)}`;
-
-  const parts = [];
-  for (const turn of turns) {
-    const prefix = turn.role === "user" ? "User:" : turn.role === "assistant" ? "AI:" : "";
-    const snippet = turn.text.length > 400 ? turn.text.slice(0, 400) + "..." : turn.text;
-    parts.push(prefix ? `${prefix} ${snippet}` : snippet);
-  }
-
-  const content = parts.join("\n\n").slice(0, 2000);
+  const allText = turns.map((t) => t.text).join("\n");
+  const firstLine = allText.split("\n").find((l) => l.length > 15 && l.length < 120) || "Conversation";
+  const title = `${vendor} -- ${firstLine.slice(0, 80)}`;
+  const content = allText.slice(0, 2000);
   return { title, content };
 }
 
-async function writeConversationToMemory(adapter, vendor) {
+async function writeConversationToMemory(vendor) {
   if (!isWriteEnabled() || hasAlreadyWritten()) return;
 
-  const turns = extractConversationTurns(adapter);
+  const turns = extractConversationTurns();
   log("writeBack: extracted", turns.length, "turns");
 
   if (!conversationHasSubstance(turns)) return;
@@ -524,22 +481,29 @@ function initVendor(adapter, vendorName) {
   });
   bodyObserver.observe(document.body, { childList: true, subtree: true });
 
-  // Write-back: waits for conversation to settle (30s of no new AI output),
-  // then checks for substance before writing. Fires at most once.
-  let settleTimer = null;
-  let lastTextLen = 0;
-  const writeObserver = new MutationObserver(() => {
-    if (isPriming || !isWriteEnabled() || hasAlreadyWritten()) return;
+  // Write-back: poll every 10s. When text stabilizes for 2 consecutive
+  // checks (20s of no meaningful change) and write is enabled, attempt write.
+  let stableCount = 0;
+  let prevSnapshot = "";
+  setInterval(() => {
+    if (isPriming || !isWriteEnabled() || hasAlreadyWritten()) {
+      stableCount = 0;
+      return;
+    }
 
-    const len = document.body.innerText?.length || 0;
-    if (Math.abs(len - lastTextLen) < 50) return;
-    lastTextLen = len;
+    const main = document.querySelector("main") || document.body;
+    const snapshot = main.innerText?.slice(0, 3000) || "";
+    if (Math.abs(snapshot.length - prevSnapshot.length) < 30) {
+      stableCount++;
+    } else {
+      stableCount = 0;
+    }
+    prevSnapshot = snapshot;
 
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(() => {
-      log("writeBack: conversation settled. Checking substance...");
-      writeConversationToMemory(adapter, vendorName);
-    }, 30000);
-  });
-  writeObserver.observe(document.body, { childList: true, subtree: true });
+    if (stableCount >= 2) {
+      log("writeBack: conversation stable for 20s. Checking substance...");
+      stableCount = 0;
+      writeConversationToMemory(vendorName);
+    }
+  }, 10000);
 }
