@@ -4,7 +4,6 @@
  * Architecture: "Lazy Priming" with selective write-back.
  */
 
-const PRIMING_MARKER = "[[REFLECT_MEMORY_PRIME]]";
 const PRIMED_KEY = "reflect_memory_primed";
 const WRITE_ENABLED_KEY = "reflect_memory_write_enabled";
 const DEBUG = true;
@@ -146,6 +145,7 @@ async function interceptFirstMessage(adapter, userMessage) {
         type: "GET_MEMORIES",
         limit: 8,
       });
+      log("Fallback raw response:", JSON.stringify(fallback)?.slice(0, 300));
       const allRecent = fallback?.memories || [];
       log("Fetched", allRecent.length, "recent memories. Filtering by relevance...");
       memories = memoriesMatchKeywords(allRecent, keywords);
@@ -242,6 +242,7 @@ async function writeConversationToMemory(vendor) {
       title,
       content: snippet,
       tags: ["auto_captured", vendor.toLowerCase()],
+      origin: vendor.toLowerCase(),
     },
   });
 

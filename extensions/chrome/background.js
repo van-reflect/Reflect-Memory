@@ -9,38 +9,50 @@ async function apiFetch(path, options = {}) {
   const key = await getApiKey();
   if (!key) return { error: "No API key configured" };
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-      ...options.headers,
-    },
-  });
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+        ...options.headers,
+      },
+    });
 
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    return { error: body.error || `HTTP ${res.status}` };
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      console.log("[Reflect BG] API error:", path, res.status, JSON.stringify(body));
+      return { error: body.error || `HTTP ${res.status}` };
+    }
+
+    return res.json();
+  } catch (err) {
+    console.log("[Reflect BG] API fetch exception:", path, err.message);
+    return { error: `Network error: ${err.message}` };
   }
-
-  return res.json();
 }
 
 async function getLatestMemories(limit = 5) {
-  return apiFetch("/agent/memories/browse", {
+  const result = await apiFetch("/agent/memories/browse", {
     method: "POST",
     body: JSON.stringify({
       filter: { by: "all" },
       limit,
     }),
   });
+  console.log("[Reflect BG] getLatestMemories:", JSON.stringify({
+    total: result?.total,
+    count: result?.memories?.length,
+    error: result?.error,
+  }));
+  return result;
 }
 
 async function getMemoryById(id) {
   return apiFetch(`/agent/memories/${id}`);
 }
 
-async function writeMemory({ title, content, tags }) {
+async function writeMemory({ title, content, tags, origin }) {
   return apiFetch("/agent/memories", {
     method: "POST",
     body: JSON.stringify({
@@ -49,6 +61,7 @@ async function writeMemory({ title, content, tags }) {
       tags: tags || ["auto_captured"],
       allowed_vendors: ["*"],
       memory_type: "semantic",
+      origin: origin || "user",
     }),
   });
 }
@@ -75,15 +88,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message.type) {
       case "GET_MEMORIES": {
         const browse = await getLatestMemories(message.limit || 5);
+        console.log("[Reflect BG] GET_MEMORIES raw:", JSON.stringify(browse)?.slice(0, 300));
         if (browse.error || !browse.memories?.length) return browse;
         const full = await getFullMemories(
           browse.memories.map((m) => m.id)
         );
+        console.log("[Reflect BG] GET_MEMORIES full:", full.length, "memories fetched");
         return { memories: full };
       }
 
       case "SEARCH_MEMORIES": {
         const browse = await searchMemories(message.term);
+        console.log("[Reflect BG] SEARCH_MEMORIES raw:", JSON.stringify(browse)?.slice(0, 300));
         if (browse.error || !browse.memories?.length) return browse;
         const full = await getFullMemories(
           browse.memories.map((m) => m.id)
