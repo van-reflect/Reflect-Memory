@@ -304,31 +304,6 @@ const SIGNAL_WORDS = [
   "pivot", "shift", "change direction", "reframe",
 ];
 
-function conversationHasSubstance(turns) {
-  const fullText = turns.map((t) => t.text).join(" ").toLowerCase();
-  const totalChars = fullText.length;
-
-  if (totalChars < 300) {
-    log("writeBack: substance check failed. Too short:", totalChars);
-    return false;
-  }
-
-  const matchCount = SIGNAL_WORDS.filter((w) => fullText.includes(w)).length;
-
-  if (matchCount >= 1) {
-    log("writeBack: substance check passed with", matchCount, "signal words,", totalChars, "chars");
-    return true;
-  }
-
-  if (totalChars > 1000) {
-    log("writeBack: substance check passed on length:", totalChars, "chars");
-    return true;
-  }
-
-  log("writeBack: substance check failed. Signals:", matchCount, "Chars:", totalChars);
-  return false;
-}
-
 const AFFIRMATION_PATTERNS = [
   /\b(let'?s go with|going with|go with|down to|i'?m down|let'?s do)\b/i,
   /\b(i like th(at|is)|love it|love that|sounds good|sounds great|sounds right)\b/i,
@@ -345,7 +320,7 @@ function isAffirmation(text) {
 
 const NOISE_PATTERNS = [
   /^(new chat|search|customize|projects|artifacts|recents|reply\.{0,3})$/i,
-  /^(sonnet|opus|haiku|claude)\s/i,
+  /^(sonnet|opus|haiku|claude|gpt|gemini)\s*[\d.]*\s*$/i,
   /claude is ai and can make mistakes/i,
   /free plan/i,
   /^share$/i,
@@ -353,10 +328,19 @@ const NOISE_PATTERNS = [
   /^skip$/i,
   /^\d+ of \d+$/,
   /^something else$/i,
+  /^(saas|mobile app|physical product|marketplace|service|agency)/i,
+  /^\+ to navigate/i,
+  /^enter to select/i,
+  /^esc to /i,
+  /^(starred|connected tools|admin|api keys|usage|billing|trash|memories)$/i,
+  /^(myaispeed|ai speed index)$/i,
+  /^reflect memory$/i,
+  /^sign out$/i,
+  /^(copy|edit|delete|retry|more)$/i,
 ];
 
 function isNoiseLine(line) {
-  if (line.length < 15) return true;
+  if (line.length < 10) return true;
   return NOISE_PATTERNS.some((p) => p.test(line.trim()));
 }
 
@@ -366,7 +350,7 @@ function isPrimingContent(text) {
     (lower.includes("pulled memories from reflect") && text.length < 200);
 }
 
-function extractConversationTurns() {
+function extractCleanConversation() {
   const main = document.querySelector("main") || document.body;
   const text = main.innerText || "";
 
@@ -376,43 +360,47 @@ function extractConversationTurns() {
     .filter((l) => !isNoiseLine(l))
     .filter((l) => !isPrimingContent(l));
 
-  if (lines.length === 0) return [];
-
-  const content = lines.join("\n");
-  return [{ role: "mixed", text: content }];
+  return lines.join("\n");
 }
 
-function buildMemoryFromTurns(turns, vendor) {
-  const allText = turns.map((t) => t.text).join("\n");
-  const firstLine = allText.split("\n").find((l) => l.length > 15 && l.length < 120) || "Conversation";
-  const title = `${vendor} -- ${firstLine.slice(0, 80)}`;
-  const content = allText.slice(0, 2000);
-  return { title, content };
+function isAiStillStreaming() {
+  return !!document.querySelector("[data-is-streaming='true']") ||
+    !!document.querySelector(".result-streaming") ||
+    !!document.querySelector("[class*='streaming']");
 }
 
 async function writeConversationToMemory(vendor) {
   if (!isWriteEnabled() || hasAlreadyWritten()) return;
 
-  const turns = extractConversationTurns();
-  log("writeBack: extracted", turns.length, "turns");
+  if (isAiStillStreaming()) {
+    log("writeBack: AI still streaming. Waiting...");
+    await new Promise((r) => setTimeout(r, 5000));
+    if (isAiStillStreaming()) {
+      log("writeBack: still streaming after 5s. Aborting.");
+      return;
+    }
+  }
 
-  if (!conversationHasSubstance(turns)) return;
+  const conversation = extractCleanConversation();
+  log("writeBack: extracted", conversation.length, "chars of conversation");
 
-  const { title, content } = buildMemoryFromTurns(turns, vendor);
-  if (content.length < 100) {
-    log("writeBack: content too short after formatting:", content.length);
+  if (conversation.length < 300) {
+    log("writeBack: conversation too short:", conversation.length);
     return;
   }
 
-  log("writeBack: writing memory. Title:", title.slice(0, 60));
+  const fullText = conversation.toLowerCase();
+  const matchCount = SIGNAL_WORDS.filter((w) => fullText.includes(w)).length;
+  if (matchCount === 0 && conversation.length < 1000) {
+    log("writeBack: no substance signals and too short. Skipping.");
+    return;
+  }
+
+  log("writeBack: sending to AI for summarization...");
   const result = await sendToBackground({
-    type: "WRITE_MEMORY",
-    data: {
-      title,
-      content,
-      tags: ["auto_captured", vendor.toLowerCase()],
-      origin: vendor.toLowerCase(),
-    },
+    type: "SUMMARIZE_AND_WRITE",
+    conversation,
+    vendor,
   });
 
   if (result?.id) {
