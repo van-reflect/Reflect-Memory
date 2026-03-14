@@ -144,12 +144,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             }),
           });
 
-          const summary = chatResult?.choices?.[0]?.message?.content
-            || chatResult?.content
-            || chatResult?.message?.content;
+          const summary = chatResult?.response;
 
           if (!summary || summary.length < 30) {
-            console.log("[Reflect BG] Summary too short or missing:", JSON.stringify(chatResult)?.slice(0, 200));
+            console.log("[Reflect BG] Summary too short or missing:", JSON.stringify(chatResult)?.slice(0, 300));
             return { error: "Summary generation failed" };
           }
 
