@@ -110,6 +110,66 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "WRITE_MEMORY":
         return writeMemory(message.data);
 
+      case "SUMMARIZE_AND_WRITE": {
+        const { conversation, vendor } = message;
+        const summaryPrompt = [
+          "You are a memory extraction system. Read this conversation between a user and an AI assistant.",
+          "Extract ONLY the important context that would help another AI understand this user in future conversations.",
+          "",
+          "Write a concise memory entry covering:",
+          "- Decisions the user made or directions they chose",
+          "- User preferences, opinions, or working style revealed",
+          "- Key facts about their project, product, or situation",
+          "- Action items or next steps they committed to",
+          "",
+          "Do NOT include:",
+          "- Greetings, small talk, or filler",
+          "- The AI's general advice (only capture if the user agreed with it)",
+          "- Raw conversation back-and-forth",
+          "",
+          "Format: Start with a one-line title summarizing the core topic.",
+          "Then write 2-6 bullet points of key context. Be specific and factual.",
+          "Write as if noting what matters about this user for future reference.",
+          "",
+          "--- CONVERSATION ---",
+          conversation.slice(0, 6000),
+        ].join("\n");
+
+        try {
+          const chatResult = await apiFetch("/chat", {
+            method: "POST",
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              messages: [{ role: "user", content: summaryPrompt }],
+            }),
+          });
+
+          const summary = chatResult?.choices?.[0]?.message?.content
+            || chatResult?.content
+            || chatResult?.message?.content;
+
+          if (!summary || summary.length < 30) {
+            console.log("[Reflect BG] Summary too short or missing:", JSON.stringify(chatResult)?.slice(0, 200));
+            return { error: "Summary generation failed" };
+          }
+
+          const lines = summary.split("\n").filter((l) => l.trim());
+          const title = `${vendor} -- ${(lines[0] || "Conversation").replace(/^#+\s*/, "").slice(0, 100)}`;
+          const content = summary;
+
+          console.log("[Reflect BG] Writing summarized memory:", title.slice(0, 60));
+          return writeMemory({
+            title,
+            content,
+            tags: ["auto_captured", vendor.toLowerCase()],
+            origin: vendor.toLowerCase(),
+          });
+        } catch (err) {
+          console.log("[Reflect BG] Summarize failed:", err.message);
+          return { error: err.message };
+        }
+      }
+
       case "CHECK_AUTH": {
         const key = await getApiKey();
         if (!key) return { authenticated: false };
