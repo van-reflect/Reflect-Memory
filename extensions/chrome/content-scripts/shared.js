@@ -257,9 +257,9 @@ async function interceptFirstMessage(adapter, userMessage) {
 
     log("Setting priming text...");
     adapter.setInputValue(primingText);
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
     log("Sending priming message...");
-    adapter.triggerSend();
+    await retrySend(adapter, 6000);
 
     log("Waiting for AI to acknowledge...");
     await waitForReadyResponse(12000);
