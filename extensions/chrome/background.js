@@ -54,13 +54,15 @@ async function writeMemory({ title, content, tags }) {
 }
 
 async function searchMemories(term) {
-  return apiFetch("/agent/memories/browse", {
+  const result = await apiFetch("/agent/memories/browse", {
     method: "POST",
     body: JSON.stringify({
       filter: { by: "search", term },
       limit: 10,
     }),
   });
+  console.log("[Reflect BG] Search for:", term, "=> total:", result?.total, "found:", result?.memories?.length);
+  return result;
 }
 
 async function getFullMemories(ids) {

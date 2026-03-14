@@ -8,21 +8,32 @@ const dashboardBtn = document.getElementById("dashboardBtn");
 const memoryCountEl = document.getElementById("memoryCount");
 
 async function checkStatus() {
-  const { apiKey } = await chrome.storage.sync.get("apiKey");
+  const { apiKey, verified, vendor: cachedVendor } = await chrome.storage.sync.get([
+    "apiKey",
+    "verified",
+    "vendor",
+  ]);
+
   if (!apiKey) {
     showDisconnected();
     return;
   }
 
-  apiKeyInput.value = apiKey;
-  statusEl.textContent = "Verifying...";
+  if (verified) {
+    showConnected(cachedVendor);
+    loadMemoryCount();
+    return;
+  }
 
+  statusEl.textContent = "Verifying...";
   const response = await chrome.runtime.sendMessage({ type: "CHECK_AUTH" });
   if (response?.authenticated) {
+    await chrome.storage.sync.set({ verified: true, vendor: response.vendor || "" });
     showConnected(response.vendor);
     loadMemoryCount();
   } else {
     showDisconnected("Invalid key");
+    await chrome.storage.sync.remove(["apiKey", "verified", "vendor"]);
   }
 }
 
@@ -62,11 +73,12 @@ saveBtn.addEventListener("click", async () => {
 
   const response = await chrome.runtime.sendMessage({ type: "CHECK_AUTH" });
   if (response?.authenticated) {
+    await chrome.storage.sync.set({ verified: true, vendor: response.vendor || "" });
     showConnected(response.vendor);
     loadMemoryCount();
   } else {
     showDisconnected("Invalid key. Check your agent key.");
-    await chrome.storage.sync.remove("apiKey");
+    await chrome.storage.sync.remove(["apiKey", "verified", "vendor"]);
   }
 
   saveBtn.textContent = "Connect";
@@ -74,7 +86,7 @@ saveBtn.addEventListener("click", async () => {
 });
 
 disconnectBtn.addEventListener("click", async () => {
-  await chrome.storage.sync.remove("apiKey");
+  await chrome.storage.sync.remove(["apiKey", "verified", "vendor"]);
   showDisconnected();
   apiKeyInput.value = "";
   chrome.action.setBadgeText({ text: "!" });
