@@ -16,6 +16,7 @@ paths:
   /agent/memories:
     post:
       operationId: writeMemory
+      x-openai-isConsequential: false
       summary: Write a structured memory entry
       requestBody:
         required: true
@@ -83,6 +84,7 @@ paths:
   /agent/memories/latest:
     get:
       operationId: getLatestMemory
+      x-openai-isConsequential: false
       summary: Get the single most recent memory (strict chronological)
       description: "Most recent memory by created_at. Use for 'latest' or 'most recent' -- never use /query for recency. Optional ?tag= filters to that tag (e.g. ?tag=project_state)."
       parameters:
@@ -114,6 +116,7 @@ paths:
   /agent/memories/{id}:
     get:
       operationId: getMemoryById
+      x-openai-isConsequential: false
       summary: Get a single memory by ID (full body)
       description: >
         Deterministic full-body retrieval of a specific memory by its UUID.
@@ -149,6 +152,7 @@ paths:
   /agent/memories/by-tag:
     post:
       operationId: getMemoriesByTag
+      x-openai-isConsequential: false
       summary: Get full-body memories filtered by tags
       description: >
         Returns complete memory entries (with content) matching any of the given tags.
@@ -210,6 +214,7 @@ paths:
   /agent/memories/browse:
     post:
       operationId: browseMemories
+      x-openai-isConsequential: false
       summary: Browse memory summaries (lightweight, no content)
       description: >
         Returns memory metadata (title, tags, origin, timestamps) without full content.
@@ -303,6 +308,7 @@ paths:
   /query:
     post:
       operationId: queryMemory
+      x-openai-isConsequential: false
       summary: Query AI with memory context
       description: "AI answer grounded in selected memories. Use memory_filter to select which memories. Returns slim response (answer + metadata). Browse first, then query with tags or IDs."
       requestBody:
@@ -382,6 +388,7 @@ paths:
   /whoami:
     get:
       operationId: whoAmI
+      x-openai-isConsequential: false
       summary: Check resolved identity from auth key
       responses:
         "200":
