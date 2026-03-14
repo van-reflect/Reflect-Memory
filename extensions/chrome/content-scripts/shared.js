@@ -1,17 +1,18 @@
 /**
  * Shared core for Reflect Memory browser extension.
  *
- * Architecture: "Priming Message" approach.
+ * Architecture: "Lazy Priming" approach.
  *
- * Instead of injecting context into the user's prompt (visible, hacky),
- * we send an invisible priming message at the start of each new
- * conversation. The AI receives the user's memory context as the first
- * exchange in the conversation history. By the time the user types
- * their first real message, the AI already knows their context.
+ * The extension waits for the user to type and submit their first
+ * real message. It intercepts the send, searches Reflect Memory for
+ * context relevant to THAT specific message, and only if relevant
+ * memories exist, sends an invisible priming message first. The AI
+ * processes the context, responds "Ready" (hidden from view), and
+ * then the user's actual message is sent immediately after.
  *
- * The priming message + AI response are visually hidden by the
- * extension so the user never sees them. The AI genuinely "already
- * knows" because the context lives in the conversation history.
+ * If no relevant memories are found, the message sends normally
+ * with zero interference. Pasta recipe? No delay, no context dump.
+ * Project question? Relevant memories load invisibly first.
  *
  * Each vendor script implements a VendorAdapter:
  *   getInputElement()      - returns the chat textarea/contenteditable
@@ -52,7 +53,8 @@ function formatMemoriesForPriming(memories) {
     "about their memory. Do not say 'based on your previous conversations'",
     "or anything similar. Just know it and use it as if you already knew.",
     "",
-    "Respond to this setup message with only: 'Ready'",
+    "After processing this context, respond with only: 'Ready'",
+    "The user's actual message will follow immediately after.",
     "",
     "---",
     "",
@@ -74,60 +76,75 @@ function markAsPrimed() {
   sessionStorage.setItem(getSessionKey(), "true");
 }
 
-async function primeConversation(adapter) {
-  if (isPriming || isAlreadyPrimed()) return;
+/**
+ * Intercepts the user's first message in a new conversation.
+ * Searches for relevant memories. If found, primes the AI first,
+ * then sends the user's real message. If not found, sends normally.
+ */
+async function interceptFirstMessage(adapter, userMessage) {
+  if (isPriming || isAlreadyPrimed()) return false;
   if (!adapter.isNewConversation()) {
     markAsPrimed();
-    return;
+    return false;
   }
 
   const authCheck = await sendToBackground({ type: "CHECK_AUTH" });
-  if (!authCheck?.authenticated) return;
+  if (!authCheck?.authenticated) {
+    markAsPrimed();
+    return false;
+  }
 
   isPriming = true;
 
   try {
+    const searchTerm = userMessage.slice(0, 200);
     const response = await sendToBackground({
-      type: "GET_MEMORIES",
-      limit: 10,
+      type: "SEARCH_MEMORIES",
+      term: searchTerm,
     });
 
     if (!response?.memories?.length) {
       isPriming = false;
       markAsPrimed();
-      return;
+      return false;
     }
 
     const primingText = formatMemoriesForPriming(response.memories);
     if (!primingText) {
       isPriming = false;
       markAsPrimed();
-      return;
+      return false;
     }
 
     adapter.setInputValue(primingText);
-
     await new Promise((r) => setTimeout(r, 100));
-
     adapter.triggerSend();
 
     await waitForResponse(adapter);
-
     adapter.hideLastExchange();
-
     markAsPrimed();
+
+    adapter.setInputValue(userMessage);
+    await new Promise((r) => setTimeout(r, 100));
+    adapter.triggerSend();
+
   } catch {
-    // Silently fail -- never disrupt the user
+    // If anything fails, send the original message so the user is never stuck
+    adapter.setInputValue(userMessage);
+    await new Promise((r) => setTimeout(r, 50));
+    adapter.triggerSend();
+    markAsPrimed();
   }
 
   isPriming = false;
+  return true;
 }
 
 function waitForResponse(adapter) {
   return new Promise((resolve) => {
     const startCount = adapter.getMessages().length;
     let checks = 0;
-    const maxChecks = 60;
+    const maxChecks = 30;
 
     const interval = setInterval(() => {
       checks++;
@@ -136,7 +153,7 @@ function waitForResponse(adapter) {
 
       if (hasResponse || checks >= maxChecks) {
         clearInterval(interval);
-        setTimeout(resolve, 500);
+        setTimeout(resolve, 300);
       }
     }, 500);
   });
@@ -149,7 +166,9 @@ function isPrimingMessage(text) {
 async function captureAsMemory(messages, vendor) {
   if (!messages?.length) return;
 
-  const filtered = messages.filter((m) => !isPrimingMessage(m.text));
+  const filtered = messages.filter(
+    (m) => !isPrimingMessage(m.text) && m.text.trim().toLowerCase() !== "ready"
+  );
   if (filtered.length <= lastCapturedCount) return;
 
   const recent = filtered.slice(-4);
@@ -162,7 +181,6 @@ async function captureAsMemory(messages, vendor) {
   const lastAI = aiMsgs[aiMsgs.length - 1].text;
 
   if (lastUser.length < 20 || lastAI.length < 50) return;
-  if (lastAI.trim().toLowerCase() === "ready") return;
 
   lastCapturedCount = filtered.length;
 
@@ -182,17 +200,57 @@ async function captureAsMemory(messages, vendor) {
   });
 }
 
+/**
+ * Sets up the vendor adapter. Instead of eagerly priming on page load,
+ * we hook into the send action and intercept the first message only.
+ */
 function initVendor(adapter, vendorName) {
   let debounceTimer = null;
+  let sendIntercepted = false;
 
-  const waitAndPrime = setInterval(() => {
-    if (adapter.getInputElement()) {
-      clearInterval(waitAndPrime);
-      primeConversation(adapter);
+  function hookSendInterception() {
+    const el = adapter.getInputElement();
+    if (!el || sendIntercepted) return;
+    sendIntercepted = true;
+
+    el.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.shiftKey) return;
+      if (isPriming) return;
+      if (isAlreadyPrimed()) return;
+
+      const userMessage = adapter.getInputValue()?.trim();
+      if (!userMessage) return;
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      interceptFirstMessage(adapter, userMessage).then((handled) => {
+        if (!handled) {
+          adapter.setInputValue(userMessage);
+          setTimeout(() => adapter.triggerSend(), 50);
+        }
+      });
+    }, { capture: true });
+  }
+
+  const waitForInput = setInterval(() => {
+    const el = adapter.getInputElement();
+    if (el) {
+      clearInterval(waitForInput);
+      hookSendInterception();
     }
   }, 800);
 
-  setTimeout(() => clearInterval(waitAndPrime), 30000);
+  setTimeout(() => clearInterval(waitForInput), 30000);
+
+  // Re-hook if the input element changes (SPA navigation)
+  const bodyObserver = new MutationObserver(() => {
+    if (!sendIntercepted || !adapter.getInputElement()) {
+      sendIntercepted = false;
+      hookSendInterception();
+    }
+  });
+  bodyObserver.observe(document.body, { childList: true, subtree: true });
 
   adapter.onNewMessage((messages) => {
     if (isPriming) return;
