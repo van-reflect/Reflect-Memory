@@ -4,7 +4,6 @@
  * Tested against Claude's DOM as of March 2026.
  * Input: ProseMirror contenteditable div
  * Send: button[aria-label*='Send']
- * Hide: skip for now (priming visible but functional)
  */
 
 (() => {
@@ -60,7 +59,45 @@
     },
 
     getMessages() {
-      return [];
+      const turns = [];
+      const container = document.querySelector("main") || document.body;
+
+      const humanBlocks = container.querySelectorAll(
+        "[data-testid='user-message'], [class*='human-turn'], [class*='user-turn']"
+      );
+      const aiBlocks = container.querySelectorAll(
+        "[data-testid='ai-message'], [class*='assistant-turn'], [class*='ai-turn']"
+      );
+
+      if (humanBlocks.length === 0 && aiBlocks.length === 0) {
+        const groups = container.querySelectorAll("[class*='group']");
+        for (const g of groups) {
+          const text = g.innerText?.trim();
+          if (!text || text.length < 15) continue;
+          const isHuman = g.querySelector("[class*='human']") ||
+            g.querySelector("[data-testid*='user']") ||
+            g.querySelector("[class*='user-message']");
+          turns.push({ role: isHuman ? "user" : "assistant", text });
+        }
+        return turns;
+      }
+
+      const all = [
+        ...[...humanBlocks].map((el) => ({ el, role: "user" })),
+        ...[...aiBlocks].map((el) => ({ el, role: "assistant" })),
+      ].sort((a, b) => {
+        const pos = a.el.compareDocumentPosition(b.el);
+        return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      });
+
+      for (const { el, role } of all) {
+        const text = el.innerText?.trim();
+        if (text && text.length >= 15) {
+          turns.push({ role, text });
+        }
+      }
+
+      return turns;
     },
 
     isNewConversation() {
