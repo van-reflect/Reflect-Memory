@@ -179,6 +179,7 @@ const agentMemoryBodySchema = {
       minItems: 1,
       maxItems: 50,
     },
+    origin: { type: "string" as const, minLength: 1, maxLength: 50 },
     memory_type: {
       type: "string" as const,
       enum: ["semantic", "episodic", "procedural"],
@@ -856,6 +857,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         content: string;
         tags: string[];
         allowed_vendors: string[];
+        origin?: string;
         memory_type?: string;
       };
 
@@ -865,7 +867,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return { error: vendorErr };
       }
 
-      const origin = request.vendor || "user";
+      const origin = request.vendor || body.origin || "user";
 
       const input: CreateMemoryInput = {
         title: body.title,
