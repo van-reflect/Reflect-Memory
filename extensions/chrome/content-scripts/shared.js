@@ -329,6 +329,20 @@ function conversationHasSubstance(turns) {
   return false;
 }
 
+const AFFIRMATION_PATTERNS = [
+  /\b(let'?s go with|going with|go with|down to|i'?m down|let'?s do)\b/i,
+  /\b(i like th(at|is)|love it|love that|sounds good|sounds great|sounds right)\b/i,
+  /\b(agreed|i agree|exactly|perfect|yes let'?s|yep let'?s|yeah let'?s)\b/i,
+  /\b(makes sense|that'?s the move|that'?s it|locked in|let'?s lock)\b/i,
+  /\b(go for it|do it|ship it|build it|run with)\b/i,
+  /\b(decision made|decided|settling on|committed to|final call)\b/i,
+  /\b(this is the way|moving forward with|proceeding with)\b/i,
+];
+
+function isAffirmation(text) {
+  return AFFIRMATION_PATTERNS.some((p) => p.test(text));
+}
+
 const NOISE_PATTERNS = [
   /^(new chat|search|customize|projects|artifacts|recents|reply\.{0,3})$/i,
   /^(sonnet|opus|haiku|claude)\s/i,
@@ -430,10 +444,20 @@ function initVendor(adapter, vendorName) {
     if (!isInput) return;
 
     if (isPriming) return;
-    if (isAlreadyPrimed()) return;
 
     const userMessage = adapter.getInputValue()?.trim();
     if (!userMessage) return;
+
+    if (isAlreadyPrimed()) {
+      if (isWriteEnabled() && !hasAlreadyWritten() && isAffirmation(userMessage)) {
+        log("Affirmation detected:", userMessage.slice(0, 60));
+        setTimeout(() => {
+          log("writeBack: affirmation triggered immediate write");
+          writeConversationToMemory(vendorName);
+        }, 5000);
+      }
+      return;
+    }
 
     log("Enter intercepted. Message:", userMessage.slice(0, 80));
     e.preventDefault();
