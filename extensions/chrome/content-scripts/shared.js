@@ -229,10 +229,18 @@ async function interceptFirstMessage(adapter, userMessage) {
       log("Keyword search empty. Falling back to latest memories...");
       const fallback = await sendToBackground({
         type: "GET_MEMORIES",
-        limit: 5,
+        limit: 20,
       });
-      memories = fallback?.memories || [];
-      log("Fallback: using", memories.length, "most recent memories");
+      const all = fallback?.memories || [];
+      memories = all.filter((m) => {
+        const t = (m.title || "").toLowerCase();
+        const tags = (m.tags || []).join(" ").toLowerCase();
+        if (t.startsWith("ci ") || t.includes("ci-") || t.includes("integration test")) return false;
+        if (tags.includes("ci_") || tags.includes("integration_test")) return false;
+        if (m.content && m.content.length < 50) return false;
+        return true;
+      }).slice(0, 5);
+      log("Fallback: fetched", all.length, "-> filtered to", memories.length, "real memories");
     }
 
     if (!memories.length) {
