@@ -2,33 +2,19 @@
  * Shared core for Reflect Memory browser extension.
  *
  * Architecture: "Lazy Priming" with selective write-back.
- *
- * READ: The extension waits for the user to submit their first message,
- * searches for relevant memories, and only if matches exist, sends a
- * hidden priming message before the user's real message. If nothing
- * is relevant, zero interference.
- *
- * WRITE: Only conversations where priming fired (meaning the topic is
- * related to stored context) have their exchanges captured back to
- * Reflect Memory. Unrelated conversations are never written.
- *
- * Each vendor script implements a VendorAdapter:
- *   getInputElement()      - returns the chat textarea/contenteditable
- *   getInputValue()        - reads current user input text
- *   setInputValue(text)    - sets the input text
- *   getMessages()          - returns [{ role, text }] from the DOM
- *   onNewMessage(cb)       - calls cb(messages) on DOM changes
- *   triggerSend()          - clicks the send button programmatically
- *   isNewConversation()    - true if the chat has zero messages
- *   hideLastExchange()     - hides the priming message + response from view
  */
 
 const PRIMING_MARKER = "[[REFLECT_MEMORY_PRIME]]";
 const PRIMED_KEY = "reflect_memory_primed";
 const WRITE_ENABLED_KEY = "reflect_memory_write_enabled";
+const DEBUG = true;
 
 let isPriming = false;
 let lastCapturedCount = 0;
+
+function log(...args) {
+  if (DEBUG) console.log("[Reflect Memory]", ...args);
+}
 
 async function sendToBackground(message) {
   return new Promise((resolve) => {
@@ -84,21 +70,21 @@ function enableWrite() {
   sessionStorage.setItem(getSessionKey(WRITE_ENABLED_KEY), "true");
 }
 
-/**
- * Intercepts the user's first message in a new conversation.
- * Searches for relevant memories. If found, primes the AI first,
- * then sends the user's real message. If not found, sends normally
- * and write-back stays disabled for this conversation.
- */
 async function interceptFirstMessage(adapter, userMessage) {
-  if (isPriming || isAlreadyPrimed()) return false;
+  if (isPriming || isAlreadyPrimed()) {
+    log("Skipping: already primed or priming in progress");
+    return false;
+  }
   if (!adapter.isNewConversation()) {
+    log("Skipping: not a new conversation");
     markAsPrimed();
     return false;
   }
 
   const authCheck = await sendToBackground({ type: "CHECK_AUTH" });
+  log("Auth check:", authCheck);
   if (!authCheck?.authenticated) {
+    log("Not authenticated. Check your agent key.");
     markAsPrimed();
     return false;
   }
@@ -107,10 +93,13 @@ async function interceptFirstMessage(adapter, userMessage) {
 
   try {
     const searchTerm = userMessage.slice(0, 200);
+    log("Searching memories for:", searchTerm);
     const response = await sendToBackground({
       type: "SEARCH_MEMORIES",
       term: searchTerm,
     });
+
+    log("Search result:", response?.memories?.length || 0, "memories found");
 
     if (!response?.memories?.length) {
       isPriming = false;
@@ -125,20 +114,29 @@ async function interceptFirstMessage(adapter, userMessage) {
       return false;
     }
 
+    log("Setting priming text...");
     adapter.setInputValue(primingText);
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
+
+    log("Sending priming message...");
     adapter.triggerSend();
 
+    log("Waiting for AI response...");
     await waitForResponse(adapter);
+
+    log("Hiding priming exchange...");
     adapter.hideLastExchange();
     markAsPrimed();
     enableWrite();
 
+    log("Sending user's real message:", userMessage.slice(0, 50));
     adapter.setInputValue(userMessage);
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
     adapter.triggerSend();
 
-  } catch {
+    log("Priming complete.");
+  } catch (err) {
+    log("Error during priming:", err);
     adapter.setInputValue(userMessage);
     await new Promise((r) => setTimeout(r, 50));
     adapter.triggerSend();
@@ -162,6 +160,7 @@ function waitForResponse(adapter) {
 
       if (hasResponse || checks >= maxChecks) {
         clearInterval(interval);
+        log("Response wait done. Checks:", checks, "Messages:", current.length);
         setTimeout(resolve, 300);
       }
     }, 500);
@@ -207,6 +206,7 @@ async function captureAsMemory(messages, vendor) {
     `Response: ${lastAI.slice(0, 600)}`,
   ].join("\n\n");
 
+  log("Writing memory:", title);
   await sendToBackground({
     type: "WRITE_MEMORY",
     data: {
@@ -218,13 +218,32 @@ async function captureAsMemory(messages, vendor) {
 }
 
 function initVendor(adapter, vendorName) {
+  log(`Initializing ${vendorName} adapter...`);
   let debounceTimer = null;
   let sendIntercepted = false;
 
   function hookSendInterception() {
     const el = adapter.getInputElement();
-    if (!el || sendIntercepted) return;
+    if (!el) {
+      log("Input element NOT found. Selectors need updating.");
+      log("Scanning page for contenteditable elements...");
+      const allEditable = document.querySelectorAll("[contenteditable='true']");
+      log(`Found ${allEditable.length} contenteditable elements:`);
+      allEditable.forEach((e, i) => {
+        log(`  [${i}] tag=${e.tagName} class="${e.className.slice(0, 80)}" role=${e.getAttribute("role")} placeholder=${e.getAttribute("data-placeholder") || e.getAttribute("aria-placeholder")}`);
+      });
+      const allTextareas = document.querySelectorAll("textarea");
+      log(`Found ${allTextareas.length} textarea elements:`);
+      allTextareas.forEach((e, i) => {
+        log(`  [${i}] placeholder="${e.placeholder?.slice(0, 50)}" name=${e.name}`);
+      });
+      return;
+    }
+    if (sendIntercepted) return;
     sendIntercepted = true;
+
+    log("Input element found:", el.tagName, el.className?.slice(0, 60));
+    log("Keydown listener attached. Waiting for first Enter press.");
 
     el.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" || e.shiftKey) return;
@@ -234,11 +253,13 @@ function initVendor(adapter, vendorName) {
       const userMessage = adapter.getInputValue()?.trim();
       if (!userMessage) return;
 
+      log("Enter intercepted. Message:", userMessage.slice(0, 50));
       e.preventDefault();
       e.stopImmediatePropagation();
 
       interceptFirstMessage(adapter, userMessage).then((handled) => {
         if (!handled) {
+          log("No priming needed. Sending original message.");
           adapter.setInputValue(userMessage);
           setTimeout(() => adapter.triggerSend(), 50);
         }
@@ -254,7 +275,13 @@ function initVendor(adapter, vendorName) {
     }
   }, 800);
 
-  setTimeout(() => clearInterval(waitForInput), 30000);
+  setTimeout(() => {
+    clearInterval(waitForInput);
+    if (!sendIntercepted) {
+      log("TIMEOUT: Input element never found after 30s. Running diagnostic...");
+      hookSendInterception();
+    }
+  }, 30000);
 
   const bodyObserver = new MutationObserver(() => {
     if (!sendIntercepted || !adapter.getInputElement()) {
