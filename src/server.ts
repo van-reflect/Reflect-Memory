@@ -131,6 +131,14 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(hashA, hashB);
 }
 
+/** Detects CI integration test memories for auto-trash. */
+function isCiTestMemory(m: { title: string; tags: string[] }): boolean {
+  if (m.title.startsWith("CI ") || m.title.includes("ci-")) return true;
+  return m.tags.some(
+    (t) => t.startsWith("ci_") || t.includes("integration_test"),
+  );
+}
+
 // =============================================================================
 // JSON Schemas
 // =============================================================================
@@ -879,6 +887,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       };
 
       const memory = createMemory(db, request.userId, input);
+      if (isCiTestMemory(memory)) {
+        softDeleteMemory(db, request.userId, memory.id);
+      }
       reply.code(201);
       return memory;
     },
