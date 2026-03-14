@@ -305,23 +305,27 @@ const SIGNAL_WORDS = [
 ];
 
 function conversationHasSubstance(turns) {
-  if (turns.length < 2) return false;
-
   const fullText = turns.map((t) => t.text).join(" ").toLowerCase();
+  const totalChars = fullText.length;
+
+  if (totalChars < 300) {
+    log("writeBack: substance check failed. Too short:", totalChars);
+    return false;
+  }
+
   const matchCount = SIGNAL_WORDS.filter((w) => fullText.includes(w)).length;
 
-  if (matchCount >= 2) {
-    log("writeBack: substance check passed with", matchCount, "signal words");
+  if (matchCount >= 1) {
+    log("writeBack: substance check passed with", matchCount, "signal words,", totalChars, "chars");
     return true;
   }
 
-  const totalChars = turns.reduce((sum, t) => sum + t.text.length, 0);
-  if (turns.length >= 4 && totalChars > 1500) {
-    log("writeBack: substance check passed on length:", turns.length, "turns,", totalChars, "chars");
+  if (totalChars > 1000) {
+    log("writeBack: substance check passed on length:", totalChars, "chars");
     return true;
   }
 
-  log("writeBack: substance check failed. Signals:", matchCount, "Turns:", turns.length, "Chars:", totalChars);
+  log("writeBack: substance check failed. Signals:", matchCount, "Chars:", totalChars);
   return false;
 }
 
