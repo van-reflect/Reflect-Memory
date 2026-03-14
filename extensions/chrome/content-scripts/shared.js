@@ -369,14 +369,18 @@ function isAiStillStreaming() {
     !!document.querySelector("[class*='streaming']");
 }
 
+let writeInProgress = false;
+
 async function writeConversationToMemory(vendor) {
-  if (!isWriteEnabled() || hasAlreadyWritten()) return;
+  if (!isWriteEnabled() || hasAlreadyWritten() || writeInProgress) return;
+  writeInProgress = true;
 
   if (isAiStillStreaming()) {
     log("writeBack: AI still streaming. Waiting...");
     await new Promise((r) => setTimeout(r, 5000));
     if (isAiStillStreaming()) {
       log("writeBack: still streaming after 5s. Aborting.");
+      writeInProgress = false;
       return;
     }
   }
@@ -386,6 +390,7 @@ async function writeConversationToMemory(vendor) {
 
   if (conversation.length < 300) {
     log("writeBack: conversation too short:", conversation.length);
+    writeInProgress = false;
     return;
   }
 
@@ -393,6 +398,7 @@ async function writeConversationToMemory(vendor) {
   const matchCount = SIGNAL_WORDS.filter((w) => fullText.includes(w)).length;
   if (matchCount === 0 && conversation.length < 1000) {
     log("writeBack: no substance signals and too short. Skipping.");
+    writeInProgress = false;
     return;
   }
 
@@ -407,6 +413,7 @@ async function writeConversationToMemory(vendor) {
     markAsWritten();
     log("writeBack: SUCCESS. Memory ID:", result.id);
   } else {
+    writeInProgress = false;
     log("writeBack: FAILED.", JSON.stringify(result));
   }
 }
