@@ -127,6 +127,64 @@ function waitForReadyResponse(timeoutMs = 12000) {
   });
 }
 
+function waitForInputReady(adapter, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = setInterval(() => {
+      const el = adapter.getInputElement();
+      if (el) {
+        const editable = el.contentEditable === "true" || el.tagName === "TEXTAREA";
+        const notDisabled = !el.disabled && !el.getAttribute("aria-disabled");
+        if (editable && notDisabled) {
+          clearInterval(check);
+          log("Input ready after", Date.now() - start, "ms");
+          resolve(true);
+          return;
+        }
+      }
+      if (Date.now() - start > timeoutMs) {
+        clearInterval(check);
+        log("Input ready timeout after", timeoutMs, "ms");
+        resolve(false);
+      }
+    }, 200);
+  });
+}
+
+function retrySend(adapter, timeoutMs = 6000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+
+    function attempt() {
+      const sendBtn = document.querySelector("button[aria-label*='Send' i]");
+      if (sendBtn && !sendBtn.disabled) {
+        log("retrySend: clicking send button after", Date.now() - start, "ms");
+        sendBtn.click();
+        resolve(true);
+        return;
+      }
+
+      if (Date.now() - start > timeoutMs) {
+        log("retrySend: timed out. Dispatching Enter key as fallback.");
+        const el = adapter.getInputElement();
+        if (el) {
+          el.focus();
+          el.dispatchEvent(new KeyboardEvent("keydown", {
+            key: "Enter", code: "Enter", keyCode: 13, which: 13,
+            bubbles: true, cancelable: true,
+          }));
+        }
+        resolve(false);
+        return;
+      }
+
+      setTimeout(attempt, 300);
+    }
+
+    attempt();
+  });
+}
+
 async function interceptFirstMessage(adapter, userMessage) {
   if (isPriming || isAlreadyPrimed()) {
     log("Skipping: already primed or priming in progress");
@@ -203,11 +261,15 @@ async function interceptFirstMessage(adapter, userMessage) {
     log("Hiding priming exchange...");
     adapter.hideLastExchange();
 
+    log("Waiting for input to become ready...");
+    await waitForInputReady(adapter, 5000);
+
     log("Setting user's real message:", userMessage.slice(0, 60));
     adapter.setInputValue(userMessage);
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
+
     log("Sending user's real message...");
-    adapter.triggerSend();
+    await retrySend(adapter, 6000);
 
     log("Priming complete.");
   } catch (err) {
