@@ -12,13 +12,15 @@ Your AI tools share one memory. Tell one, they all know.
 
 ## How It Works
 
-The extension runs invisibly in the background on supported AI chat sites:
+The extension uses a "Priming Message" architecture that makes the AI genuinely already know your context, rather than injecting text into your prompts.
 
-1. **Memory injection**: When you send a message, the extension searches your Reflect Memory for relevant context and silently prepends it to your prompt. The AI sees your full context without you doing anything.
+1. **When you open a new conversation** on any supported AI site, the extension detects the empty chat and sends a brief priming message containing your Reflect Memory context. The AI processes it and responds with "Ready."
 
-2. **Memory capture**: After the AI responds, the extension captures the key exchange and writes it back to Reflect Memory. Other AI tools will have this context next time.
+2. **Both the priming message and response are hidden** from view by the extension. By the time you start typing, the AI already has your context in its conversation history. It knows your projects, preferences, and recent work without you saying a word.
 
-No buttons to click. No commands to type. No approval prompts. It just works.
+3. **As you chat**, the extension passively captures meaningful exchanges and writes them back to Reflect Memory. Next time you open a different AI tool, that context is already there.
+
+No buttons. No commands. No visible injection. The AI just knows.
 
 ## Install (Development)
 
@@ -34,9 +36,9 @@ No buttons to click. No commands to type. No approval prompts. It just works.
 chrome/
   manifest.json          - MV3 manifest with per-vendor content scripts
   background.js          - Service worker handling all API calls
-  popup.html / popup.js  - Setup UI for entering agent key
+  popup.html / popup.js  - One-time setup UI for agent key
   content-scripts/
-    shared.js            - Core logic: memory injection, capture, vendor adapter interface
+    shared.js            - Core: priming message, memory capture, vendor adapter interface
     chatgpt.js           - ChatGPT DOM adapter
     claude.js            - Claude DOM adapter
     gemini.js            - Gemini DOM adapter
@@ -51,4 +53,4 @@ chrome/
 - API calls go only to api.reflectmemory.com
 - No analytics, no tracking, no third-party services
 - Content scripts only run on supported AI chat sites
-- No page content is sent anywhere except conversation messages to your own Reflect Memory account
+- The priming message is hidden from view and never stored in your conversation exports

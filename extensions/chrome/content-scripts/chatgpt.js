@@ -1,13 +1,10 @@
 /**
  * ChatGPT content script adapter.
  *
- * ChatGPT uses a contenteditable div (#prompt-textarea) for input
- * and renders messages in [data-message-author-role] elements.
- *
  * NOTE: ChatGPT already has full API integration via the Custom GPT
- * with the isConsequential fix. This content script is a fallback
- * for users who haven't set up the Custom GPT, providing passive
- * memory capture from regular ChatGPT conversations.
+ * with the isConsequential fix. This content script provides the
+ * invisible priming experience for users on regular chatgpt.com
+ * who haven't set up the Custom GPT.
  */
 
 (() => {
@@ -28,9 +25,14 @@
       const el = this.getInputElement();
       if (!el) return;
       if (el.tagName === "TEXTAREA") {
-        el.value = text;
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype, "value"
+        )?.set;
+        if (setter) setter.call(el, text);
+        else el.value = text;
         el.dispatchEvent(new Event("input", { bubbles: true }));
       } else {
+        el.focus();
         el.innerText = text;
         el.dispatchEvent(new Event("input", { bubbles: true }));
       }
@@ -49,19 +51,42 @@
       return messages;
     },
 
-    onNewMessage(callback) {
-      const container =
-        document.querySelector("main") || document.body;
+    isNewConversation() {
+      return this.getMessages().length === 0;
+    },
 
+    triggerSend() {
+      const btn = document.querySelector(
+        "[data-testid='send-button'], button[aria-label='Send prompt']"
+      );
+      if (btn) {
+        btn.click();
+        return;
+      }
+      const el = this.getInputElement();
+      if (el) {
+        el.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", code: "Enter", keyCode: 13, bubbles: true,
+        }));
+      }
+    },
+
+    hideLastExchange() {
+      const allMsgs = document.querySelectorAll("[data-message-author-role]");
+      const toHide = [...allMsgs].slice(-2);
+      toHide.forEach((el) => {
+        const container = el.closest("[data-testid^='conversation-turn']") || el.parentElement;
+        if (container) container.style.display = "none";
+      });
+    },
+
+    onNewMessage(callback) {
+      const container = document.querySelector("main") || document.body;
       const observer = new MutationObserver(() => {
         const messages = this.getMessages();
         if (messages.length > 0) callback(messages);
       });
-
-      observer.observe(container, {
-        childList: true,
-        subtree: true,
-      });
+      observer.observe(container, { childList: true, subtree: true });
     },
   };
 

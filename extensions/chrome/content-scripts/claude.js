@@ -1,8 +1,8 @@
 /**
  * Claude content script adapter.
  *
- * Claude uses a contenteditable div with class "ProseMirror" for input
- * and renders conversation turns in structured containers.
+ * Claude uses a ProseMirror contenteditable for input and renders
+ * conversation turns in structured containers.
  */
 
 (() => {
@@ -11,7 +11,8 @@
   const adapter = {
     getInputElement() {
       return document.querySelector(
-        "[contenteditable='true'].ProseMirror, div[contenteditable='true'][data-placeholder]"
+        "[contenteditable='true'].ProseMirror, " +
+        "div[contenteditable='true'][data-placeholder]"
       );
     },
 
@@ -31,40 +32,53 @@
 
     getMessages() {
       const messages = [];
-
-      const humanTurns = document.querySelectorAll(
-        "[data-testid='human-turn'], .font-user-message"
+      const turns = document.querySelectorAll(
+        "[data-testid='human-turn'], [data-testid='ai-turn'], " +
+        ".font-user-message, .font-claude-message"
       );
-      const aiTurns = document.querySelectorAll(
-        "[data-testid='ai-turn'], .font-claude-message"
-      );
-
-      humanTurns.forEach((el) => {
+      turns.forEach((el) => {
+        const isUser =
+          el.matches("[data-testid='human-turn']") ||
+          el.matches(".font-user-message");
         const text = el.innerText?.trim();
-        if (text) messages.push({ role: "user", text });
+        if (text) {
+          messages.push({ role: isUser ? "user" : "assistant", text });
+        }
       });
-
-      aiTurns.forEach((el) => {
-        const text = el.innerText?.trim();
-        if (text) messages.push({ role: "assistant", text });
-      });
-
-      messages.sort((a, b) => {
-        const aEl =
-          a.role === "user"
-            ? [...humanTurns].find((e) => e.innerText?.trim() === a.text)
-            : [...aiTurns].find((e) => e.innerText?.trim() === a.text);
-        const bEl =
-          b.role === "user"
-            ? [...humanTurns].find((e) => e.innerText?.trim() === b.text)
-            : [...aiTurns].find((e) => e.innerText?.trim() === b.text);
-        if (!aEl || !bEl) return 0;
-        return aEl.compareDocumentPosition(bEl) & Node.DOCUMENT_POSITION_FOLLOWING
-          ? -1
-          : 1;
-      });
-
       return messages;
+    },
+
+    isNewConversation() {
+      return this.getMessages().length === 0;
+    },
+
+    triggerSend() {
+      const btn = document.querySelector(
+        "button[aria-label='Send Message'], " +
+        "button[data-testid='send-message']"
+      );
+      if (btn) {
+        btn.click();
+        return;
+      }
+      const el = this.getInputElement();
+      if (el) {
+        el.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", code: "Enter", keyCode: 13, bubbles: true,
+        }));
+      }
+    },
+
+    hideLastExchange() {
+      const turns = document.querySelectorAll(
+        "[data-testid='human-turn'], [data-testid='ai-turn'], " +
+        ".font-user-message, .font-claude-message"
+      );
+      const toHide = [...turns].slice(-2);
+      toHide.forEach((el) => {
+        const container = el.closest("[class*='turn']") || el.parentElement;
+        if (container) container.style.display = "none";
+      });
     },
 
     onNewMessage(callback) {
@@ -72,12 +86,10 @@
         document.querySelector("[data-testid='conversation']") ||
         document.querySelector("main") ||
         document.body;
-
       const observer = new MutationObserver(() => {
         const messages = this.getMessages();
         if (messages.length > 0) callback(messages);
       });
-
       observer.observe(container, { childList: true, subtree: true });
     },
   };
