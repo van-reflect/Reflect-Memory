@@ -865,15 +865,13 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return { error: vendorErr };
       }
 
-      if (!request.vendor) {
-        return reply.code(403).send({ error: "Agent key required for this endpoint" });
-      }
+      const origin = request.vendor || "user";
 
       const input: CreateMemoryInput = {
         title: body.title,
         content: body.content,
         tags: body.tags,
-        origin: request.vendor,
+        origin,
         allowed_vendors: body.allowed_vendors,
         memory_type: body.memory_type as MemoryType | undefined,
       };
