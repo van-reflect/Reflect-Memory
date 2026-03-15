@@ -230,8 +230,8 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     const accessToken = `rma_${randomUUID().replace(/-/g, "")}`;
     const refreshToken = `rmr_${randomUUID().replace(/-/g, "")}`;
     const now = new Date();
-    const accessExpiry = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
-    const refreshExpiry = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 days
+    const accessExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const refreshExpiry = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000); // 90 days
     const scopes = safeJson(row.scopes) as string[];
     const resourceStr = resource?.toString() || row.resource || null;
 
@@ -252,7 +252,7 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     return {
       access_token: accessToken,
       token_type: "bearer",
-      expires_in: 3600,
+      expires_in: 604800,
       scope: scopes.join(" "),
       refresh_token: refreshToken,
     };
@@ -279,8 +279,8 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     const newAccess = `rma_${randomUUID().replace(/-/g, "")}`;
     const newRefresh = `rmr_${randomUUID().replace(/-/g, "")}`;
     const now = new Date();
-    const accessExpiry = new Date(now.getTime() + 60 * 60 * 1000);
-    const refreshExpiry = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const accessExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const refreshExpiry = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
     const tokenScopes = scopes || (safeJson(row.scopes) as string[]);
     const resourceStr = resource?.toString() || row.resource || null;
 
@@ -295,7 +295,7 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     return {
       access_token: newAccess,
       token_type: "bearer",
-      expires_in: 3600,
+      expires_in: 604800,
       scope: tokenScopes.join(" "),
       refresh_token: newRefresh,
     };

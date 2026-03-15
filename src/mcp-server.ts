@@ -292,7 +292,17 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
         return;
       }
 
-      if (!sessionId && isInitializeRequest(req.body)) {
+      // Unknown session → 404 per MCP spec so the client re-initializes
+      if (sessionId && !transports[sessionId]) {
+        res.status(404).json({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Session not found. Please re-initialize." },
+          id: null,
+        });
+        return;
+      }
+
+      if (isInitializeRequest(req.body)) {
         if (Object.keys(transports).length >= MAX_SESSIONS) {
           res.status(503).json({
             jsonrpc: "2.0",
@@ -331,7 +341,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
 
       res.status(400).json({
         jsonrpc: "2.0",
-        error: { code: -32000, message: "Bad Request: No valid session ID" },
+        error: { code: -32000, message: "Bad Request: missing session ID or not an initialize request" },
         id: null,
       });
     } catch (error) {
@@ -349,8 +359,12 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   app.get("/mcp", async (req, res) => {
     try {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
-      if (!sessionId || !transports[sessionId]) {
-        res.status(400).send("Invalid or missing session ID");
+      if (!sessionId) {
+        res.status(400).json({ error: "Missing session ID" });
+        return;
+      }
+      if (!transports[sessionId]) {
+        res.status(404).json({ error: "Session not found. Please re-initialize." });
         return;
       }
       sessionLastSeen[sessionId] = Date.now();
@@ -370,8 +384,12 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   app.delete("/mcp", async (req, res) => {
     try {
       const sessionId = req.headers["mcp-session-id"] as string | undefined;
-      if (!sessionId || !transports[sessionId]) {
-        res.status(400).send("Invalid or missing session ID");
+      if (!sessionId) {
+        res.status(400).json({ error: "Missing session ID" });
+        return;
+      }
+      if (!transports[sessionId]) {
+        res.status(404).json({ error: "Session not found." });
         return;
       }
       await transports[sessionId].handleRequest(req, res);
