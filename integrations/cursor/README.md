@@ -1,53 +1,95 @@
-# Reflect Memory MCP Server for Cursor
+# Reflect Memory — Cursor Integration
 
-Connect Cursor to Reflect Memory -- read, write, browse, and search your cross-agent memory without manual API calls.
+Give Cursor persistent memory across sessions. Your coding AI remembers your project context, architecture decisions, and preferences.
 
-## Prerequisites
+## Setup (2 minutes)
 
-- Node.js 18+
-- A Reflect Memory agent key (`RM_AGENT_KEY_CURSOR` from Railway, or use `RM_AGENT_KEY_CLAUDE` for testing)
+### Option A: Paste a config file (recommended)
 
-## Setup
+Create or edit `.cursor/mcp.json` in your project root:
 
-### 1. Install dependencies
-
-```bash
-cd integrations/cursor
-npm install
+```json
+{
+  "mcpServers": {
+    "reflect-memory": {
+      "url": "https://api.reflectmemory.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_AGENT_KEY"
+      }
+    }
+  }
+}
 ```
 
-### 2. Set your API key
+Replace `YOUR_AGENT_KEY` with your Cursor agent key from [reflectmemory.com/dashboard](https://reflectmemory.com/dashboard) (API Keys section).
 
-Add to your shell profile (`~/.zshrc`, `~/.bashrc`) or create a `.env` in this directory:
+Restart Cursor. Done. It discovers all 7 memory tools automatically.
 
-```bash
-export REFLECT_MEMORY_API_KEY="your-agent-key-here"
-# Or: export RM_AGENT_KEY_CURSOR="your-agent-key-here"
+### Option B: Use Cursor Settings UI
+
+1. Open **Cursor Settings** (Cmd+, or Ctrl+,)
+2. Go to **MCP** (under Features or Tools)
+3. Click **+ Add new MCP server**
+4. Set type to **streamableHttp**
+5. Paste the URL: `https://api.reflectmemory.com/mcp`
+6. Add a header: `Authorization` = `Bearer YOUR_AGENT_KEY`
+7. Click **Save**
+
+## What you can say to Cursor
+
+**Read memories:**
+- "Pull my latest memory from Reflect"
+- "What does Reflect Memory know about this project?"
+- "Search my Reflect Memory for authentication"
+- "Browse my recent memories"
+- "Check Reflect for context on [topic]"
+
+**Write memories:**
+- "Save this decision to Reflect Memory"
+- "Write this to Reflect: we chose PostgreSQL over MySQL for [reason]"
+- "Remember this for my other AI tools"
+- "Save this memory"
+
+## Pro tip: Add a Cursor Rule
+
+Create `.cursor/rules/reflect-memory.mdc` so Cursor uses your memory automatically:
+
+```
+You have access to Reflect Memory, a shared memory layer across AI tools.
+At the start of complex tasks, search memories for relevant project context,
+decisions, and preferences. When the user makes architectural decisions or
+commits to plans, write a concise memory. Do not mention you are doing this
+unless asked.
 ```
 
-### 3. Add MCP server to Cursor
+## Tools available (7)
 
-**Option A: Via Cursor Settings UI**
+| Tool | Description |
+|------|-------------|
+| `read_memories` | Get recent memories |
+| `get_memory_by_id` | Full memory by UUID |
+| `get_latest_memory` | Most recent memory, optional tag filter |
+| `browse_memories` | List memory summaries |
+| `search_memories` | Search by keyword |
+| `get_memories_by_tag` | Filter by tags |
+| `write_memory` | Create a new memory |
 
-1. Open Cursor Settings (Cmd/Ctrl + ,)
-2. Go to **Features** → **Model Context Protocol** (or **Tools & MCP**)
-3. Click **Add new MCP server**
-4. Configure:
-   - **Name:** `reflect-memory`
-   - **Type:** `stdio`
-   - **Command:** `node`
-   - **Args:** `["/absolute/path/to/reflective-memory/integrations/cursor/server.mjs"]`
+## Troubleshooting
 
-**Option B: Via project config**
+- **Tools not showing** — Restart Cursor completely (quit and reopen). Check that `.cursor/mcp.json` is valid JSON.
+- **401 Unauthorized** — Wrong or expired agent key. Generate a new one from your [dashboard](https://reflectmemory.com/dashboard).
+- **Connection failed** — Make sure the URL is exactly `https://api.reflectmemory.com/mcp` with no trailing slash.
 
-Create or edit `.cursor/mcp.json` in your project root (e.g. `reflect-memory-dashboard` or `reflective-memory`):
+## Advanced: Local server (optional)
+
+If you prefer running a local MCP server instead of the remote one:
 
 ```json
 {
   "mcpServers": {
     "reflect-memory": {
       "command": "node",
-      "args": ["/Users/YOUR_USERNAME/Desktop/reflective-memory/integrations/cursor/server.mjs"],
+      "args": ["/path/to/reflective-memory/integrations/cursor/server.mjs"],
       "env": {
         "REFLECT_MEMORY_API_KEY": "your-agent-key-here"
       }
@@ -55,36 +97,3 @@ Create or edit `.cursor/mcp.json` in your project root (e.g. `reflect-memory-das
   }
 }
 ```
-
-Replace the path with your actual path to `server.mjs`. You can put the API key in `env` to avoid exporting it globally.
-
-### 4. Restart Cursor
-
-Restart Cursor completely for the MCP server to load.
-
-## Tools
-
-| Tool | Use when |
-|------|----------|
-| `get_latest_memory` | "Pull latest memory", "What's the latest from ChatGPT?", "Get most recent" |
-| `get_memory_by_id` | You have a memory UUID from browse results |
-| `browse_memories` | "List all memories", "What memories do I have?", discovery |
-| `get_memories_by_tag` | "Council memories", "Memories tagged project_state" |
-| `write_memory` | "Save this to memory", "Write a memory", "Push to Reflect Memory" |
-
-## Usage
-
-Ask Cursor naturally:
-
-- "Pull the latest memory from Reflect Memory"
-- "What's my most recent memory?"
-- "Browse all my memories"
-- "Search memories for authentication"
-- "Write this to memory: [your content]"
-
-## Troubleshooting
-
-- **"REFLECT_MEMORY_API_KEY must be set"** -- Add the key to `env` in mcp.json or export it in your shell.
-- **401 Unauthorized** -- Wrong or expired agent key. Get `RM_AGENT_KEY_CURSOR` from Railway.
-- **Server not showing** -- Restart Cursor fully (quit and reopen).
-- **Path issues** -- Use the absolute path to `server.mjs` in your mcp.json args.

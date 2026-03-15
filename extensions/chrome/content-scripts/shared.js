@@ -11,7 +11,7 @@
 const PRIMED_KEY = "reflect_memory_primed";
 const WRITE_ENABLED_KEY = "reflect_memory_write_enabled";
 const WRITTEN_KEY = "reflect_memory_written";
-const DEBUG = true;
+const DEBUG = false;
 
 let isPriming = false;
 
@@ -34,12 +34,15 @@ function formatMemoriesForPriming(memories) {
   });
 
   return [
-    "You are talking to a returning user. Below is context from their previous",
-    "conversations across different AI tools (ChatGPT, Claude, Gemini, Grok,",
-    "Perplexity, Cursor). This is their shared memory. Use it naturally to",
-    "personalize your responses. Do not mention this context unless they ask",
-    "about their memory. Do not say 'based on your previous conversations'",
-    "or anything similar. Just know it and use it as if you already knew.",
+    "You are talking to a returning user. Below is their CURRENT context from",
+    "Reflect Memory, their shared memory layer across AI tools. This is the most",
+    "up-to-date information about this user. If anything below conflicts with your",
+    "own internal memory or prior knowledge about this user, PRIORITIZE the context",
+    "below as it reflects their latest decisions and preferences.",
+    "",
+    "Use this context naturally to personalize your responses. Do not mention this",
+    "context unless they ask about their memory. Do not say 'based on your previous",
+    "conversations' or anything similar. Just know it and use it as if you already knew.",
     "",
     "After processing this context, respond with exactly:",
     "'Pulled memories from Reflect. Ready.'",
@@ -48,6 +51,26 @@ function formatMemoriesForPriming(memories) {
     "---",
     "",
     ...blocks,
+  ].join("\n");
+}
+
+function formatMemoriesInline(memories, userMessage) {
+  if (!memories?.length) return null;
+
+  const blocks = memories.map((m) => {
+    const tags = m.tags?.length ? ` [${m.tags.join(", ")}]` : "";
+    return `- ${m.title}${tags}: ${(m.content || "").slice(0, 500)}`;
+  });
+
+  return [
+    "[IMPORTANT: My up-to-date context from Reflect Memory. This overrides any",
+    "older memory you have about me. Use ONLY this context for personalization.]",
+    "",
+    ...blocks,
+    "",
+    "[End context]",
+    "",
+    userMessage,
   ].join("\n");
 }
 
@@ -250,35 +273,49 @@ async function interceptFirstMessage(adapter, userMessage) {
       return false;
     }
 
-    const primingText = formatMemoriesForPriming(memories);
-    if (!primingText) {
-      isPriming = false;
-      return false;
+    if (adapter.useInlinePriming) {
+      const inlineText = formatMemoriesInline(memories, userMessage);
+      if (!inlineText) {
+        isPriming = false;
+        return false;
+      }
+
+      log("Using inline priming (context embedded in user message)");
+      adapter.setInputValue(inlineText);
+      await new Promise((r) => setTimeout(r, 300));
+      await retrySend(adapter, 6000);
+      log("Inline priming complete.");
+    } else {
+      const primingText = formatMemoriesForPriming(memories);
+      if (!primingText) {
+        isPriming = false;
+        return false;
+      }
+
+      log("Setting priming text...");
+      adapter.setInputValue(primingText);
+      await new Promise((r) => setTimeout(r, 300));
+      log("Sending priming message...");
+      await retrySend(adapter, 6000);
+
+      log("Waiting for AI to acknowledge...");
+      await waitForReadyResponse(12000);
+
+      log("Hiding priming exchange...");
+      adapter.hideLastExchange();
+
+      log("Waiting for input to become ready...");
+      await waitForInputReady(adapter, 5000);
+
+      log("Setting user's real message:", userMessage.slice(0, 60));
+      adapter.setInputValue(userMessage);
+      await new Promise((r) => setTimeout(r, 300));
+
+      log("Sending user's real message...");
+      await retrySend(adapter, 6000);
+
+      log("Priming complete.");
     }
-
-    log("Setting priming text...");
-    adapter.setInputValue(primingText);
-    await new Promise((r) => setTimeout(r, 300));
-    log("Sending priming message...");
-    await retrySend(adapter, 6000);
-
-    log("Waiting for AI to acknowledge...");
-    await waitForReadyResponse(12000);
-
-    log("Hiding priming exchange...");
-    adapter.hideLastExchange();
-
-    log("Waiting for input to become ready...");
-    await waitForInputReady(adapter, 5000);
-
-    log("Setting user's real message:", userMessage.slice(0, 60));
-    adapter.setInputValue(userMessage);
-    await new Promise((r) => setTimeout(r, 300));
-
-    log("Sending user's real message...");
-    await retrySend(adapter, 6000);
-
-    log("Priming complete.");
   } catch (err) {
     log("Error during priming:", err);
     adapter.setInputValue(userMessage);
@@ -306,13 +343,14 @@ const SIGNAL_WORDS = [
 ];
 
 const AFFIRMATION_PATTERNS = [
-  /\b(let'?s go with|going with|go with|down to|i'?m down|let'?s do)\b/i,
+  /\b(let'?s go with|let'?s go ahead|going with|go with|down to|i'?m down|let'?s do)\b/i,
   /\b(i like th(at|is)|love it|love that|sounds good|sounds great|sounds right)\b/i,
   /\b(agreed|i agree|exactly|perfect|yes let'?s|yep let'?s|yeah let'?s)\b/i,
-  /\b(makes sense|that'?s the move|that'?s it|locked in|let'?s lock)\b/i,
+  /\b(makes sense|that'?s the move|that'?s it|locked in|lock that in|lock it in|let'?s lock)\b/i,
   /\b(go for it|do it|ship it|build it|run with)\b/i,
   /\b(decision made|decided|settling on|committed to|final call)\b/i,
   /\b(this is the way|moving forward with|proceeding with)\b/i,
+  /\b(that'?s? (the )?plan|let'?s (go|roll|execute|proceed))\b/i,
 ];
 
 function isAffirmation(text) {
@@ -348,7 +386,8 @@ function isNoiseLine(line) {
 function isPrimingContent(text) {
   const lower = text.toLowerCase();
   return (lower.includes("returning user") && lower.includes("shared memory")) ||
-    (lower.includes("pulled memories from reflect") && text.length < 200);
+    (lower.includes("pulled memories from reflect") && text.length < 200) ||
+    (lower.includes("context from reflect memory") && lower.includes("[end context]"));
 }
 
 function extractCleanConversation() {
@@ -367,7 +406,7 @@ function extractCleanConversation() {
 function isAiStillStreaming() {
   return !!document.querySelector("[data-is-streaming='true']") ||
     !!document.querySelector(".result-streaming") ||
-    !!document.querySelector("[class*='streaming']");
+    !!document.querySelector(".is-streaming, .response-streaming");
 }
 
 let writeInProgress = false;
@@ -492,6 +531,23 @@ function initVendor(adapter, vendorName) {
       log("Ready. Waiting for first Enter press.");
     }
   }
+
+  document.addEventListener("click", (e) => {
+    if (isPriming || !isWriteEnabled() || hasAlreadyWritten()) return;
+    if (!isAlreadyPrimed()) return;
+
+    const btn = e.target.closest?.("button");
+    if (!btn) return;
+
+    const label = (btn.getAttribute("aria-label") || btn.textContent || "").toLowerCase();
+    if (!label.includes("send") && !label.includes("submit") && !label.includes("ask")) return;
+
+    const userMessage = adapter.getInputValue()?.trim();
+    if (userMessage && isAffirmation(userMessage)) {
+      log("Affirmation via send button:", userMessage.slice(0, 60));
+      setTimeout(() => writeConversationToMemory(vendorName), 5000);
+    }
+  }, { capture: true });
 
   checkForInput();
   const poll = setInterval(() => {

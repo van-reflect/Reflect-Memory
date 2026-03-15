@@ -9,6 +9,8 @@
   const VENDOR = "Gemini";
 
   const adapter = {
+    useInlinePriming: true,
+
     getInputElement() {
       return document.querySelector(
         ".ql-editor[contenteditable='true'], " +

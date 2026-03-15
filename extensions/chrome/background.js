@@ -1,4 +1,9 @@
 const API_BASE = "https://api.reflectmemory.com";
+const DEBUG = false;
+
+function bgLog(...args) {
+  if (DEBUG) console.log("[Reflect BG]", ...args);
+}
 
 async function getApiKey() {
   const { apiKey } = await chrome.storage.sync.get("apiKey");
@@ -21,13 +26,13 @@ async function apiFetch(path, options = {}) {
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      console.log("[Reflect BG] API error:", path, res.status, JSON.stringify(body));
+      bgLog("API error:", path, res.status);
       return { error: body.error || `HTTP ${res.status}` };
     }
 
     return res.json();
   } catch (err) {
-    console.log("[Reflect BG] API fetch exception:", path, err.message);
+    bgLog("API fetch exception:", path, err.message);
     return { error: `Network error: ${err.message}` };
   }
 }
@@ -40,11 +45,7 @@ async function getLatestMemories(limit = 5) {
       limit,
     }),
   });
-  console.log("[Reflect BG] getLatestMemories:", JSON.stringify({
-    total: result?.total,
-    count: result?.memories?.length,
-    error: result?.error,
-  }));
+  bgLog("getLatestMemories:", result?.memories?.length, "found");
   return result;
 }
 
@@ -74,7 +75,7 @@ async function searchMemories(term) {
       limit: 10,
     }),
   });
-  console.log("[Reflect BG] Search for:", term, "=> total:", result?.total, "found:", result?.memories?.length);
+  bgLog("Search for:", term, "=>", result?.memories?.length, "found");
   return result;
 }
 
@@ -88,18 +89,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     switch (message.type) {
       case "GET_MEMORIES": {
         const browse = await getLatestMemories(message.limit || 5);
-        console.log("[Reflect BG] GET_MEMORIES raw:", JSON.stringify(browse)?.slice(0, 300));
         if (browse.error || !browse.memories?.length) return browse;
         const full = await getFullMemories(
           browse.memories.map((m) => m.id)
         );
-        console.log("[Reflect BG] GET_MEMORIES full:", full.length, "memories fetched");
+        bgLog("GET_MEMORIES:", full.length, "fetched");
         return { memories: full };
       }
 
       case "SEARCH_MEMORIES": {
         const browse = await searchMemories(message.term);
-        console.log("[Reflect BG] SEARCH_MEMORIES raw:", JSON.stringify(browse)?.slice(0, 300));
         if (browse.error || !browse.memories?.length) return browse;
         const full = await getFullMemories(
           browse.memories.map((m) => m.id)
@@ -147,7 +146,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const summary = chatResult?.response;
 
           if (!summary || summary.length < 30) {
-            console.log("[Reflect BG] Summary too short or missing:", JSON.stringify(chatResult)?.slice(0, 300));
+            bgLog("Summary too short or missing");
             return { error: "Summary generation failed" };
           }
 
@@ -155,7 +154,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const title = `${vendor} -- ${(lines[0] || "Conversation").replace(/^#+\s*/, "").slice(0, 100)}`;
           const content = summary;
 
-          console.log("[Reflect BG] Writing summarized memory:", title.slice(0, 60));
+          bgLog("Writing summarized memory:", title.slice(0, 60));
           return writeMemory({
             title,
             content,
@@ -163,7 +162,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             origin: vendor.toLowerCase(),
           });
         } catch (err) {
-          console.log("[Reflect BG] Summarize failed:", err.message);
+          bgLog("Summarize failed:", err.message);
           return { error: err.message };
         }
       }

@@ -9,6 +9,8 @@
   const VENDOR = "Perplexity";
 
   const adapter = {
+    useInlinePriming: true,
+
     getInputElement() {
       return document.querySelector(
         "textarea[placeholder], " +
