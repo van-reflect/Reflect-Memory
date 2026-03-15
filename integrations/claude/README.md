@@ -1,42 +1,52 @@
 # Reflect Memory - Claude Integration
 
-Connect Claude to Reflect Memory via the Model Context Protocol (MCP).
+Connect Claude to Reflect Memory in 30 seconds. No extension, no downloads, no terminal.
 
-## How it works
+## Setup
 
-Reflect Memory runs a remote MCP server alongside the main API. Claude.ai connects to it as a **Connector**, giving Claude native tool access to read, write, browse, and search memories.
-
-## Setup (Claude.ai)
-
-### Prerequisites
-- Claude Pro, Max, Team, or Enterprise plan
-- A running Reflect Memory instance with `RM_AGENT_KEY_CLAUDE` configured
-
-### Steps
-
-1. **Get your Claude agent key** from your Reflect Memory environment variables (`RM_AGENT_KEY_CLAUDE`).
-
-2. **Open Claude.ai** and go to **Settings > Connectors**.
-
-3. Click **"Add"** to add a custom connector.
-
-4. Enter the MCP server URL:
+1. Open **Claude.ai** and go to **Settings > Connectors**
+2. Click the **+** button to add a custom connector
+3. Name it **Reflect Memory**
+4. Paste this URL:
    ```
    https://api.reflectmemory.com/mcp
    ```
+5. Leave the OAuth Client ID and OAuth Client Secret fields **blank**
+6. Click **Add**
 
-5. In **Advanced settings**, configure authentication:
-   - Set the Authorization header to `Bearer <your-claude-agent-key>`
+Claude handles authorization automatically. You will see 7 memory tools appear under the connector.
 
-6. Click **"Add custom connector"**.
+### Recommended: Set to Always Allow
 
-7. In any chat, click the **"+"** button and enable the **Reflect Memory** connector.
+After adding the connector, set both **Read-only tools** and **Write/delete tools** to **Always allow**. This lets Claude read and write memories without asking for permission each time.
+
+### Optional: Make it invisible
+
+Add this to your Claude custom instructions (Settings > Profile) so Claude reads and writes memories automatically:
+
+> You have access to Reflect Memory, my shared memory layer across AI tools. At the start of important conversations, browse or search my memories for relevant context. When I make decisions, state preferences, or commit to plans, write a concise memory summarizing the key context. Do not mention you are doing this unless I ask.
+
+## Things you can say
+
+### Reading memories
+- "Search my Reflect Memory for context on [topic]"
+- "What do you know about my project from Reflect?"
+- "Pull the latest memory from Reflect"
+- "What's the memory from Reflect I have about [topic]?"
+- "Browse my recent memories"
+- "Check Reflect for context on [topic]"
+
+### Writing memories
+- "Save this to Reflect Memory"
+- "Write this memory for Reflect"
+- "Reflect this memory"
+- "Save this memory"
+- "Write this memory"
+- "Remember this for my other AI tools"
 
 ## Available Tools
 
-Once connected, Claude has access to these tools:
-
-| Tool | Description |
+| Tool | What it does |
 |------|-------------|
 | `read_memories` | Get recent memories (full content) |
 | `get_memory_by_id` | Retrieve a specific memory by UUID |
@@ -46,13 +56,13 @@ Once connected, Claude has access to these tools:
 | `get_memories_by_tag` | Get memories filtered by tags |
 | `write_memory` | Create a new memory entry |
 
-## Environment Variables
+## How it works
 
-| Variable | Description |
-|----------|-------------|
-| `RM_AGENT_KEY_CLAUDE` | Agent API key for the Claude vendor (required) |
-| `RM_MCP_PORT` | Port for the MCP server (default: 3001) |
+Claude connects via the Model Context Protocol (MCP) with OAuth 2.1 authentication. When you add the connector URL, Claude automatically:
 
-## Architecture
+1. Discovers the OAuth endpoints
+2. Registers as a client
+3. Authorizes access to your memory
+4. Loads all 7 memory tools
 
-The MCP server runs as a separate Express process on port 3001 (configurable), alongside the main Fastify API on port 3000. Both share the same SQLite database and user context. The MCP server authenticates requests using the Claude agent key and enforces the same vendor-scoped access rules as the REST API.
+No agent keys, no Bearer tokens, no manual configuration needed.
