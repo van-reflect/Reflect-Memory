@@ -1,6 +1,10 @@
 const statusEl = document.getElementById("status");
-const setupEl = document.getElementById("setup");
-const connectedEl = document.getElementById("connected");
+const authView = document.getElementById("authView");
+const connectedView = document.getElementById("connectedView");
+const signupBtn = document.getElementById("signupBtn");
+const loginBtn = document.getElementById("loginBtn");
+const manualToggle = document.getElementById("manualToggle");
+const manualSection = document.getElementById("manualSection");
 const apiKeyInput = document.getElementById("apiKey");
 const saveBtn = document.getElementById("saveBtn");
 const disconnectBtn = document.getElementById("disconnectBtn");
@@ -14,53 +18,66 @@ async function checkStatus() {
     "vendor",
   ]);
 
-  if (!apiKey) {
-    showDisconnected();
-    return;
-  }
-
-  if (verified) {
+  if (apiKey && verified) {
     showConnected(cachedVendor);
     loadMemoryCount();
     return;
   }
 
-  statusEl.textContent = "Verifying...";
-  const response = await chrome.runtime.sendMessage({ type: "CHECK_AUTH" });
-  if (response?.authenticated) {
-    await chrome.storage.sync.set({ verified: true, vendor: response.vendor || "" });
-    showConnected(response.vendor);
-    loadMemoryCount();
-  } else {
-    showDisconnected("Invalid key");
+  if (apiKey) {
+    setStatus("connecting", "Verifying...");
+    const response = await chrome.runtime.sendMessage({ type: "CHECK_AUTH" });
+    if (response?.authenticated) {
+      await chrome.storage.sync.set({ verified: true, vendor: response.vendor || "" });
+      showConnected(response.vendor);
+      loadMemoryCount();
+      return;
+    }
     await chrome.storage.sync.remove(["apiKey", "verified", "vendor"]);
   }
+
+  showAuthView();
+}
+
+function setStatus(state, text) {
+  statusEl.className = `status ${state}`;
+  statusEl.textContent = text;
 }
 
 function showConnected(vendor) {
-  statusEl.className = "status connected";
-  statusEl.textContent = `Connected${vendor ? ` as ${vendor}` : ""}`;
-  setupEl.style.display = "none";
-  connectedEl.style.display = "block";
+  setStatus("connected", `Connected${vendor ? ` as ${vendor}` : ""}`);
+  authView.classList.add("hidden");
+  connectedView.classList.remove("hidden");
   chrome.action.setBadgeText({ text: "" });
 }
 
-function showDisconnected(reason) {
-  statusEl.className = "status disconnected";
-  statusEl.textContent = reason || "Not connected";
-  setupEl.style.display = "block";
-  connectedEl.style.display = "none";
+function showAuthView() {
+  setStatus("disconnected", "Not connected");
+  authView.classList.remove("hidden");
+  connectedView.classList.add("hidden");
 }
 
 async function loadMemoryCount() {
-  const response = await chrome.runtime.sendMessage({
-    type: "GET_MEMORIES",
-    limit: 1,
-  });
+  const response = await chrome.runtime.sendMessage({ type: "GET_MEMORIES", limit: 1 });
   if (response?.memories) {
     memoryCountEl.textContent = "Memory sync active";
   }
 }
+
+signupBtn.addEventListener("click", () => {
+  chrome.tabs.create({ url: "https://reflectmemory.com/signup" });
+});
+
+loginBtn.addEventListener("click", () => {
+  chrome.tabs.create({ url: "https://reflectmemory.com/login" });
+});
+
+manualToggle.addEventListener("click", () => {
+  manualSection.classList.toggle("open");
+  manualToggle.textContent = manualSection.classList.contains("open")
+    ? "Hide manual entry"
+    : "Enter key manually";
+});
 
 saveBtn.addEventListener("click", async () => {
   const key = apiKeyInput.value.trim();
@@ -77,7 +94,8 @@ saveBtn.addEventListener("click", async () => {
     showConnected(response.vendor);
     loadMemoryCount();
   } else {
-    showDisconnected("Invalid key. Check your agent key.");
+    showAuthView();
+    setStatus("disconnected", "Invalid key");
     await chrome.storage.sync.remove(["apiKey", "verified", "vendor"]);
   }
 
@@ -87,7 +105,8 @@ saveBtn.addEventListener("click", async () => {
 
 disconnectBtn.addEventListener("click", async () => {
   await chrome.storage.sync.remove(["apiKey", "verified", "vendor"]);
-  showDisconnected();
+  await chrome.storage.local.remove("autoConnectAttempt");
+  showAuthView();
   apiKeyInput.value = "";
   chrome.action.setBadgeText({ text: "!" });
   chrome.action.setBadgeBackgroundColor({ color: "#ef4444" });

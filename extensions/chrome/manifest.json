@@ -5,7 +5,9 @@
   "description": "Your AI tools share one memory. Tell one, they all know.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
-    "https://api.reflectmemory.com/*"
+    "https://api.reflectmemory.com/*",
+    "https://reflectmemory.com/*",
+    "https://www.reflectmemory.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -34,6 +36,11 @@
     {
       "matches": ["https://www.perplexity.ai/*", "https://perplexity.ai/*"],
       "js": ["content-scripts/shared.js", "content-scripts/perplexity.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://reflectmemory.com/*", "https://www.reflectmemory.com/*"],
+      "js": ["content-scripts/dashboard.js"],
       "run_at": "document_idle"
     }
   ],

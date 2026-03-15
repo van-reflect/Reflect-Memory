@@ -183,11 +183,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(({ reason }) => {
   chrome.storage.sync.get("apiKey", ({ apiKey }) => {
     if (!apiKey) {
       chrome.action.setBadgeText({ text: "!" });
       chrome.action.setBadgeBackgroundColor({ color: "#ef4444" });
     }
   });
+
+  if (reason === "install") {
+    chrome.tabs.create({ url: "https://reflectmemory.com/setup?ext=installed" });
+  }
 });
