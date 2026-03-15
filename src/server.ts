@@ -453,7 +453,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   server.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?")[0];
     if (path === "/health" || path === "/openapi.json") return;
-    if (request.method === "POST" && (path === "/waitlist" || path === "/early-access")) return;
+    if (request.method === "POST" && (path === "/waitlist" || path === "/early-access" || path === "/integration-requests")) return;
     if (request.method === "POST" && path === "/webhooks/clerk") return;
     if (request.method === "POST" && path === "/webhooks/stripe") return;
 
@@ -1680,6 +1680,78 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         .run(...ids);
 
       return { updated: result.changes };
+    },
+  );
+
+  // ===========================================================================
+  // POST /integration-requests -- Public integration request submission
+  // ===========================================================================
+
+  const integrationRequestBodySchema = {
+    type: "object" as const,
+    required: ["email", "company_name"],
+    additionalProperties: false,
+    properties: {
+      email: { type: "string" as const, minLength: 1, maxLength: 320 },
+      company_name: { type: "string" as const, minLength: 1, maxLength: 200 },
+      website: { type: "string" as const, maxLength: 500 },
+      description: { type: "string" as const, maxLength: 2000 },
+    },
+  };
+
+  server.post(
+    "/integration-requests",
+    {
+      schema: { body: integrationRequestBodySchema },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { email, company_name, website, description } = request.body as {
+        email: string;
+        company_name: string;
+        website?: string;
+        description?: string;
+      };
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        reply.code(400);
+        return { error: "Invalid email format" };
+      }
+
+      const id = randomUUID();
+      const now = new Date().toISOString();
+
+      db.prepare(
+        `INSERT INTO integration_requests (id, email, company_name, website, description, status, created_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+      ).run(id, email.toLowerCase().trim(), company_name.trim(), website?.trim() || null, description?.trim() || null, now);
+
+      return { success: true, id };
+    },
+  );
+
+  // ===========================================================================
+  // GET /admin/integration-requests -- Owner-only integration requests view
+  // ===========================================================================
+
+  server.get(
+    "/admin/integration-requests",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.userId !== userId) {
+        reply.code(403);
+        return { error: "Admin access restricted to owner" };
+      }
+
+      const rows = db
+        .prepare(
+          `SELECT id, email, company_name, website, description, status, created_at
+           FROM integration_requests ORDER BY created_at DESC`,
+        )
+        .all();
+
+      return { requests: rows, total: rows.length };
     },
   );
 

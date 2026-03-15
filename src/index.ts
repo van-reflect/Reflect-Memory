@@ -401,6 +401,29 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(oauthPendingMigr
   console.log("[migration] Created oauth_pending_requests table for consent flow");
 }
 
+const integrationReqMigration = "014_integration_requests";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(integrationReqMigration)) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS integration_requests (
+      id            TEXT NOT NULL PRIMARY KEY,
+      email         TEXT NOT NULL,
+      company_name  TEXT NOT NULL,
+      website       TEXT,
+      description   TEXT,
+      status        TEXT NOT NULL DEFAULT 'pending',
+      created_at    TEXT NOT NULL
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_integration_requests_email ON integration_requests(email);
+    CREATE INDEX IF NOT EXISTS idx_integration_requests_status ON integration_requests(status);
+  `);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    integrationReqMigration,
+    new Date().toISOString(),
+  );
+  console.log("[migration] Created integration_requests table");
+}
+
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 
 let userId: string;
