@@ -561,29 +561,6 @@ function initVendor(adapter, vendorName) {
   });
   bodyObserver.observe(document.body, { childList: true, subtree: true });
 
-  // Write-back: poll every 10s. When text stabilizes for 2 consecutive
-  // checks (20s of no meaningful change) and write is enabled, attempt write.
-  let stableCount = 0;
-  let prevSnapshot = "";
-  setInterval(() => {
-    if (isPriming || !isWriteEnabled() || hasAlreadyWritten()) {
-      stableCount = 0;
-      return;
-    }
-
-    const main = document.querySelector("main") || document.body;
-    const snapshot = main.innerText?.slice(0, 3000) || "";
-    if (Math.abs(snapshot.length - prevSnapshot.length) < 30) {
-      stableCount++;
-    } else {
-      stableCount = 0;
-    }
-    prevSnapshot = snapshot;
-
-    if (stableCount >= 2) {
-      log("writeBack: conversation stable for 20s. Checking substance...");
-      stableCount = 0;
-      writeConversationToMemory(vendorName);
-    }
-  }, 10000);
+  // Write-back only triggers on explicit user affirmation (Enter key or send
+  // button click). No automatic settle timer -- the user stays in control.
 }

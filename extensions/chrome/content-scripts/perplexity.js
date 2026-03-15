@@ -1,8 +1,9 @@
 /**
  * Perplexity content script adapter.
  *
- * Perplexity uses a textarea for input and renders answers
- * in structured response containers with source citations.
+ * Perplexity uses textarea#ask-input or div#ask-input[contenteditable] for input.
+ * Submit button is button[aria-label="Submit"].
+ * Selectors sourced from the perplexity-web-mcp-extension project.
  */
 
 (() => {
@@ -12,31 +13,36 @@
     useInlinePriming: true,
 
     getInputElement() {
-      return document.querySelector(
-        "textarea[placeholder], " +
-        "textarea[aria-label], " +
-        "div[contenteditable='true'][role='textbox']"
-      );
+      return document.querySelector("textarea#ask-input") ||
+        document.querySelector('div#ask-input[contenteditable="true"]') ||
+        document.querySelector("textarea[placeholder*='ask' i], textarea[placeholder*='search' i], textarea[placeholder*='follow' i]");
     },
 
     getInputValue() {
       const el = this.getInputElement();
       if (!el) return "";
-      return el.value || el.innerText || "";
+      if (el.tagName === "TEXTAREA") return el.value || "";
+      return el.innerText || "";
     },
 
     setInputValue(text) {
       const el = this.getInputElement();
       if (!el) return;
+
+      el.focus();
+
       if (el.tagName === "TEXTAREA") {
-        const setter = Object.getOwnPropertyDescriptor(
-          HTMLTextAreaElement.prototype, "value"
+        const nativeSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype, "value"
         )?.set;
-        if (setter) setter.call(el, text);
-        else el.value = text;
+        if (nativeSetter) {
+          nativeSetter.call(el, text);
+        } else {
+          el.value = text;
+        }
         el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
       } else {
-        el.focus();
         el.innerText = text;
         el.dispatchEvent(new Event("input", { bubbles: true }));
       }
@@ -45,18 +51,18 @@
     getMessages() {
       const messages = [];
       const queryEls = document.querySelectorAll(
-        "[class*='query'], .prose h2, [data-testid*='query']"
+        ".group\\/query, [class*='query'], [data-testid*='query']"
       );
       const answerEls = document.querySelectorAll(
-        "[class*='answer'], .prose > div, [data-testid*='answer']"
+        ".pb-md .prose, [class*='answer'], [data-testid*='answer']"
       );
       queryEls.forEach((el) => {
         const text = el.innerText?.trim();
-        if (text) messages.push({ role: "user", text });
+        if (text && text.length > 5) messages.push({ role: "user", text });
       });
       answerEls.forEach((el) => {
         const text = el.innerText?.trim();
-        if (text && text.length > 20) {
+        if (text && text.length > 30) {
           messages.push({ role: "assistant", text });
         }
       });
@@ -65,37 +71,38 @@
 
     isNewConversation() {
       const path = window.location.pathname;
-      if (path === "/" || path === "/search" || path.endsWith("/new")) return true;
+      if (path === "/" || path === "/search" || path === "/home" || path.endsWith("/new")) return true;
       return this.getMessages().length === 0;
     },
 
     triggerSend() {
-      const btn = document.querySelector(
-        "button[aria-label='Submit'], " +
-        "button[aria-label='Ask'], " +
-        "button[data-testid='ask-button']"
-      );
-      if (btn) {
+      const btn = document.querySelector('button[aria-label="Submit"]');
+      if (btn && !btn.disabled) {
         btn.click();
         return;
       }
       const el = this.getInputElement();
       if (el) {
         el.dispatchEvent(new KeyboardEvent("keydown", {
-          key: "Enter", code: "Enter", keyCode: 13, bubbles: true,
+          key: "Enter", code: "Enter", keyCode: 13, which: 13,
+          bubbles: true, cancelable: true,
         }));
       }
     },
 
     hideLastExchange() {
-      const allEls = document.querySelectorAll(
-        "[class*='query'], [class*='answer'], .prose h2, .prose > div"
-      );
-      const toHide = [...allEls].slice(-2);
-      toHide.forEach((el) => {
-        const container = el.closest("[class*='result']") || el.parentElement;
+      const queryEls = document.querySelectorAll(".group\\/query, [class*='query']");
+      const answerEls = document.querySelectorAll(".pb-md, [class*='answer']");
+      const lastQuery = queryEls[queryEls.length - 1];
+      const lastAnswer = answerEls[answerEls.length - 1];
+      if (lastQuery) {
+        const container = lastQuery.closest("[class*='result']") || lastQuery.parentElement;
         if (container) container.style.display = "none";
-      });
+      }
+      if (lastAnswer) {
+        const container = lastAnswer.closest("[class*='result']") || lastAnswer.parentElement;
+        if (container) container.style.display = "none";
+      }
     },
 
     onNewMessage(callback) {
