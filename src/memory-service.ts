@@ -115,11 +115,123 @@ function buildPaginationClause(opts?: PaginationOptions): { sql: string; params:
   return { sql, params };
 }
 
+// ---------------------------------------------------------------------------
+// Deduplication: same-origin similarity check before creating new memories
+// ---------------------------------------------------------------------------
+
+function tokenize(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2),
+  );
+}
+
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let intersection = 0;
+  for (const w of a) {
+    if (b.has(w)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+const TITLE_SIMILARITY_THRESHOLD = 0.5;
+const CONTENT_SIMILARITY_THRESHOLD = 0.4;
+const DEDUP_WINDOW_HOURS = 48;
+
+export interface DedupResult {
+  action: "created" | "merged";
+  memory: MemoryEntry;
+  mergedInto?: string;
+}
+
+function findSimilarMemory(
+  db: Database.Database,
+  userId: string,
+  input: CreateMemoryInput,
+): MemoryRow | null {
+  const cutoff = new Date(Date.now() - DEDUP_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
+
+  const candidates = db
+    .prepare(
+      `SELECT ${COLUMNS}
+       FROM memories
+       WHERE user_id = ? AND origin = ? AND deleted_at IS NULL AND created_at > ?
+       ORDER BY created_at DESC
+       LIMIT 50`,
+    )
+    .all(userId, input.origin, cutoff) as MemoryRow[];
+
+  if (candidates.length === 0) return null;
+
+  const inputTitleTokens = tokenize(input.title);
+  const inputContentTokens = tokenize(input.content);
+
+  for (const candidate of candidates) {
+    const titleSim = jaccardSimilarity(inputTitleTokens, tokenize(candidate.title));
+    if (titleSim >= TITLE_SIMILARITY_THRESHOLD) {
+      const contentSim = jaccardSimilarity(inputContentTokens, tokenize(candidate.content));
+      if (contentSim >= CONTENT_SIMILARITY_THRESHOLD) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+function mergeTags(existingRaw: string, newTags: string[]): string[] {
+  const existing = safeJsonArray(existingRaw);
+  const merged = new Set([...existing, ...newTags]);
+  return [...merged];
+}
+
 export function createMemory(
   db: Database.Database,
   userId: string,
   input: CreateMemoryInput,
 ): MemoryEntry {
+  const similar = findSimilarMemory(db, userId, input);
+
+  if (similar) {
+    const now = new Date().toISOString();
+    const mergedTags = mergeTags(similar.tags, input.tags);
+    const tagsJson = JSON.stringify(mergedTags);
+
+    const maxVersion = db
+      .prepare(`SELECT COALESCE(MAX(version_number), 0) as max_ver FROM memory_versions WHERE memory_id = ?`)
+      .get(similar.id) as { max_ver: number };
+
+    db.prepare(
+      `INSERT INTO memory_versions (id, memory_id, user_id, title, content, tags, memory_type, origin, allowed_vendors, version_number, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      randomUUID(), similar.id, userId, similar.title, similar.content,
+      similar.tags, similar.memory_type ?? "semantic", similar.origin, similar.allowed_vendors,
+      maxVersion.max_ver + 1, now,
+    );
+
+    db.prepare(
+      `UPDATE memories SET title = ?, content = ?, tags = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
+    ).run(input.title, input.content, tagsJson, now, similar.id, userId);
+
+    return {
+      id: similar.id,
+      title: input.title,
+      content: input.content,
+      tags: mergedTags,
+      origin: input.origin,
+      allowed_vendors: safeJsonArray(similar.allowed_vendors),
+      memory_type: (similar.memory_type as MemoryType) ?? "semantic",
+      created_at: similar.created_at,
+      updated_at: now,
+    };
+  }
+
   const id = randomUUID();
   const now = new Date().toISOString();
   const tagsJson = JSON.stringify(input.tags);
