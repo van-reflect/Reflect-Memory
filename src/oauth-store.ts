@@ -56,6 +56,19 @@ export function createOAuthTables(db: Database.Database): void {
       created_at    TEXT NOT NULL
     ) STRICT;
     CREATE INDEX IF NOT EXISTS idx_oauth_tokens_client ON oauth_tokens(client_id);
+
+    CREATE TABLE IF NOT EXISTS oauth_pending_requests (
+      id            TEXT NOT NULL PRIMARY KEY,
+      client_id     TEXT NOT NULL,
+      client_name   TEXT,
+      redirect_uri  TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      scopes        TEXT NOT NULL DEFAULT '[]',
+      state         TEXT,
+      resource      TEXT,
+      expires_at    TEXT NOT NULL,
+      created_at    TEXT NOT NULL
+    ) STRICT;
   `);
 }
 
@@ -143,33 +156,76 @@ class SqliteClientsStore implements OAuthRegisteredClientsStore {
 interface OAuthStoreConfig {
   db: Database.Database;
   issuerUrl: string;
+  dashboardUrl?: string;
 }
 
 export class ReflectOAuthProvider implements OAuthServerProvider {
   private db: Database.Database;
   private _clientsStore: SqliteClientsStore;
   public issuerUrl: string;
+  public dashboardUrl: string;
 
   constructor(config: OAuthStoreConfig) {
     this.db = config.db;
     this._clientsStore = new SqliteClientsStore(config.db);
     this.issuerUrl = config.issuerUrl;
+    this.dashboardUrl = config.dashboardUrl || "https://reflectmemory.com";
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
     return this._clientsStore;
   }
 
-  // Show a minimal consent page, then redirect back with auth code.
-  // Since this is a single-owner product, auto-approve.
   async authorize(
     client: OAuthClientInformationFull,
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
+    const pendingId = randomUUID();
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 10 * 60 * 1000);
+
+    this.db
+      .prepare(
+        `INSERT INTO oauth_pending_requests (id, client_id, client_name, redirect_uri, code_challenge, scopes, state, resource, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        pendingId,
+        client.client_id,
+        client.client_name || null,
+        params.redirectUri,
+        params.codeChallenge,
+        JSON.stringify(params.scopes || []),
+        params.state || null,
+        params.resource?.toString() || null,
+        expiresAt.toISOString(),
+        now.toISOString(),
+      );
+
+    const consentUrl = new URL(`${this.dashboardUrl}/oauth/consent`);
+    consentUrl.searchParams.set("pending_id", pendingId);
+    consentUrl.searchParams.set("client_name", client.client_name || "Unknown application");
+
+    res.redirect(302, consentUrl.toString());
+  }
+
+  approvePendingRequest(pendingId: string): string {
+    const row = this.db
+      .prepare(`SELECT * FROM oauth_pending_requests WHERE id = ?`)
+      .get(pendingId) as Record<string, string> | undefined;
+
+    if (!row) throw new Error("Pending request not found");
+    if (new Date(row.expires_at) < new Date()) {
+      this.db.prepare(`DELETE FROM oauth_pending_requests WHERE id = ?`).run(pendingId);
+      throw new Error("Pending request expired");
+    }
+
+    this.db.prepare(`DELETE FROM oauth_pending_requests WHERE id = ?`).run(pendingId);
+
     const code = randomUUID().replace(/-/g, "");
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 5 * 60 * 1000);
+    const codeExpiry = new Date(now.getTime() + 5 * 60 * 1000);
 
     this.db
       .prepare(
@@ -178,22 +234,22 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
       )
       .run(
         code,
-        client.client_id,
-        params.codeChallenge,
-        params.redirectUri,
-        JSON.stringify(params.scopes || []),
-        params.resource?.toString() || null,
-        expiresAt.toISOString(),
+        row.client_id,
+        row.code_challenge,
+        row.redirect_uri,
+        row.scopes,
+        row.resource || null,
+        codeExpiry.toISOString(),
         now.toISOString(),
       );
 
-    const redirectUrl = new URL(params.redirectUri);
+    const redirectUrl = new URL(row.redirect_uri);
     redirectUrl.searchParams.set("code", code);
-    if (params.state) {
-      redirectUrl.searchParams.set("state", params.state);
+    if (row.state) {
+      redirectUrl.searchParams.set("state", row.state);
     }
 
-    res.redirect(302, redirectUrl.toString());
+    return redirectUrl.toString();
   }
 
   async challengeForAuthorizationCode(

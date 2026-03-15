@@ -378,6 +378,29 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(oauthMigrationNa
   console.log("[migration] Created OAuth tables for MCP connector");
 }
 
+const oauthPendingMigration = "013_oauth_pending_requests";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(oauthPendingMigration)) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS oauth_pending_requests (
+      id            TEXT NOT NULL PRIMARY KEY,
+      client_id     TEXT NOT NULL,
+      client_name   TEXT,
+      redirect_uri  TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      scopes        TEXT NOT NULL DEFAULT '[]',
+      state         TEXT,
+      resource      TEXT,
+      expires_at    TEXT NOT NULL,
+      created_at    TEXT NOT NULL
+    ) STRICT;
+  `);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    oauthPendingMigration,
+    new Date().toISOString(),
+  );
+  console.log("[migration] Created oauth_pending_requests table for consent flow");
+}
+
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 
 let userId: string;
@@ -505,7 +528,14 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   // Start MCP server when any agent key is configured (multi-vendor)
   if (validVendors.length > 0 && mcpPort != null) {
     const mcpPublicUrl = optionalEnv("RM_PUBLIC_URL", "");
-    startMcpServer({ db, userId, agentKeys, publicUrl: mcpPublicUrl || undefined }, mcpPort);
+    startMcpServer({
+      db,
+      userId,
+      agentKeys,
+      publicUrl: mcpPublicUrl || undefined,
+      dashboardUrl: optionalEnv("RM_DASHBOARD_URL", "https://reflectmemory.com"),
+      dashboardJwtSecret: dashboardJwtSecret || undefined,
+    }, mcpPort);
   }
 });
 

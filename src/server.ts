@@ -415,6 +415,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       "/authorize",
       "/token",
       "/register",
+      "/oauth/approve",
     ];
     for (const oauthPath of oauthPaths) {
       await server.register(proxy, {
@@ -458,6 +459,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
     // OAuth + MCP paths are handled by the MCP server's own auth middleware via proxy
     if (path.startsWith("/.well-known/oauth-")) return;
+    if (path.startsWith("/oauth/")) return;
     if (["/authorize", "/token", "/register", "/mcp"].includes(path)) return;
 
     const header = request.headers.authorization;

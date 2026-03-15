@@ -14,6 +14,7 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
+import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
 import { ReflectOAuthProvider } from "./oauth-store.js";
 import {
@@ -30,6 +31,8 @@ export interface McpServerConfig {
   userId: string;
   agentKeys: Record<string, string>;
   publicUrl?: string;
+  dashboardUrl?: string;
+  dashboardJwtSecret?: string;
 }
 
 function createMcpServerWithTools(
@@ -171,7 +174,7 @@ function createMcpServerWithTools(
 }
 
 export function startMcpServer(config: McpServerConfig, port: number): void {
-  const { db, userId, agentKeys, publicUrl } = config;
+  const { db, userId, agentKeys, publicUrl, dashboardUrl, dashboardJwtSecret } = config;
 
   const app = express();
   app.use(express.json({ limit: "256kb" }));
@@ -198,7 +201,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   // ---------------------------------------------------------------------------
 
   const baseUrl = publicUrl || `http://localhost:${port}`;
-  const oauthProvider = new ReflectOAuthProvider({ db, issuerUrl: baseUrl });
+  const oauthProvider = new ReflectOAuthProvider({ db, issuerUrl: baseUrl, dashboardUrl });
   const mcpResourceUrl = new URL(`${baseUrl}/mcp`);
 
   app.use(
@@ -211,6 +214,43 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       serviceDocumentationUrl: new URL("https://reflectmemory.com/docs"),
     }),
   );
+
+  // ---------------------------------------------------------------------------
+  // OAuth consent callback: dashboard redirects here after user approves
+  // ---------------------------------------------------------------------------
+
+  app.get("/oauth/approve", async (req, res) => {
+    const token = req.query.token as string | undefined;
+    if (!token) {
+      res.status(400).json({ error: "Missing approval token" });
+      return;
+    }
+
+    if (!dashboardJwtSecret) {
+      res.status(500).json({ error: "OAuth consent not configured" });
+      return;
+    }
+
+    try {
+      const key = new TextEncoder().encode(dashboardJwtSecret);
+      const { payload } = await jwtVerify(token, key, {
+        audience: "reflect-memory",
+        issuer: "reflect-dashboard",
+      });
+
+      const pendingId = payload.pending_id as string;
+      if (!pendingId) {
+        res.status(400).json({ error: "Invalid approval token" });
+        return;
+      }
+
+      const redirectUrl = oauthProvider.approvePendingRequest(pendingId);
+      res.redirect(302, redirectUrl);
+    } catch (err) {
+      console.error("[oauth] Approval failed:", (err as Error).message);
+      res.status(403).json({ error: "Invalid or expired approval" });
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Hybrid auth: legacy RM_AGENT_KEY_* tokens + OAuth Bearer tokens
