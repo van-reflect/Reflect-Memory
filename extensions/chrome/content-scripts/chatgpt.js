@@ -57,6 +57,19 @@
       return this.getMessages().length === 0;
     },
 
+    hasNativeIntegration() {
+      const path = window.location.pathname;
+      if (!path.startsWith("/g/")) return false;
+      const gptName = document.querySelector(
+        "[class*='gpt-name'], [data-testid*='gpt-title'], h1, [class*='ProfileName']"
+      );
+      const nameText = (gptName?.textContent || "").toLowerCase();
+      if (nameText.includes("reflect") && nameText.includes("memor")) return true;
+      const pageTitle = document.title.toLowerCase();
+      if (pageTitle.includes("reflect") && pageTitle.includes("memor")) return true;
+      return false;
+    },
+
     triggerSend() {
       const btn = document.querySelector(
         "[data-testid='send-button'], button[aria-label='Send prompt']"

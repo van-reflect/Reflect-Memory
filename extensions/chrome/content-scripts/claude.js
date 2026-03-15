@@ -119,6 +119,19 @@
       }
     },
 
+    hasNativeIntegration() {
+      const toolIndicators = document.querySelectorAll(
+        "[class*='tool'], [data-testid*='tool'], [aria-label*='tool' i]"
+      );
+      for (const el of toolIndicators) {
+        const text = (el.textContent || el.getAttribute("aria-label") || "").toLowerCase();
+        if (text.includes("reflect") && text.includes("memor")) return true;
+      }
+      const allText = document.body.innerText?.slice(0, 5000).toLowerCase() || "";
+      if (allText.includes("reflect memory") && allText.includes("read_memories")) return true;
+      return false;
+    },
+
     hideLastExchange() {
       log("hideLastExchange: skipping (priming content remains visible)");
     },

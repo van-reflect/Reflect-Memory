@@ -14,6 +14,7 @@ const WRITTEN_KEY = "reflect_memory_written";
 const DEBUG = false;
 
 let isPriming = false;
+let _activeAdapter = null;
 
 function log(...args) {
   if (DEBUG) console.log("[Reflect Memory]", ...args);
@@ -212,6 +213,11 @@ function retrySend(adapter, timeoutMs = 6000) {
 async function interceptFirstMessage(adapter, userMessage) {
   if (isPriming || isAlreadyPrimed()) {
     log("Skipping: already primed or priming in progress");
+    return false;
+  }
+  if (adapter.hasNativeIntegration?.()) {
+    log("Native Reflect Memory integration detected. Extension backing off.");
+    markAsPrimed();
     return false;
   }
   if (!adapter.isNewConversation()) {
@@ -413,6 +419,10 @@ let writeInProgress = false;
 
 async function writeConversationToMemory(vendor) {
   if (!isWriteEnabled() || hasAlreadyWritten() || writeInProgress) return;
+  if (_activeAdapter?.hasNativeIntegration?.()) {
+    log("writeBack: native integration active, skipping extension write-back");
+    return;
+  }
   writeInProgress = true;
 
   if (isAiStillStreaming()) {
@@ -461,6 +471,7 @@ async function writeConversationToMemory(vendor) {
 // --- Init ---
 
 function initVendor(adapter, vendorName) {
+  _activeAdapter = adapter;
   log(`Initializing ${vendorName} adapter...`);
 
   let documentListenerAttached = false;
