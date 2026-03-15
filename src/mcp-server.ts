@@ -2,15 +2,20 @@
 // Remote Streamable HTTP MCP server for any vendor that supports MCP.
 // Exposes memory tools (read, write, browse, query) via the Model Context Protocol.
 // Runs as a standalone Express app on RM_MCP_PORT (default: 3001).
-// Auth: Bearer token in the Authorization header, validated against any RM_AGENT_KEY_*.
+// Auth: Bearer token validated via OAuth 2.1 or legacy RM_AGENT_KEY_* tokens.
 
 import express from "express";
 import { randomUUID, createHash, timingSafeEqual as cryptoTimingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import type Database from "better-sqlite3";
+import { ReflectOAuthProvider } from "./oauth-store.js";
 import {
   listMemories,
   listMemorySummaries,
@@ -20,10 +25,11 @@ import {
   type PaginationOptions,
 } from "./memory-service.js";
 
-interface McpServerConfig {
+export interface McpServerConfig {
   db: Database.Database;
   userId: string;
   agentKeys: Record<string, string>;
+  publicUrl?: string;
 }
 
 function createMcpServerWithTools(
@@ -165,10 +171,14 @@ function createMcpServerWithTools(
 }
 
 export function startMcpServer(config: McpServerConfig, port: number): void {
-  const { db, userId, agentKeys } = config;
+  const { db, userId, agentKeys, publicUrl } = config;
 
   const app = express();
   app.use(express.json({ limit: "256kb" }));
+
+  // ---------------------------------------------------------------------------
+  // Legacy key helpers (backward compat for Cursor, n8n, etc.)
+  // ---------------------------------------------------------------------------
 
   function constantTimeEqual(a: string, b: string): boolean {
     const hashA = createHash("sha256").update(a).digest();
@@ -183,22 +193,71 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     return null;
   }
 
-  // Auth middleware: resolve vendor from bearer token, store on request
-  app.use("/mcp", (req, res, next) => {
-    const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith("Bearer ")) {
-      res.status(401).json({ error: "Missing Authorization header" });
-      return;
+  // ---------------------------------------------------------------------------
+  // OAuth 2.1 setup
+  // ---------------------------------------------------------------------------
+
+  const baseUrl = publicUrl || `http://localhost:${port}`;
+  const oauthProvider = new ReflectOAuthProvider({ db, issuerUrl: baseUrl });
+  const mcpResourceUrl = new URL(`${baseUrl}/mcp`);
+
+  app.use(
+    mcpAuthRouter({
+      provider: oauthProvider,
+      issuerUrl: new URL(baseUrl),
+      resourceServerUrl: mcpResourceUrl,
+      scopesSupported: ["mcp:read", "mcp:write"],
+      resourceName: "Reflect Memory MCP",
+      serviceDocumentationUrl: new URL("https://reflectmemory.com/docs"),
+    }),
+  );
+
+  // ---------------------------------------------------------------------------
+  // Hybrid auth: legacy RM_AGENT_KEY_* tokens + OAuth Bearer tokens
+  // ---------------------------------------------------------------------------
+
+  const hybridVerifier: OAuthTokenVerifier = {
+    async verifyAccessToken(token: string): Promise<AuthInfo> {
+      const vendor = resolveVendor(token);
+      if (vendor) {
+        return {
+          token,
+          clientId: `legacy_${vendor}`,
+          scopes: ["mcp:read", "mcp:write"],
+          expiresAt: Math.floor(Date.now() / 1000) + 86400,
+          extra: { vendor, isLegacy: true },
+        };
+      }
+      return oauthProvider.verifyAccessToken(token);
+    },
+  };
+
+  const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(mcpResourceUrl);
+
+  const bearerAuth = requireBearerAuth({
+    verifier: hybridVerifier,
+    resourceMetadataUrl,
+  });
+
+  app.use("/mcp", bearerAuth, (req, _res, next) => {
+    const auth = (req as any).auth as AuthInfo | undefined;
+    if (!auth) return next();
+
+    if (auth.extra?.isLegacy) {
+      (req as any).vendor = auth.extra.vendor as string;
+    } else {
+      const client = oauthProvider.clientsStore.getClient(auth.clientId) as
+        | { client_name?: string }
+        | undefined;
+      (req as any).vendor =
+        client?.client_name?.toLowerCase().replace(/[^a-z0-9]/g, "") || "oauth";
     }
-    const token = auth.slice("Bearer ".length);
-    const vendor = resolveVendor(token);
-    if (!vendor) {
-      res.status(401).json({ error: "Invalid API key" });
-      return;
-    }
-    (req as any).vendor = vendor;
     next();
   });
+
+  // ---------------------------------------------------------------------------
+  // Session management
+  // ---------------------------------------------------------------------------
 
   const MAX_SESSIONS = 500;
   const SESSION_TTL_MS = 30 * 60 * 1000;
@@ -218,6 +277,10 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       }
     }
   }, 60_000);
+
+  // ---------------------------------------------------------------------------
+  // MCP transport endpoints
+  // ---------------------------------------------------------------------------
 
   app.post("/mcp", async (req, res) => {
     try {
@@ -331,6 +394,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   const vendors = Object.keys(agentKeys);
   app.listen(port, "0.0.0.0", () => {
     console.log(`MCP server listening on port ${port} (vendors: ${vendors.join(", ")})`);
-    console.log(`Connector URL: https://api.reflectmemory.com/mcp`);
+    console.log(`OAuth: ${baseUrl}/.well-known/oauth-authorization-server`);
+    console.log(`Connector URL: ${baseUrl}/mcp`);
   });
 }

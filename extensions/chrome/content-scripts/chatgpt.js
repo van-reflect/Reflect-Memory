@@ -52,6 +52,8 @@
     },
 
     isNewConversation() {
+      const path = window.location.pathname;
+      if (path === "/" || path === "/c/new" || path.endsWith("/new")) return true;
       return this.getMessages().length === 0;
     },
 

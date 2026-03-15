@@ -156,29 +156,30 @@ function retrySend(adapter, timeoutMs = 6000) {
     const start = Date.now();
 
     function attempt() {
-      const sendBtn = document.querySelector("button[aria-label*='Send' i]");
-      if (sendBtn && !sendBtn.disabled) {
-        log("retrySend: clicking send button after", Date.now() - start, "ms");
-        sendBtn.click();
-        resolve(true);
-        return;
-      }
+      adapter.triggerSend();
 
-      if (Date.now() - start > timeoutMs) {
-        log("retrySend: timed out. Dispatching Enter key as fallback.");
-        const el = adapter.getInputElement();
-        if (el) {
-          el.focus();
-          el.dispatchEvent(new KeyboardEvent("keydown", {
-            key: "Enter", code: "Enter", keyCode: 13, which: 13,
-            bubbles: true, cancelable: true,
-          }));
+      setTimeout(() => {
+        const remaining = adapter.getInputValue()?.trim();
+        if (!remaining) {
+          log("retrySend: confirmed sent after", Date.now() - start, "ms");
+          resolve(true);
+          return;
         }
-        resolve(false);
-        return;
-      }
-
-      setTimeout(attempt, 300);
+        if (Date.now() - start > timeoutMs) {
+          log("retrySend: timed out after", timeoutMs, "ms. Forcing Enter.");
+          const el = adapter.getInputElement();
+          if (el) {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent("keydown", {
+              key: "Enter", code: "Enter", keyCode: 13, which: 13,
+              bubbles: true, cancelable: true,
+            }));
+          }
+          resolve(false);
+          return;
+        }
+        attempt();
+      }, 500);
     }
 
     attempt();

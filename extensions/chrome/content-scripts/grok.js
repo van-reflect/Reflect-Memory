@@ -43,16 +43,16 @@
     getMessages() {
       const messages = [];
       const turns = document.querySelectorAll(
-        "[class*='message'], [class*='turn'], [data-role]"
+        "[data-role], [class*='message-row'], [class*='chat-turn'], [class*='conversation-turn']"
       );
       turns.forEach((el) => {
         const role = el.getAttribute("data-role");
         const isUser =
           role === "user" ||
           el.classList.toString().includes("user") ||
-          el.querySelector("[class*='user']");
+          !!el.querySelector("[class*='user-avatar']");
         const text = el.innerText?.trim();
-        if (text && text.length > 2) {
+        if (text && text.length > 15) {
           messages.push({ role: isUser ? "user" : "assistant", text });
         }
       });
@@ -60,6 +60,8 @@
     },
 
     isNewConversation() {
+      const path = window.location.pathname;
+      if (path === "/" || path === "/chat" || path.endsWith("/new")) return true;
       return this.getMessages().length === 0;
     },
 

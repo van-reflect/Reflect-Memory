@@ -397,13 +397,32 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     },
   });
 
-  // Proxy /mcp to the MCP server when it runs on a separate port (e.g. Railway exposes only one port)
+  // Proxy /mcp and OAuth endpoints to the MCP server (Railway exposes only one port)
   if (mcpPort != null) {
+    const mcpUpstream = `http://127.0.0.1:${mcpPort}`;
+
     await server.register(proxy, {
-      upstream: `http://127.0.0.1:${mcpPort}`,
+      upstream: mcpUpstream,
       prefix: "/mcp",
       rewritePrefix: "/mcp",
     });
+
+    // OAuth discovery and auth endpoints served by the MCP server's mcpAuthRouter.
+    // PRM is path-aware per RFC 9728: /.well-known/oauth-protected-resource/mcp
+    const oauthPaths = [
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-authorization-server",
+      "/authorize",
+      "/token",
+      "/register",
+    ];
+    for (const oauthPath of oauthPaths) {
+      await server.register(proxy, {
+        upstream: mcpUpstream,
+        prefix: oauthPath,
+        rewritePrefix: oauthPath,
+      });
+    }
   }
 
   server.decorateRequest("userId", "");
@@ -436,6 +455,10 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     if (request.method === "POST" && (path === "/waitlist" || path === "/early-access")) return;
     if (request.method === "POST" && path === "/webhooks/clerk") return;
     if (request.method === "POST" && path === "/webhooks/stripe") return;
+
+    // OAuth + MCP paths are handled by the MCP server's own auth middleware via proxy
+    if (path.startsWith("/.well-known/oauth-")) return;
+    if (["/authorize", "/token", "/register", "/mcp"].includes(path)) return;
 
     const header = request.headers.authorization;
 

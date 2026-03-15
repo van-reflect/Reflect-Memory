@@ -366,6 +366,18 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(ciTrashMigration
   );
 }
 
+// Migration: create OAuth tables for MCP native connector
+import { createOAuthTables } from "./oauth-store.js";
+const oauthMigrationName = "012_oauth_tables";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(oauthMigrationName)) {
+  createOAuthTables(db);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    oauthMigrationName,
+    new Date().toISOString(),
+  );
+  console.log("[migration] Created OAuth tables for MCP connector");
+}
+
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 
 let userId: string;
@@ -492,7 +504,8 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
 
   // Start MCP server when any agent key is configured (multi-vendor)
   if (validVendors.length > 0 && mcpPort != null) {
-    startMcpServer({ db, userId, agentKeys }, mcpPort);
+    const mcpPublicUrl = optionalEnv("RM_PUBLIC_URL", "");
+    startMcpServer({ db, userId, agentKeys, publicUrl: mcpPublicUrl || undefined }, mcpPort);
   }
 });
 

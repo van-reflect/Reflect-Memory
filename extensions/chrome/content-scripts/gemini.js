@@ -12,7 +12,10 @@
     getInputElement() {
       return document.querySelector(
         ".ql-editor[contenteditable='true'], " +
-        "div[contenteditable='true'][aria-label*='prompt'], " +
+        "div[contenteditable='true'][aria-label*='prompt' i], " +
+        "div[contenteditable='true'][aria-label*='Enter' i], " +
+        "div.input-area [contenteditable='true'], " +
+        "rich-textarea [contenteditable='true'], " +
         "div[contenteditable='true'][data-placeholder]"
       );
     },
@@ -51,16 +54,20 @@
     },
 
     isNewConversation() {
+      const path = window.location.pathname;
+      if (path === "/app" || path === "/" || path.endsWith("/new")) return true;
       return this.getMessages().length === 0;
     },
 
     triggerSend() {
       const btn = document.querySelector(
         "button[aria-label='Send message'], " +
+        "button[aria-label*='Send' i], " +
         "button.send-button, " +
-        "[data-test-id='send-button']"
+        "[data-test-id='send-button'], " +
+        "button[mattooltip*='Send' i]"
       );
-      if (btn) {
+      if (btn && !btn.disabled) {
         btn.click();
         return;
       }

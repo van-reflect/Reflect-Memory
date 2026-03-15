@@ -108,21 +108,15 @@
     triggerSend() {
       const sendBtn = document.querySelector("button[aria-label*='Send' i]");
       if (sendBtn && !sendBtn.disabled) {
-        log("triggerSend: clicking send button");
         sendBtn.click();
         return;
       }
-
-      log("triggerSend: send button not found or disabled, retrying in 500ms...");
-      setTimeout(() => {
-        const retry = document.querySelector("button[aria-label*='Send' i]");
-        if (retry && !retry.disabled) {
-          log("triggerSend: retry found send button");
-          retry.click();
-        } else {
-          log("triggerSend: still no send button. User must press Enter.");
-        }
-      }, 500);
+      const el = this.getInputElement();
+      if (el) {
+        el.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", code: "Enter", keyCode: 13, bubbles: true,
+        }));
+      }
     },
 
     hideLastExchange() {
