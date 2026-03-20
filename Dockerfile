@@ -21,7 +21,6 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/schema.sql ./schema.sql
 COPY --from=build /app/openapi-agent.yaml ./openapi-agent.yaml
-RUN mkdir -p /data && chown -R node:node /app /data
-USER node
+RUN mkdir -p /data
 EXPOSE 3000
 CMD ["node", "dist/index.js"]
