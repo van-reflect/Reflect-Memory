@@ -1,0 +1,42 @@
+replicaCount: 1
+
+image:
+  repository: reflect-memory
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 3000
+
+deployment:
+  mode: self-host
+  tenantId: tenant-a
+  disableModelEgress: true
+  requireInternalModelBaseUrl: true
+  allowPublicWebhooks: false
+  allowedModelHosts: []
+
+secrets:
+  apiKey: ""
+  modelName: "gpt-4o-mini"
+  modelApiKey: ""
+  modelBaseUrl: "https://api.openai.com/v1"
+  dashboardServiceKey: ""
+  dashboardJwtSecret: ""
+  ownerEmail: ""
+  ssoEnabled: "false"
+  ssoJwksUrl: ""
+  ssoIssuer: ""
+  ssoAudience: ""
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClassName: ""
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

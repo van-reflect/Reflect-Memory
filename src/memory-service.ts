@@ -37,6 +37,7 @@ export type MemoryFilter =
   | { by: "tags"; tags: string[] }
   | { by: "ids"; ids: string[] }
   | { by: "search"; term: string }
+  | { by: "origin"; origin: string }
   | { by: "trashed" };
 
 export interface MemorySummary {
@@ -353,6 +354,19 @@ export function listMemories(
       return rows.map(rowToMemory);
     }
 
+    case "origin": {
+      if (!filter.origin.trim()) return [];
+      const rows = db
+        .prepare(
+          `SELECT ${COLUMNS_ALIASED}
+           FROM memories m
+           WHERE m.user_id = ? AND m.origin = ? ${vendorClause} ${deletedClause}
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
+        )
+        .all(userId, filter.origin, ...vendorParams, ...pagParams) as MemoryRow[];
+      return rows.map(rowToMemory);
+    }
+
     default: {
       const _exhaustive: never = filter;
       throw new Error(`Unhandled filter type: ${(_exhaustive as { by: string }).by}`);
@@ -428,6 +442,17 @@ export function countMemories(
            WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}`,
         )
         .get(userId, likeTerm, likeTerm, ...vendorParams) as { count: number };
+      return row.count;
+    }
+
+    case "origin": {
+      if (!filter.origin.trim()) return 0;
+      const row = db
+        .prepare(
+          `SELECT COUNT(*) as count FROM memories m
+           WHERE m.user_id = ? AND m.origin = ? ${vendorClause} ${deletedClause}`,
+        )
+        .get(userId, filter.origin, ...vendorParams) as { count: number };
       return row.count;
     }
 
@@ -527,6 +552,19 @@ export function listMemorySummaries(
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
         .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as SummaryRow[];
+      return rows.map(rowToSummary);
+    }
+
+    case "origin": {
+      if (!filter.origin.trim()) return [];
+      const rows = db
+        .prepare(
+          `SELECT ${SUMMARY_COLUMNS_ALIASED}
+           FROM memories m
+           WHERE m.user_id = ? AND m.origin = ? ${vendorClause} ${deletedClause}
+           ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
+        )
+        .all(userId, filter.origin, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
     }
 

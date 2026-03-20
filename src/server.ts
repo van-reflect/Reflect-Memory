@@ -14,6 +14,9 @@ import { fileURLToPath } from "node:url";
 import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
 import { findOrCreateUserByEmail } from "./user-service.js";
+import type { DeploymentConfig } from "./deployment-config.js";
+import { createSsoVerifier, validateSsoConfig } from "./sso-auth.js";
+import { recordAuditEvent, queryAuditEvents, countAuditEvents, exportAuditEvents } from "./audit-service.js";
 import {
   generateApiKey,
   listApiKeys,
@@ -73,7 +76,7 @@ declare module "fastify" {
     userId: string;
     role: "user" | "agent";
     vendor: string | null;
-    authMethod: "dashboard" | "api_key" | "agent_key";
+    authMethod: "dashboard" | "api_key" | "agent_key" | "sso";
   }
 }
 
@@ -119,6 +122,7 @@ export interface ServerConfig {
   dashboardServiceKey: string | null;
   dashboardJwtSecret: string | null;
   mcpPort: number | null;
+  deployment: DeploymentConfig;
 }
 
 // =============================================================================
@@ -278,6 +282,15 @@ const memoryFilterSchema = {
     },
     {
       type: "object" as const,
+      required: ["by", "origin"],
+      additionalProperties: false,
+      properties: {
+        by: { type: "string" as const, const: "origin" },
+        origin: { type: "string" as const, minLength: 1, maxLength: 50 },
+      },
+    },
+    {
+      type: "object" as const,
       required: ["by"],
       additionalProperties: false,
       properties: {
@@ -358,6 +371,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     dashboardServiceKey,
     dashboardJwtSecret,
     mcpPort,
+    deployment,
   } = config;
 
   const server = Fastify({
@@ -429,6 +443,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   server.decorateRequest("userId", "");
   server.decorateRequest("role", "user");
   server.decorateRequest("vendor", null);
+  server.decorateRequest("authMethod", "api_key");
+
+  const verifySsoToken = createSsoVerifier(deployment.sso);
+
+  const ssoWarnings = validateSsoConfig(deployment.sso);
+  for (const w of ssoWarnings) {
+    console.warn(`[SSO] ${w}`);
+  }
 
   // ===========================================================================
   // Auth hook
@@ -438,34 +460,61 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // Enforces route restrictions: agents can only hit /agent/*, /query, /whoami, /health.
   // ===========================================================================
 
-  function logSecurity(event: string, request: { ip: string; url: string; method: string }, extra?: Record<string, unknown>) {
+  function logSecurity(
+    event: string,
+    request: { ip: string; url: string; method: string; headers?: Record<string, unknown>; userId?: string },
+    extra?: Record<string, unknown>,
+  ) {
+    const requestIdHeader = request.headers?.["x-request-id"];
+    const requestId =
+      typeof requestIdHeader === "string" && requestIdHeader.trim().length > 0
+        ? requestIdHeader.trim()
+        : null;
     const entry = {
       event,
       ip: request.ip,
       method: request.method,
       path: request.url.split("?")[0],
+      request_id: requestId,
       time: new Date().toISOString(),
       ...extra,
     };
     console.log(`[security] ${JSON.stringify(entry)}`);
+    try {
+      recordAuditEvent(db, {
+        userId: request.userId ?? null,
+        eventType: `security.${event}`,
+        severity: "warn",
+        authMethod: extra?.auth_method as string | undefined,
+        path: entry.path,
+        statusCode: typeof extra?.status_code === "number" ? (extra.status_code as number) : null,
+        ip: request.ip,
+        requestId,
+        metadata: extra ?? null,
+      });
+    } catch {
+      // Never block request path on audit write failure.
+    }
   }
 
   server.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?")[0];
     if (path === "/health" || path === "/openapi.json") return;
     if (request.method === "POST" && (path === "/waitlist" || path === "/early-access" || path === "/integration-requests")) return;
-    if (request.method === "POST" && path === "/webhooks/clerk") return;
-    if (request.method === "POST" && path === "/webhooks/stripe") return;
+    if (deployment.allowPublicWebhooks && request.method === "POST" && path === "/webhooks/clerk") return;
+    if (deployment.allowPublicWebhooks && request.method === "POST" && path === "/webhooks/stripe") return;
 
     // OAuth + MCP paths are handled by the MCP server's own auth middleware via proxy
     if (path.startsWith("/.well-known/oauth-")) return;
     if (path.startsWith("/oauth/")) return;
-    if (["/authorize", "/token", "/register", "/mcp"].includes(path)) return;
+    if (path === "/authorize" || path === "/token" || path === "/register" || path.startsWith("/mcp")) {
+      return;
+    }
 
     const header = request.headers.authorization;
 
     if (!header || !header.startsWith("Bearer ")) {
-      logSecurity("auth_missing", request);
+      logSecurity("auth_missing", request, { status_code: 401 });
       return reply.code(401).send({
         error: "Missing or malformed Authorization header. Expected: Bearer <api_key>",
       });
@@ -473,7 +522,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
     const token = header.slice("Bearer ".length);
     if (token.length === 0) {
-      logSecurity("auth_empty", request);
+      logSecurity("auth_empty", request, { status_code: 401 });
       return reply.code(401).send({ error: "Empty API key" });
     }
 
@@ -485,7 +534,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     ) {
       const dashboardToken = request.headers["x-dashboard-token"];
       if (typeof dashboardToken !== "string" || !dashboardToken) {
-        logSecurity("dashboard_token_missing", request);
+        logSecurity("dashboard_token_missing", request, { status_code: 401, auth_method: "dashboard" });
         return reply.code(401).send({
           error: "Dashboard auth requires X-Dashboard-Token header",
         });
@@ -498,7 +547,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         });
         const email = payload.email;
         if (typeof email !== "string" || !email) {
-          logSecurity("dashboard_token_invalid", request);
+          logSecurity("dashboard_token_invalid", request, { status_code: 401, auth_method: "dashboard" });
           return reply.code(401).send({ error: "Invalid dashboard token" });
         }
         request.userId = findOrCreateUserByEmail(db, email);
@@ -507,8 +556,25 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         request.authMethod = "dashboard";
         return;
       } catch {
-        logSecurity("dashboard_token_expired", request);
+        logSecurity("dashboard_token_expired", request, { status_code: 401, auth_method: "dashboard" });
         return reply.code(401).send({ error: "Invalid or expired dashboard token" });
+      }
+    }
+
+    if (deployment.sso.enabled && token.includes(".") && token.split(".").length === 3) {
+      const ssoResult = await verifySsoToken(token);
+      if (ssoResult.identity) {
+        request.userId = findOrCreateUserByEmail(db, ssoResult.identity.email);
+        request.role = "user";
+        request.vendor = null;
+        request.authMethod = "sso";
+        return;
+      }
+      if (ssoResult.failureReason && ssoResult.failureReason !== "disabled" && ssoResult.failureReason !== "invalid_token") {
+        logSecurity("sso_auth_failure", request, {
+          reason: ssoResult.failureReason,
+          auth_method: "sso",
+        });
       }
     }
 
@@ -537,7 +603,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           path.startsWith("/agent/") ||
           (config.mcpPort != null && path.startsWith("/mcp"));
         if (!allowed) {
-          logSecurity("agent_route_forbidden", request, { vendor, path });
+          logSecurity("agent_route_forbidden", request, {
+            vendor,
+            path,
+            status_code: 403,
+            auth_method: "agent_key",
+          });
           return reply.code(403).send({
             error: "Agent keys cannot access this endpoint",
           });
@@ -557,7 +628,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       return;
     }
 
-    logSecurity("auth_invalid_key", request);
+    logSecurity("auth_invalid_key", request, { status_code: 401 });
     return reply.code(401).send({ error: "Invalid API key" });
   });
 
@@ -574,6 +645,16 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   server.addHook("preHandler", async (request, reply) => {
     if (!request.userId) return;
     const path = request.url.split("?")[0];
+    if (
+      deployment.disableModelEgress &&
+      request.method === "POST" &&
+      (path === "/query" || path === "/chat")
+    ) {
+      return reply.code(503).send({
+        error: "Model egress disabled by deployment policy",
+        mode: deployment.mode,
+      });
+    }
     if (request.method !== "POST") return;
 
     const isWrite = WRITE_ROUTES.has(path);
@@ -646,6 +727,50 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     }
   });
 
+  const SENSITIVE_AUDIT_PATHS = new Set([
+    "/memories",
+    "/agent/memories",
+    "/api/keys",
+    "/api/keys/revoke",
+    "/api/auth/logout",
+    "/webhooks/stripe",
+    "/webhooks/clerk",
+  ]);
+
+  server.addHook("onResponse", async (request, reply) => {
+    if (!request.userId) return;
+    const path = request.url.split("?")[0];
+    const isSensitive =
+      SENSITIVE_AUDIT_PATHS.has(path) ||
+      path.startsWith("/admin/") ||
+      path.startsWith("/oauth/");
+    if (!isSensitive) return;
+    try {
+      const requestIdHeader = request.headers["x-request-id"];
+      const requestId =
+        typeof requestIdHeader === "string" && requestIdHeader.trim().length > 0
+          ? requestIdHeader.trim()
+          : null;
+      recordAuditEvent(db, {
+        userId: request.userId,
+        eventType: "sensitive.route_access",
+        severity: reply.statusCode >= 400 ? "warn" : "info",
+        authMethod: request.authMethod,
+        vendor: request.vendor,
+        path,
+        statusCode: reply.statusCode,
+        ip: request.ip,
+        requestId,
+        metadata: {
+          method: request.method,
+          deployment_mode: deployment.mode,
+        },
+      });
+    } catch {
+      // Do not fail request completion on audit write failures.
+    }
+  });
+
   // ===========================================================================
   // GET /health -- Public health check
   // ===========================================================================
@@ -656,6 +781,10 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       service: "reflect-memory",
       status: "ok",
       uptime_seconds: uptimeSeconds,
+      deployment_mode: deployment.mode,
+      network_boundary: deployment.networkBoundary,
+      model_egress: deployment.disableModelEgress ? "disabled" : "enabled",
+      public_webhooks: deployment.allowPublicWebhooks,
     };
   });
 
@@ -824,6 +953,54 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
+  // GET /admin/audit -- Query audit events (owner-only)
+  // ===========================================================================
+
+  server.get("/admin/audit", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (request.userId !== userId) {
+      reply.code(403);
+      return { error: "Admin access restricted to owner" };
+    }
+    const q = request.query as Record<string, string | undefined>;
+    const events = queryAuditEvents(db, {
+      eventType: q.event_type,
+      userId: q.user_id,
+      severity: q.severity as "info" | "warn" | "error" | undefined,
+      since: q.since,
+      until: q.until,
+      limit: q.limit ? parseInt(q.limit, 10) : 100,
+      offset: q.offset ? parseInt(q.offset, 10) : 0,
+    });
+    const total = countAuditEvents(db, {
+      eventType: q.event_type,
+      userId: q.user_id,
+      severity: q.severity as "info" | "warn" | "error" | undefined,
+      since: q.since,
+      until: q.until,
+    });
+    return { events, total, limit: events.length, offset: q.offset ? parseInt(q.offset, 10) : 0 };
+  });
+
+  // ===========================================================================
+  // GET /admin/audit/export -- Export audit events for compliance (owner-only)
+  // ===========================================================================
+
+  server.get("/admin/audit/export", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
+    if (request.userId !== userId) {
+      reply.code(403);
+      return { error: "Admin access restricted to owner" };
+    }
+    const q = request.query as Record<string, string | undefined>;
+    if (!q.since || !q.until) {
+      reply.code(400);
+      return { error: "since and until query parameters are required (ISO 8601)" };
+    }
+    const events = exportAuditEvents(db, q.since, q.until);
+    reply.header("content-disposition", `attachment; filename="audit-${q.since}-${q.until}.json"`);
+    return { events, count: events.length, exported_at: new Date().toISOString() };
+  });
+
+  // ===========================================================================
   // POST /memories -- Create a memory (user path)
   // ===========================================================================
   // allowed_vendors is optional. Defaults to ["*"] server-side.
@@ -932,8 +1109,19 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
   server.get("/agent/memories/latest", async (request, reply) => {
     const vendorFilter = request.vendor;
-    const tag = (request.query as { tag?: string }).tag?.trim();
-    const filter = tag ? { by: "tags" as const, tags: [tag] } : { by: "all" as const };
+    const query = request.query as { tag?: string; origin?: string };
+    const tag = query.tag?.trim();
+    const originParam = query.origin?.trim();
+
+    let filter: MemoryFilter;
+    if (tag) {
+      filter = { by: "tags" as const, tags: [tag] };
+    } else if (originParam) {
+      filter = { by: "origin" as const, origin: originParam };
+    } else {
+      filter = { by: "all" as const };
+    }
+
     const memories = listMemories(
       db,
       request.userId,
@@ -944,7 +1132,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     const memory = memories[0] ?? null;
     if (!memory) {
       reply.code(404);
-      return { error: tag ? `No memories found with tag "${tag}"` : "No memories found" };
+      const desc = tag ? `tag "${tag}"` : originParam ? `origin "${originParam}"` : "";
+      return { error: desc ? `No memories found with ${desc}` : "No memories found" };
     }
     return memory;
   });

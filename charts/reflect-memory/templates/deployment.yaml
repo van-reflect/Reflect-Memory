@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "reflect-memory.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "reflect-memory.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "reflect-memory.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "reflect-memory.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: reflect-memory
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: RM_PORT
+              value: "3000"
+            - name: RM_DB_PATH
+              value: "/data/reflect-memory.db"
+            - name: RM_DEPLOYMENT_MODE
+              value: {{ .Values.deployment.mode | quote }}
+            - name: RM_TENANT_ID
+              value: {{ .Values.deployment.tenantId | quote }}
+            - name: RM_DISABLE_MODEL_EGRESS
+              value: {{ .Values.deployment.disableModelEgress | quote }}
+            - name: RM_REQUIRE_INTERNAL_MODEL_BASE_URL
+              value: {{ .Values.deployment.requireInternalModelBaseUrl | quote }}
+            - name: RM_ALLOW_PUBLIC_WEBHOOKS
+              value: {{ .Values.deployment.allowPublicWebhooks | quote }}
+            - name: RM_ALLOWED_MODEL_HOSTS
+              value: {{ join "," .Values.deployment.allowedModelHosts | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ include "reflect-memory.fullname" . }}-env
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "reflect-memory.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}

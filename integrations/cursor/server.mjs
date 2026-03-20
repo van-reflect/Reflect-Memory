@@ -62,13 +62,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "get_latest_memory",
       description:
-        "Get the most recent memory from Reflect Memory. Supports optional tag filter (e.g. project_state, council). Use for 'pull latest', 'what's the latest memory', 'get latest from ChatGPT' (origin is set server-side).",
+        "Get the most recent memory. Supports optional tag or origin filter. Use for 'pull latest', 'latest memory', 'pull from ChatGPT', 'latest from Cursor'. When user says 'from [tool]', set origin to that tool name (chatgpt, cursor, claude, etc.).",
       inputSchema: {
         type: "object",
         properties: {
           tag: {
             type: "string",
-            description: "Optional filter by tag (e.g. project_state, council). Leave empty for latest overall.",
+            description: "Optional filter by tag (e.g. project_state, council).",
+          },
+          origin: {
+            type: "string",
+            description: "Optional filter by origin tool (e.g. chatgpt, cursor, claude, user, dashboard).",
           },
         },
       },
@@ -90,14 +94,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "browse_memories",
       description:
-        "Browse memory summaries (title, tags, origin, date) without full content. Use for 'list all memories', 'what memories do I have', discovery. Supports pagination and search.",
+        "Browse memory summaries (title, tags, origin, date) without full content. Use for 'list memories', 'what memories do I have', discovery. Supports filtering by origin (e.g. 'memories from Cursor').",
       inputSchema: {
         type: "object",
         properties: {
           filter: {
             type: "string",
-            enum: ["all", "tags", "search"],
-            description: "all=all memories, tags=filter by tags, search=text search",
+            enum: ["all", "tags", "search", "origin"],
+            description: "all=all memories, tags=filter by tags, search=text search, origin=filter by source tool",
           },
           tags: {
             type: "array",
@@ -107,6 +111,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           term: {
             type: "string",
             description: "Required if filter=search. Search term for title/content.",
+          },
+          origin: {
+            type: "string",
+            description: "Required if filter=origin. Source tool name (e.g. chatgpt, cursor, claude, user, dashboard).",
           },
           limit: {
             type: "number",
@@ -178,8 +186,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "get_latest_memory": {
-        const tag = args?.tag ? `?tag=${encodeURIComponent(args.tag)}` : "";
-        const data = await fetchApi(`/agent/memories/latest${tag}`);
+        const params = new URLSearchParams();
+        if (args?.tag) params.set("tag", args.tag);
+        if (args?.origin) params.set("origin", args.origin);
+        const qs = params.toString() ? `?${params.toString()}` : "";
+        const data = await fetchApi(`/agent/memories/latest${qs}`);
         return {
           content: [
             {
@@ -211,6 +222,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           filter.tags = args.tags;
         } else if (filterType === "search" && args?.term) {
           filter = { by: "search", term: args.term };
+        } else if (filterType === "origin" && args?.origin) {
+          filter = { by: "origin", origin: args.origin };
         }
         const limit = args?.limit ?? 50;
         const data = await fetchApi("/agent/memories/browse", {

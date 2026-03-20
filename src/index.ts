@@ -9,7 +9,7 @@ import "dotenv/config";
 
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type ServerConfig } from "./server.js";
@@ -17,6 +17,14 @@ import type { ModelGatewayConfig } from "./model-gateway.js";
 import type { ProviderConfig } from "./chat-gateway.js";
 import { isBackupConfigured, runBackup } from "./backup.js";
 import { startMcpServer } from "./mcp-server.js";
+import {
+  resolveDeploymentConfig,
+  validateDeploymentConfig,
+  enforceModelHostPolicy,
+  freezeDeploymentConfig,
+} from "./deployment-config.js";
+import { createAuditTables, pruneAuditEvents } from "./audit-service.js";
+import { runMigrationWithHooks } from "./migration-hooks.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -33,14 +41,35 @@ function optionalEnv(name: string, fallback: string): string {
   return value.trim();
 }
 
+function isPublicModelHost(urlValue: string): boolean {
+  try {
+    const host = new URL(urlValue).hostname.toLowerCase();
+    return [
+      "api.openai.com",
+      "api.anthropic.com",
+      "api.perplexity.ai",
+      "api.x.ai",
+      "generativelanguage.googleapis.com",
+    ].includes(host);
+  } catch {
+    return false;
+  }
+}
+
 const PORT = parseInt(optionalEnv("RM_PORT", optionalEnv("PORT", "3000")), 10);
 const DB_PATH = optionalEnv("RM_DB_PATH", "/data/reflect-memory.db");
 const API_KEY = requireEnv("RM_API_KEY");
+const deployment = freezeDeploymentConfig(resolveDeploymentConfig(process.env));
+validateDeploymentConfig(deployment);
 
 const modelGateway: ModelGatewayConfig = {
   provider: "openai",
-  model: requireEnv("RM_MODEL_NAME"),
-  apiKey: requireEnv("RM_MODEL_API_KEY"),
+  model: deployment.disableModelEgress
+    ? optionalEnv("RM_MODEL_NAME", "disabled")
+    : requireEnv("RM_MODEL_NAME"),
+  apiKey: deployment.disableModelEgress
+    ? optionalEnv("RM_MODEL_API_KEY", "")
+    : requireEnv("RM_MODEL_API_KEY"),
   baseUrl: optionalEnv("RM_MODEL_BASE_URL", "https://api.openai.com/v1"),
   parameters: {
     temperature: parseFloat(optionalEnv("RM_MODEL_TEMPERATURE", "0.7")),
@@ -69,7 +98,9 @@ for (const [key, value] of Object.entries(process.env)) {
 const validVendors = Object.keys(agentKeys);
 
 const chatProviders: ProviderConfig = {
-  openaiKey: optionalEnv("RM_CHAT_OPENAI_KEY", modelGateway.apiKey),
+  openaiKey: deployment.disableModelEgress
+    ? optionalEnv("RM_CHAT_OPENAI_KEY", "")
+    : optionalEnv("RM_CHAT_OPENAI_KEY", modelGateway.apiKey),
   openaiBaseUrl: optionalEnv("RM_CHAT_OPENAI_BASE_URL", "https://api.openai.com/v1"),
   anthropicKey: optionalEnv("RM_CHAT_ANTHROPIC_KEY", ""),
   googleKey: optionalEnv("RM_CHAT_GOOGLE_KEY", ""),
@@ -77,8 +108,47 @@ const chatProviders: ProviderConfig = {
   xaiKey: optionalEnv("RM_CHAT_XAI_KEY", ""),
 };
 
+enforceModelHostPolicy(modelGateway.baseUrl, deployment, "RM_MODEL_BASE_URL");
+if (chatProviders.openaiBaseUrl) {
+  enforceModelHostPolicy(
+    chatProviders.openaiBaseUrl,
+    deployment,
+    "RM_CHAT_OPENAI_BASE_URL",
+  );
+}
+if (
+  deployment.requireInternalModelBaseUrl &&
+  (isPublicModelHost(modelGateway.baseUrl) ||
+    (chatProviders.openaiBaseUrl
+      ? isPublicModelHost(chatProviders.openaiBaseUrl)
+      : false))
+) {
+  console.error(
+    "Deployment policy violation: RM_REQUIRE_INTERNAL_MODEL_BASE_URL is enabled but a public model host is configured.",
+  );
+  process.exit(1);
+}
+
 const dashboardServiceKey = optionalEnv("RM_DASHBOARD_SERVICE_KEY", "");
 const dashboardJwtSecret = optionalEnv("RM_DASHBOARD_JWT_SECRET", "");
+
+if (deployment.tenantId) {
+  const dataDir = dirname(DB_PATH);
+  const markerPath = resolve(dataDir, ".tenant_id");
+  if (existsSync(markerPath)) {
+    const existing = readFileSync(markerPath, "utf-8").trim();
+    if (existing !== deployment.tenantId) {
+      console.error(
+        `[SECURITY] Tenant ID mismatch: data directory belongs to "${existing}" but config says "${deployment.tenantId}". ` +
+        `This prevents accidental cross-tenant data access. Aborting.`,
+      );
+      process.exit(1);
+    }
+  } else {
+    writeFileSync(markerPath, deployment.tenantId, "utf-8");
+    console.log(`[tenant] Wrote tenant marker: ${deployment.tenantId}`);
+  }
+}
 
 const db = new Database(DB_PATH);
 
@@ -424,6 +494,14 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(integrationReqMi
   console.log("[migration] Created integration_requests table");
 }
 
+const auditEventsMigration = "015_audit_events";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(auditEventsMigration)) {
+  runMigrationWithHooks(db, auditEventsMigration, () => {
+    createAuditTables(db);
+  });
+  console.log("[migration] Created audit_events table");
+}
+
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 
 let userId: string;
@@ -474,10 +552,11 @@ if (ownerEmail) {
         .all(userId) as { id: string }[];
 
       for (const orphan of orphans) {
-        db.prepare(`UPDATE memories SET user_id = ? WHERE user_id = ?`).run(
-          userId,
-          orphan.id,
-        );
+        db.prepare(`UPDATE memories SET user_id = ? WHERE user_id = ?`).run(userId, orphan.id);
+        db.prepare(`UPDATE memory_versions SET user_id = ? WHERE user_id = ?`).run(userId, orphan.id);
+        db.prepare(`UPDATE usage_events SET user_id = ? WHERE user_id = ?`).run(userId, orphan.id);
+        db.prepare(`UPDATE monthly_usage SET user_id = ? WHERE user_id = ?`).run(userId, orphan.id);
+        db.prepare(`DELETE FROM api_keys WHERE user_id = ?`).run(orphan.id);
         db.prepare(`DELETE FROM users WHERE id = ?`).run(orphan.id);
       }
 
@@ -528,6 +607,7 @@ const config: ServerConfig = {
   dashboardServiceKey: dashboardServiceKey || null,
   dashboardJwtSecret: dashboardJwtSecret || null,
   mcpPort,
+  deployment,
 };
 
 const server = await createServer(config);
@@ -543,9 +623,22 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   console.log(`Model: ${modelGateway.provider}/${modelGateway.model}`);
   console.log(`Agent vendors: ${validVendors.length > 0 ? validVendors.join(", ") : "(none configured)"}`);
   console.log(`Chat providers: ${chatProviderNames.length > 0 ? chatProviderNames.join(", ") : "(none configured)"}`);
+  console.log(`Deployment mode: ${deployment.mode} (${deployment.networkBoundary})`);
+  console.log(`Model egress: ${deployment.disableModelEgress ? "disabled" : "enabled"}`);
+  if (deployment.mode === "self-host" && !deployment.disableModelEgress) {
+    console.warn("[SECURITY WARNING] Model egress is ENABLED in self-host mode. Data may leave the network.");
+  }
+  if (deployment.mode === "self-host" && deployment.allowPublicWebhooks) {
+    console.warn("[SECURITY WARNING] Public webhooks are ENABLED in self-host mode.");
+  }
   if (isBackupConfigured()) {
     console.log("Backup: configured (daily at 06:00 UTC)");
     scheduleDailyBackup();
+  }
+
+  const auditRetentionDays = parseInt(optionalEnv("RM_AUDIT_RETENTION_DAYS", "90"), 10);
+  if (auditRetentionDays > 0) {
+    scheduleAuditPruning(auditRetentionDays);
   }
 
   // Start MCP server when any agent key is configured (multi-vendor)
@@ -576,6 +669,22 @@ function scheduleDailyBackup() {
       .finally(() => setTimeout(doBackup, msUntil6UTC()));
   }
   setTimeout(doBackup, msUntil6UTC());
+}
+
+function scheduleAuditPruning(retentionDays: number) {
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  function doPrune() {
+    try {
+      const deleted = pruneAuditEvents(db, retentionDays);
+      if (deleted > 0) {
+        console.log(`[audit] Pruned ${deleted} events older than ${retentionDays} days`);
+      }
+    } catch (e) {
+      console.error("[audit] Pruning failed:", e);
+    }
+    setTimeout(doPrune, MS_PER_DAY);
+  }
+  setTimeout(doPrune, 60_000);
 }
 
 function shutdown(signal: string) {

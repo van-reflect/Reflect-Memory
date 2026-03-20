@@ -22,12 +22,16 @@ Combine both sources to form a rich, personalized picture of where the user is a
 
 Use the right endpoint for the right task:
 
-- **Most recent memory (chronological):** Use `getLatestMemory`. This returns the single newest memory by `created_at`. Add `?tag=project_state` to get the latest with that tag.
+- **Most recent memory (chronological):** Use `getLatestMemory`. This returns the single newest memory by `created_at`. Add `?tag=project_state` to get the latest with that tag. Add `?origin=cursor` (or chatgpt, claude, etc.) to get the latest from a specific tool.
+- **"Pull memory from [tool]" or "from Cursor/Claude/etc.":** Use `getLatestMemory` with `?origin=<tool>`. The origin value matches the tool name in lowercase: `cursor`, `chatgpt`, `claude`, `user`, `dashboard`.
+- **Browse memories from a specific tool:** Use `browseMemories` with `filter: {"by":"origin","origin":"cursor"}` (or chatgpt, claude, etc.).
 - **Discover what memories exist:** Use `browseMemories` with `filter: {"by":"all"}` (lightweight, no content). Then use `getMemoryById` to fetch full content for specific IDs.
 - **Full memories by topic:** Use `getMemoriesByTag` with the relevant tags.
 - **AI-summarized answer grounded in memories:** Use `queryMemory`. This passes memories to an AI model and returns a summary. It does NOT return raw memory data.
 
-IMPORTANT: Never use `queryMemory` when the user asks for "the latest memory" or "most recent update." Use `getLatestMemory` instead. `queryMemory` is an AI summarization layer that may not surface the chronologically newest entry.
+IMPORTANT: Never use `queryMemory` when the user asks for "the latest memory", "most recent update", or "pull memory from [tool]." Use `getLatestMemory` instead. `queryMemory` is an AI summarization layer that may not surface the chronologically newest entry.
+
+IMPORTANT: When the user mentions a tool name (Cursor, Claude, ChatGPT, etc.) in the context of pulling or reading memory, ALWAYS pass it as the `origin` parameter. Do not ignore it.
 
 ## Writing Memories
 
@@ -52,10 +56,11 @@ Do NOT dump ChatGPT's entire memory into every entry. Only include what is genui
 ## Reading Prior Context
 
 When the user asks about prior context or project state:
-1. First try `getLatestMemory` (optionally with `?tag=project_state`)
-2. If you need broader context, use `browseMemories` with `filter: {"by":"tags","tags":["project_state"]}` to see what's available
-3. Use `getMemoryById` to fetch full content of specific memories
-4. Only use `queryMemory` when you need an AI-synthesized answer across multiple memories
+1. First try `getLatestMemory` (optionally with `?tag=project_state` or `?origin=<tool>` if they mention a specific tool)
+2. If the user says "from Cursor" / "from Claude" / "from [tool]", use `?origin=<tool>` on `getLatestMemory` or `browseMemories` with `filter: {"by":"origin","origin":"<tool>"}`
+3. If you need broader context, use `browseMemories` with `filter: {"by":"tags","tags":["project_state"]}` to see what's available
+4. Use `getMemoryById` to fetch full content of specific memories
+5. Only use `queryMemory` when you need an AI-synthesized answer across multiple memories
 
 Combine what Reflect Memory returns with what you already know from ChatGPT's memory to give the most complete answer possible. If the two sources conflict, mention the discrepancy to the user so they can clarify.
 
