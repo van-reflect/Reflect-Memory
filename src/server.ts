@@ -945,15 +945,87 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         ? Math.round((totalMemories / usersWithMemories) * 10) / 10
         : 0;
 
+    const usersByPlan = db
+      .prepare(`SELECT plan, count(*) as n FROM users GROUP BY plan`)
+      .all() as { plan: string; n: number }[];
+
+    const usersByRole = db
+      .prepare(`SELECT role, count(*) as n FROM users GROUP BY role`)
+      .all() as { role: string; n: number }[];
+
+    const paidUsers = (
+      db.prepare(`SELECT count(*) as n FROM users WHERE plan != 'free' AND plan != 'admin'`).get() as { n: number }
+    ).n;
+
+    const usersWithStripe = (
+      db.prepare(`SELECT count(*) as n FROM users WHERE stripe_customer_id IS NOT NULL`).get() as { n: number }
+    ).n;
+
+    const month = new Date().toISOString().slice(0, 7);
+    const prevMonth = (() => {
+      const d = new Date();
+      d.setMonth(d.getMonth() - 1);
+      return d.toISOString().slice(0, 7);
+    })();
+
+    const monthlyAgg = db
+      .prepare(`SELECT SUM(writes) as w, SUM(reads) as r, SUM(queries) as q, SUM(total_ops) as ops FROM monthly_usage WHERE month = ?`)
+      .get(month) as { w: number | null; r: number | null; q: number | null; ops: number | null } | undefined;
+
+    const prevMonthAgg = db
+      .prepare(`SELECT SUM(writes) as w, SUM(reads) as r, SUM(queries) as q, SUM(total_ops) as ops FROM monthly_usage WHERE month = ?`)
+      .get(prevMonth) as { w: number | null; r: number | null; q: number | null; ops: number | null } | undefined;
+
+    const activeUsersThisMonth = (
+      db.prepare(`SELECT count(DISTINCT user_id) as n FROM monthly_usage WHERE month = ? AND total_ops > 0`).get(month) as { n: number }
+    ).n;
+
+    const topUsers = db
+      .prepare(`
+        SELECT u.email, u.plan, u.role, u.created_at,
+               (SELECT count(*) FROM memories m WHERE m.user_id = u.id AND m.deleted_at IS NULL) as memory_count,
+               COALESCE(mu.writes, 0) as writes_this_month,
+               COALESCE(mu.reads, 0) as reads_this_month,
+               COALESCE(mu.total_ops, 0) as ops_this_month
+        FROM users u
+        LEFT JOIN monthly_usage mu ON mu.user_id = u.id AND mu.month = ?
+        ORDER BY ops_this_month DESC
+        LIMIT 20
+      `)
+      .all(month) as {
+        email: string; plan: string; role: string; created_at: string;
+        memory_count: number; writes_this_month: number; reads_this_month: number; ops_this_month: number;
+      }[];
+
+    const totalApiKeys = (
+      db.prepare(`SELECT count(*) as n FROM api_keys WHERE revoked_at IS NULL`).get() as { n: number }
+    ).n;
+
+    const deletedMemories = (
+      db.prepare(`SELECT count(*) as n FROM memories WHERE deleted_at IS NOT NULL`).get() as { n: number }
+    ).n;
+
+    const conversionRate = totalUsers > 0
+      ? Math.round((paidUsers / totalUsers) * 10000) / 100
+      : 0;
+
+    const mrr = paidUsers * 20;
+
     return {
       users: {
         total: totalUsers,
         new_7d: newUsers7d,
         new_30d: newUsers30d,
         with_memories: usersWithMemories,
+        by_plan: Object.fromEntries(usersByPlan.map((r) => [r.plan, r.n])),
+        by_role: Object.fromEntries(usersByRole.map((r) => [r.role, r.n])),
+        paid: paidUsers,
+        with_stripe: usersWithStripe,
+        active_this_month: activeUsersThisMonth,
       },
       memories: {
         total: totalMemories,
+        deleted: deletedMemories,
         new_7d: newMemories7d,
         new_30d: newMemories30d,
         by_origin: Object.fromEntries(
@@ -961,6 +1033,29 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         ),
         avg_per_user: avgMemoriesPerUser,
       },
+      usage: {
+        current_month: month,
+        writes: monthlyAgg?.w ?? 0,
+        reads: monthlyAgg?.r ?? 0,
+        queries: monthlyAgg?.q ?? 0,
+        total_ops: monthlyAgg?.ops ?? 0,
+        prev_month: {
+          month: prevMonth,
+          writes: prevMonthAgg?.w ?? 0,
+          reads: prevMonthAgg?.r ?? 0,
+          queries: prevMonthAgg?.q ?? 0,
+          total_ops: prevMonthAgg?.ops ?? 0,
+        },
+      },
+      revenue: {
+        mrr,
+        paid_users: paidUsers,
+        conversion_rate: conversionRate,
+      },
+      api_keys: {
+        active: totalApiKeys,
+      },
+      top_users: topUsers,
       generated_at: now,
     };
   });

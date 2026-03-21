@@ -502,6 +502,17 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(auditEventsMigra
   console.log("[migration] Created audit_events table");
 }
 
+const adminPlanMigration = "016_admin_plan_for_owner";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(adminPlanMigration)) {
+  db.prepare(`UPDATE users SET plan = 'admin', updated_at = ? WHERE role = 'admin'`)
+    .run(new Date().toISOString());
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    adminPlanMigration,
+    new Date().toISOString(),
+  );
+  console.log("[migration] Set admin users to admin plan (unlimited)");
+}
+
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 
 let userId: string;

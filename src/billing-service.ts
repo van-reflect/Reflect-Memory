@@ -27,6 +27,7 @@ export const PLAN_LIMITS: Record<string, PlanLimits> = {
   free: { maxWritesPerMonth: 1_000, maxReadsPerMonth: 10_000 },
   pro: { maxWritesPerMonth: 50_000, maxReadsPerMonth: 125_000 },
   builder: { maxWritesPerMonth: 50_000, maxReadsPerMonth: 125_000 },
+  admin: { maxWritesPerMonth: Infinity, maxReadsPerMonth: Infinity },
 };
 
 export async function createCheckoutSession(
