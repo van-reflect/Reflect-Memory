@@ -131,7 +131,7 @@ export function checkQuota(
   const plan = user?.plan ?? "free";
 
   const memoryRow = db
-    .prepare(`SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND trashed = 0`)
+    .prepare(`SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND deleted_at IS NULL`)
     .get(userId) as { cnt: number } | undefined;
   const memoryCount = memoryRow?.cnt ?? 0;
 
@@ -156,7 +156,7 @@ export function getUsageForMonth(
   const plan = user?.plan ?? "free";
 
   const memoryRow = db
-    .prepare(`SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND trashed = 0`)
+    .prepare(`SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND deleted_at IS NULL`)
     .get(userId) as { cnt: number } | undefined;
   const memoryCount = memoryRow?.cnt ?? 0;
 

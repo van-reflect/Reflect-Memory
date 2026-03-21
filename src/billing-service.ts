@@ -153,6 +153,38 @@ function determinePlanFromPrice(priceId: string | undefined): string {
   return "free";
 }
 
+export async function syncPlanFromStripe(
+  db: Database.Database,
+  userId: string,
+): Promise<{ plan: string; synced: boolean }> {
+  const stripe = getStripe();
+  if (!stripe) return { plan: "free", synced: false };
+
+  const user = db
+    .prepare(`SELECT stripe_customer_id, plan FROM users WHERE id = ?`)
+    .get(userId) as { stripe_customer_id: string | null; plan: string } | undefined;
+
+  if (!user?.stripe_customer_id) return { plan: user?.plan ?? "free", synced: false };
+
+  const subs = await stripe.subscriptions.list({
+    customer: user.stripe_customer_id,
+    status: "active",
+    limit: 1,
+  });
+
+  const activeSub = subs.data[0];
+  const plan = activeSub
+    ? determinePlanFromPrice(activeSub.items.data[0]?.price?.id)
+    : "free";
+
+  if (plan !== user.plan) {
+    db.prepare(`UPDATE users SET plan = ?, updated_at = ? WHERE id = ?`)
+      .run(plan, new Date().toISOString(), userId);
+  }
+
+  return { plan, synced: true };
+}
+
 export async function constructStripeEvent(
   rawBody: string | Buffer,
   signature: string,

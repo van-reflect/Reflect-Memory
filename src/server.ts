@@ -29,6 +29,7 @@ import {
   createBillingPortalSession,
   handleStripeWebhook,
   constructStripeEvent,
+  syncPlanFromStripe,
   PLAN_LIMITS,
 } from "./billing-service.js";
 import {
@@ -2120,7 +2121,13 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         .prepare(`SELECT plan, stripe_customer_id FROM users WHERE id = ?`)
         .get(request.userId) as { plan: string; stripe_customer_id: string | null } | undefined;
 
-      const plan = user?.plan ?? "free";
+      let plan = user?.plan ?? "free";
+
+      if (user?.stripe_customer_id && plan === "free" && isStripeConfigured()) {
+        const synced = await syncPlanFromStripe(db, request.userId);
+        if (synced.synced) plan = synced.plan;
+      }
+
       const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
 
       return {
