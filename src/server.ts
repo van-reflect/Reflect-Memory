@@ -385,6 +385,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     },
   });
 
+  server.removeContentTypeParser("application/json");
   server.addContentTypeParser(
     "application/json",
     { parseAs: "string" },
