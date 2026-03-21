@@ -27,6 +27,17 @@ async function apiFetch(path, options = {}) {
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       bgLog("API error:", path, res.status);
+      if (res.status === 429 && body.plan) {
+        return {
+          error: body.error || "Plan limit reached",
+          quota_exceeded: true,
+          plan: body.plan,
+          limit: body.limit,
+          memory_count: body.memory_count,
+          reads_used: body.reads_used,
+          upgrade_url: body.upgrade_url || "https://reflectmemory.com/dashboard/settings",
+        };
+      }
       return { error: body.error || `HTTP ${res.status}` };
     }
 
@@ -172,6 +183,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (!key) return { authenticated: false };
         const whoami = await apiFetch("/whoami");
         return { authenticated: !whoami.error, vendor: whoami.vendor };
+      }
+
+      case "CHECK_QUOTA": {
+        const billing = await apiFetch("/billing/status");
+        if (billing.error) return { error: billing.error };
+        return {
+          plan: billing.plan,
+          has_billing: billing.has_billing,
+          limits: billing.limits,
+        };
       }
 
       default:

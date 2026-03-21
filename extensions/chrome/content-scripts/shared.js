@@ -251,6 +251,12 @@ async function interceptFirstMessage(adapter, userMessage) {
         type: "SEARCH_MEMORIES",
         term: searchTerm,
       });
+      if (response?.quota_exceeded) {
+        log("Read quota exceeded during search");
+        showQuotaNotice(response);
+        isPriming = false;
+        return false;
+      }
       memories = response?.memories || [];
       log("Keyword search result:", memories.length, "memories found");
     }
@@ -261,6 +267,12 @@ async function interceptFirstMessage(adapter, userMessage) {
         type: "GET_MEMORIES",
         limit: 20,
       });
+      if (fallback?.quota_exceeded) {
+        log("Read quota exceeded during fallback fetch");
+        showQuotaNotice(fallback);
+        isPriming = false;
+        return false;
+      }
       const all = fallback?.memories || [];
       memories = all.filter((m) => {
         const t = (m.title || "").toLowerCase();
@@ -462,10 +474,51 @@ async function writeConversationToMemory(vendor) {
   if (result?.id) {
     markAsWritten();
     log("writeBack: SUCCESS. Memory ID:", result.id);
+  } else if (result?.quota_exceeded) {
+    writeInProgress = false;
+    log("writeBack: QUOTA EXCEEDED.", result.plan, result.limit);
+    showQuotaNotice(result);
   } else {
     writeInProgress = false;
     log("writeBack: FAILED.", JSON.stringify(result));
   }
+}
+
+function showQuotaNotice(quotaInfo) {
+  const existing = document.getElementById("reflect-quota-notice");
+  if (existing) existing.remove();
+
+  const isMemoryLimit = quotaInfo.error?.includes("Memory limit");
+  const message = isMemoryLimit
+    ? `You've reached your ${quotaInfo.plan} plan limit of ${quotaInfo.limit} memories.`
+    : `You've reached your ${quotaInfo.plan} plan's monthly read limit.`;
+
+  const notice = document.createElement("div");
+  notice.id = "reflect-quota-notice";
+  notice.style.cssText = [
+    "position:fixed", "bottom:24px", "right:24px", "z-index:99999",
+    "background:#1a1a2e", "color:#e0e0e0", "border:1px solid #333",
+    "border-radius:12px", "padding:16px 20px", "max-width:340px",
+    "font-family:-apple-system,system-ui,sans-serif", "font-size:14px",
+    "box-shadow:0 8px 32px rgba(0,0,0,0.4)", "line-height:1.5",
+  ].join(";");
+
+  notice.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <strong style="color:#fff">Reflect Memory</strong>
+      <span style="cursor:pointer;margin-left:auto;opacity:0.5" id="reflect-quota-close">\u2715</span>
+    </div>
+    <p style="margin:0 0 12px">${message}</p>
+    <a href="${quotaInfo.upgrade_url || 'https://reflectmemory.com/dashboard/settings'}"
+       target="_blank" rel="noopener"
+       style="display:inline-block;background:#6366f1;color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:500;font-size:13px">
+      Upgrade Plan
+    </a>
+  `;
+
+  document.body.appendChild(notice);
+  document.getElementById("reflect-quota-close")?.addEventListener("click", () => notice.remove());
+  setTimeout(() => notice.remove(), 15000);
 }
 
 // --- Init ---

@@ -10,6 +10,8 @@ const saveBtn = document.getElementById("saveBtn");
 const disconnectBtn = document.getElementById("disconnectBtn");
 const dashboardBtn = document.getElementById("dashboardBtn");
 const memoryCountEl = document.getElementById("memoryCount");
+const planInfoEl = document.getElementById("planInfo");
+const upgradeBtn = document.getElementById("upgradeBtn");
 
 async function checkStatus() {
   const { apiKey, verified, vendor: cachedVendor } = await chrome.storage.sync.get([
@@ -58,8 +60,21 @@ function showAuthView() {
 }
 
 async function loadMemoryCount() {
-  const response = await chrome.runtime.sendMessage({ type: "GET_MEMORIES", limit: 1 });
-  if (response?.memories) {
+  const quota = await chrome.runtime.sendMessage({ type: "CHECK_QUOTA" });
+  if (quota?.plan) {
+    const planLabel = quota.plan === "free" ? "Free" : quota.plan === "pro" ? "Pro" : quota.plan.charAt(0).toUpperCase() + quota.plan.slice(1);
+    planInfoEl.textContent = `Plan: ${planLabel}`;
+
+    if (quota.limits) {
+      const memLimit = quota.limits.maxMemories === Infinity ? "unlimited" : quota.limits.maxMemories.toLocaleString();
+      const readLimit = quota.limits.maxReadsPerMonth === Infinity ? "unlimited" : quota.limits.maxReadsPerMonth.toLocaleString();
+      memoryCountEl.textContent = `${memLimit} memories \u00B7 ${readLimit} reads/mo`;
+    }
+
+    if (quota.plan === "free") {
+      upgradeBtn.classList.remove("hidden");
+    }
+  } else {
     memoryCountEl.textContent = "Memory sync active";
   }
 }
@@ -110,6 +125,10 @@ disconnectBtn.addEventListener("click", async () => {
   apiKeyInput.value = "";
   chrome.action.setBadgeText({ text: "!" });
   chrome.action.setBadgeBackgroundColor({ color: "#ef4444" });
+});
+
+upgradeBtn.addEventListener("click", () => {
+  chrome.tabs.create({ url: "https://reflectmemory.com/dashboard/settings" });
 });
 
 dashboardBtn.addEventListener("click", () => {

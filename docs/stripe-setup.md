@@ -11,17 +11,19 @@ In the Stripe dashboard → Products, create:
 
 ### Free Plan
 - Name: "Reflect Memory Free"
-- Price: $0/month (or skip -- no Stripe subscription needed for free tier)
-- Limits (enforced by app): 1,000 writes/month, 10,000 reads/month
+- Price: $0/month (no Stripe subscription needed)
+- Limits: 100 memories, 500 reads/month, 3 AI tool connections
 
-### Builder Plan
-- Name: "Reflect Memory Builder"
+### Pro Plan
+- Name: "Reflect Memory Pro"
 - Price: $20/month
-- Limits: 50,000 writes/month, 125,000 reads/month
+- Limits: 5,000 memories, unlimited reads, unlimited AI tool connections
 
-> Pro ($99/mo -- 150k writes / 750k reads) and Teams/Enterprise (TBD) plans will be added post-Public Beta.
+### Enterprise
+- Custom pricing (Contact Sales)
+- Private deploy, SSO, audit trail, custom limits
 
-**Copy the Price ID** (starts with `price_`) for the Builder plan.
+**Copy the Price ID** (starts with `price_`) for the Pro plan.
 
 ## Step 3: Get API Keys
 
@@ -49,7 +51,7 @@ From Stripe dashboard → Developers → API Keys:
 ```env
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_PRICE_BUILDER=price_...
+STRIPE_PRICE_PRO=price_...
 ```
 
 ### Dashboard (Vercel / `.env.local`)
