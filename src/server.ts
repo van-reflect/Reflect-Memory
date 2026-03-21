@@ -385,6 +385,22 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     },
   });
 
+  server.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (req, body, done) => {
+      const str = typeof body === "string" ? body : body.toString();
+      if (req.url?.startsWith("/webhooks/")) {
+        (req as unknown as { rawBody: string }).rawBody = str;
+      }
+      try {
+        done(null, JSON.parse(str));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    },
+  );
+
   // CORS: only allow the production dashboard and local dev
   await server.register(cors, {
     origin: [
@@ -663,12 +679,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     if (!isWrite && !isRead) return;
 
     const quota = checkQuota(db, request.userId);
-    if (isWrite && quota.memories_remaining <= 0) {
+    if (isWrite && quota.writes_remaining <= 0) {
       return reply.code(429).send({
-        error: "Memory limit reached",
+        error: "Monthly write limit reached",
         plan: quota.plan,
-        memory_count: quota.memory_count,
-        limit: quota.limits.maxMemories,
+        writes_used: quota.usage.writes,
+        limit: quota.limits.maxWritesPerMonth,
         upgrade_url: "https://reflectmemory.com/dashboard/settings",
       });
     }
@@ -2156,9 +2172,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return reply.code(400).send({ error: "Missing stripe-signature" });
       }
 
-      const rawBody = typeof request.body === "string"
-        ? request.body
-        : JSON.stringify(request.body);
+      const rawBody = (request as unknown as { rawBody?: string }).rawBody
+        ?? (typeof request.body === "string" ? request.body : JSON.stringify(request.body));
 
       const event = await constructStripeEvent(rawBody, signature);
       if (!event) {

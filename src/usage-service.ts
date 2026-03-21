@@ -74,7 +74,6 @@ export function recordUsage(
 export interface QuotaStatus {
   allowed: boolean;
   plan: string;
-  memory_count: number;
   usage: {
     writes: number;
     reads: number;
@@ -82,39 +81,33 @@ export interface QuotaStatus {
     total_ops: number;
   };
   limits: {
-    maxMemories: number;
+    maxWritesPerMonth: number;
     maxReadsPerMonth: number;
   };
-  memories_remaining: number;
+  writes_remaining: number;
   reads_remaining: number;
 }
 
 function buildQuotaStatus(
   plan: string,
-  memoryCount: number,
   usage: { writes: number; reads: number; queries: number; total_ops: number } | undefined,
 ): QuotaStatus {
   const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
+  const w = usage?.writes ?? 0;
   const r = (usage?.reads ?? 0) + (usage?.queries ?? 0);
 
   return {
-    allowed: memoryCount < limits.maxMemories && r < limits.maxReadsPerMonth,
+    allowed: w < limits.maxWritesPerMonth && r < limits.maxReadsPerMonth,
     plan,
-    memory_count: memoryCount,
     usage: {
       writes: usage?.writes ?? 0,
       reads: usage?.reads ?? 0,
       queries: usage?.queries ?? 0,
       total_ops: usage?.total_ops ?? 0,
     },
-    limits: {
-      maxMemories: limits.maxMemories,
-      maxReadsPerMonth: limits.maxReadsPerMonth,
-    },
-    memories_remaining: Math.max(0, limits.maxMemories - memoryCount),
-    reads_remaining: limits.maxReadsPerMonth === Infinity
-      ? Infinity
-      : Math.max(0, limits.maxReadsPerMonth - r),
+    limits,
+    writes_remaining: Math.max(0, limits.maxWritesPerMonth - w),
+    reads_remaining: Math.max(0, limits.maxReadsPerMonth - r),
   };
 }
 
@@ -130,16 +123,11 @@ export function checkQuota(
 
   const plan = user?.plan ?? "free";
 
-  const memoryRow = db
-    .prepare(`SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND deleted_at IS NULL`)
-    .get(userId) as { cnt: number } | undefined;
-  const memoryCount = memoryRow?.cnt ?? 0;
-
   const usage = db
     .prepare(`SELECT writes, reads, queries, total_ops FROM monthly_usage WHERE user_id = ? AND month = ?`)
     .get(userId, month) as { writes: number; reads: number; queries: number; total_ops: number } | undefined;
 
-  return buildQuotaStatus(plan, memoryCount, usage);
+  return buildQuotaStatus(plan, usage);
 }
 
 export function getUsageForMonth(
@@ -155,14 +143,9 @@ export function getUsageForMonth(
 
   const plan = user?.plan ?? "free";
 
-  const memoryRow = db
-    .prepare(`SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND deleted_at IS NULL`)
-    .get(userId) as { cnt: number } | undefined;
-  const memoryCount = memoryRow?.cnt ?? 0;
-
   const usage = db
     .prepare(`SELECT writes, reads, queries, total_ops FROM monthly_usage WHERE user_id = ? AND month = ?`)
     .get(userId, m) as { writes: number; reads: number; queries: number; total_ops: number } | undefined;
 
-  return buildQuotaStatus(plan, memoryCount, usage);
+  return buildQuotaStatus(plan, usage);
 }

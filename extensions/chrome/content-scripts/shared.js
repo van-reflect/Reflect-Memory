@@ -488,10 +488,10 @@ function showQuotaNotice(quotaInfo) {
   const existing = document.getElementById("reflect-quota-notice");
   if (existing) existing.remove();
 
-  const isMemoryLimit = quotaInfo.error?.includes("Memory limit");
-  const message = isMemoryLimit
-    ? `You've reached your ${quotaInfo.plan} plan limit of ${quotaInfo.limit} memories.`
-    : `You've reached your ${quotaInfo.plan} plan's monthly read limit.`;
+  const isWriteLimit = quotaInfo.error?.includes("write limit");
+  const message = isWriteLimit
+    ? `You've reached your ${quotaInfo.plan} plan's monthly write limit (${quotaInfo.limit?.toLocaleString()}).`
+    : `You've reached your ${quotaInfo.plan} plan's monthly read limit (${quotaInfo.limit?.toLocaleString()}).`;
 
   const notice = document.createElement("div");
   notice.id = "reflect-quota-notice";
