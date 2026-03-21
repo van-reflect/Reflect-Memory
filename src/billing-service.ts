@@ -152,10 +152,17 @@ function determinePlanFromPrice(priceId: string | undefined): string {
   return "free";
 }
 
+export interface SyncResult {
+  plan: string;
+  synced: boolean;
+  cancel_at_period_end?: boolean;
+  current_period_end?: string | null;
+}
+
 export async function syncPlanFromStripe(
   db: Database.Database,
   userId: string,
-): Promise<{ plan: string; synced: boolean }> {
+): Promise<SyncResult> {
   const stripe = getStripe();
   if (!stripe) return { plan: "free", synced: false };
 
@@ -181,7 +188,14 @@ export async function syncPlanFromStripe(
       .run(plan, new Date().toISOString(), userId);
   }
 
-  return { plan, synced: true };
+  return {
+    plan,
+    synced: true,
+    cancel_at_period_end: activeSub?.cancel_at_period_end ?? false,
+    current_period_end: activeSub?.cancel_at
+      ? new Date(activeSub.cancel_at * 1000).toISOString()
+      : null,
+  };
 }
 
 export async function constructStripeEvent(

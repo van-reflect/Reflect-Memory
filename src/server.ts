@@ -2134,10 +2134,16 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         .get(request.userId) as { plan: string; stripe_customer_id: string | null } | undefined;
 
       let plan = user?.plan ?? "free";
+      let cancelAtPeriodEnd = false;
+      let currentPeriodEnd: string | null = null;
 
-      if (user?.stripe_customer_id && plan === "free" && isStripeConfigured()) {
+      if (user?.stripe_customer_id && isStripeConfigured()) {
         const synced = await syncPlanFromStripe(db, request.userId);
-        if (synced.synced) plan = synced.plan;
+        if (synced.synced) {
+          plan = synced.plan;
+          cancelAtPeriodEnd = synced.cancel_at_period_end ?? false;
+          currentPeriodEnd = synced.current_period_end ?? null;
+        }
       }
 
       const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
@@ -2146,6 +2152,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         plan,
         has_billing: Boolean(user?.stripe_customer_id),
         limits,
+        cancel_at_period_end: cancelAtPeriodEnd,
+        current_period_end: currentPeriodEnd,
       };
     },
   );
