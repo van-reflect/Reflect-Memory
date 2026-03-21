@@ -106,7 +106,7 @@ export function handleStripeWebhook(
       const customerId = session.customer as string;
 
       if (userId && customerId) {
-        db.prepare(`UPDATE users SET stripe_customer_id = ?, updated_at = ? WHERE id = ?`)
+        db.prepare(`UPDATE users SET stripe_customer_id = ?, plan = 'pro', updated_at = ? WHERE id = ?`)
           .run(customerId, new Date().toISOString(), userId);
       }
       break;
