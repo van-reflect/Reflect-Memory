@@ -675,21 +675,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     if (!isWrite && !isRead) return;
 
     const quota = checkQuota(db, request.userId);
-    if (isWrite && quota.writes_remaining <= 0) {
+    if (isWrite && quota.memories_remaining <= 0) {
       return reply.code(429).send({
-        error: "Monthly write limit reached",
+        error: "Memory limit reached",
         plan: quota.plan,
-        writes_used: quota.usage.writes,
-        limit: quota.limits.maxWritesPerMonth,
-        upgrade_url: "https://reflectmemory.com/dashboard/settings",
-      });
-    }
-    if (isRead && quota.reads_remaining <= 0) {
-      return reply.code(429).send({
-        error: "Monthly read limit reached",
-        plan: quota.plan,
-        reads_used: quota.usage.reads + quota.usage.queries,
-        limit: quota.limits.maxReadsPerMonth,
+        memory_count: quota.memory_count,
+        limit: quota.limits.maxMemories,
         upgrade_url: "https://reflectmemory.com/dashboard/settings",
       });
     }
@@ -2242,11 +2233,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
 
       const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
+      const quota = checkQuota(db, request.userId);
 
       return {
         plan,
         has_billing: Boolean(user?.stripe_customer_id),
         limits,
+        memory_count: quota.memory_count,
+        memories_remaining: quota.memories_remaining,
         cancel_at_period_end: cancelAtPeriodEnd,
         current_period_end: currentPeriodEnd,
       };

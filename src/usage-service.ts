@@ -74,78 +74,46 @@ export function recordUsage(
 export interface QuotaStatus {
   allowed: boolean;
   plan: string;
-  usage: {
-    writes: number;
-    reads: number;
-    queries: number;
-    total_ops: number;
-  };
+  memory_count: number;
   limits: {
-    maxWritesPerMonth: number;
-    maxReadsPerMonth: number;
+    maxMemories: number;
   };
-  writes_remaining: number;
-  reads_remaining: number;
-}
-
-function buildQuotaStatus(
-  plan: string,
-  usage: { writes: number; reads: number; queries: number; total_ops: number } | undefined,
-): QuotaStatus {
-  const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
-  const w = usage?.writes ?? 0;
-  const r = (usage?.reads ?? 0) + (usage?.queries ?? 0);
-
-  return {
-    allowed: w < limits.maxWritesPerMonth && r < limits.maxReadsPerMonth,
-    plan,
-    usage: {
-      writes: usage?.writes ?? 0,
-      reads: usage?.reads ?? 0,
-      queries: usage?.queries ?? 0,
-      total_ops: usage?.total_ops ?? 0,
-    },
-    limits,
-    writes_remaining: Math.max(0, limits.maxWritesPerMonth - w),
-    reads_remaining: Math.max(0, limits.maxReadsPerMonth - r),
-  };
+  memories_remaining: number;
 }
 
 export function checkQuota(
   db: Database.Database,
   userId: string,
 ): QuotaStatus {
-  const month = currentMonth();
-
   const user = db
     .prepare(`SELECT plan FROM users WHERE id = ?`)
     .get(userId) as { plan: string } | undefined;
 
   const plan = user?.plan ?? "free";
+  const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
 
-  const usage = db
-    .prepare(`SELECT writes, reads, queries, total_ops FROM monthly_usage WHERE user_id = ? AND month = ?`)
-    .get(userId, month) as { writes: number; reads: number; queries: number; total_ops: number } | undefined;
+  const row = db
+    .prepare(`SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND deleted_at IS NULL`)
+    .get(userId) as { cnt: number };
+  const memoryCount = row.cnt;
 
-  return buildQuotaStatus(plan, usage);
+  const remaining = limits.maxMemories === Infinity
+    ? Infinity
+    : Math.max(0, limits.maxMemories - memoryCount);
+
+  return {
+    allowed: memoryCount < limits.maxMemories,
+    plan,
+    memory_count: memoryCount,
+    limits,
+    memories_remaining: remaining,
+  };
 }
 
 export function getUsageForMonth(
   db: Database.Database,
   userId: string,
-  month?: string,
+  _month?: string,
 ): QuotaStatus {
-  const m = month ?? currentMonth();
-
-  const user = db
-    .prepare(`SELECT plan FROM users WHERE id = ?`)
-    .get(userId) as { plan: string } | undefined;
-
-  const plan = user?.plan ?? "free";
-
-  const usage = db
-    .prepare(`SELECT writes, reads, queries, total_ops FROM monthly_usage WHERE user_id = ? AND month = ?`)
-    .get(userId, m) as { writes: number; reads: number; queries: number; total_ops: number } | undefined;
-
-  return buildQuotaStatus(plan, usage);
+  return checkQuota(db, userId);
 }

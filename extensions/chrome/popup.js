@@ -66,9 +66,9 @@ async function loadMemoryCount() {
     planInfoEl.textContent = `Plan: ${planLabel}`;
 
     if (quota.limits) {
-      const writeLimit = quota.limits.maxWritesPerMonth?.toLocaleString() ?? "—";
-      const readLimit = quota.limits.maxReadsPerMonth?.toLocaleString() ?? "—";
-      memoryCountEl.textContent = `${writeLimit} writes \u00B7 ${readLimit} reads / mo`;
+      const memLimit = quota.limits.maxMemories === Infinity ? "Unlimited" : quota.limits.maxMemories?.toLocaleString() ?? "—";
+      const used = quota.memory_count?.toLocaleString() ?? "0";
+      memoryCountEl.textContent = `${used} / ${memLimit} memories`;
     }
 
     if (quota.plan === "free") {

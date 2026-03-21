@@ -19,15 +19,14 @@ export function isStripeConfigured(): boolean {
 }
 
 export interface PlanLimits {
-  maxWritesPerMonth: number;
-  maxReadsPerMonth: number;
+  maxMemories: number;
 }
 
 export const PLAN_LIMITS: Record<string, PlanLimits> = {
-  free: { maxWritesPerMonth: 1_000, maxReadsPerMonth: 10_000 },
-  pro: { maxWritesPerMonth: 50_000, maxReadsPerMonth: 125_000 },
-  builder: { maxWritesPerMonth: 50_000, maxReadsPerMonth: 125_000 },
-  admin: { maxWritesPerMonth: Infinity, maxReadsPerMonth: Infinity },
+  free: { maxMemories: 500 },
+  pro: { maxMemories: 5_000 },
+  builder: { maxMemories: 5_000 },
+  admin: { maxMemories: Infinity },
 };
 
 export async function createCheckoutSession(
