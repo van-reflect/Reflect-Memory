@@ -385,22 +385,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     },
   });
 
-  server.removeContentTypeParser("application/json");
-  server.addContentTypeParser(
-    "application/json",
-    { parseAs: "string" },
-    (req, body, done) => {
-      const str = typeof body === "string" ? body : body.toString();
-      if (req.url?.startsWith("/webhooks/")) {
-        (req as unknown as { rawBody: string }).rawBody = str;
-      }
-      try {
-        done(null, JSON.parse(str));
-      } catch (err) {
-        done(err as Error, undefined);
-      }
-    },
-  );
+  server.addHook("preParsing", async (request, _reply, payload) => {
+    if (!request.url?.startsWith("/webhooks/")) return payload;
+    const chunks: Buffer[] = [];
+    for await (const chunk of payload) {
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    }
+    const raw = Buffer.concat(chunks);
+    (request as unknown as { rawBody: string }).rawBody = raw.toString("utf-8");
+    const { Readable } = await import("stream");
+    return Readable.from(raw);
+  });
 
   // CORS: only allow the production dashboard and local dev
   await server.register(cors, {
