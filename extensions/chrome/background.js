@@ -192,6 +192,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           plan: billing.plan,
           has_billing: billing.has_billing,
           limits: billing.limits,
+          memory_count: billing.memory_count,
+          memories_remaining: billing.memories_remaining,
         };
       }
 

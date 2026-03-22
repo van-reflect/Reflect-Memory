@@ -66,8 +66,9 @@ async function loadMemoryCount() {
     planInfoEl.textContent = `Plan: ${planLabel}`;
 
     if (quota.limits) {
-      const memLimit = quota.limits.maxMemories === Infinity ? "Unlimited" : quota.limits.maxMemories?.toLocaleString() ?? "—";
-      const used = quota.memory_count?.toLocaleString() ?? "0";
+      const raw = quota.limits.maxMemories;
+      const memLimit = (raw == null || raw < 0) ? "Unlimited" : raw.toLocaleString();
+      const used = (quota.memory_count ?? 0).toLocaleString();
       memoryCountEl.textContent = `${used} / ${memLimit} memories`;
     }
 
