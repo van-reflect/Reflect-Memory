@@ -7,7 +7,14 @@
   "host_permissions": [
     "https://api.reflectmemory.com/*",
     "https://reflectmemory.com/*",
-    "https://www.reflectmemory.com/*"
+    "https://www.reflectmemory.com/*",
+    "https://grok.com/*",
+    "https://x.com/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*",
+    "https://www.perplexity.ai/*",
+    "https://perplexity.ai/*"
   ],
   "background": {
     "service_worker": "background.js"

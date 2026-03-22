@@ -122,27 +122,47 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       case "SUMMARIZE_AND_WRITE": {
         const { conversation, vendor } = message;
+        bgLog("SUMMARIZE_AND_WRITE: vendor =", vendor, "| conv length =", conversation?.length);
+
+        const MAX_CHARS = 10000;
+        let conversationWindow;
+        if (conversation.length <= MAX_CHARS) {
+          conversationWindow = conversation;
+        } else {
+          const headSize = 1500;
+          const tailSize = MAX_CHARS - headSize - 100;
+          conversationWindow =
+            conversation.slice(0, headSize) +
+            "\n\n[... earlier conversation omitted ...]\n\n" +
+            conversation.slice(-tailSize);
+        }
+
         const summaryPrompt = [
           "You are a memory extraction system. Read this conversation between a user and an AI assistant.",
+          "The conversation may be long — focus on the FINAL decisions, conclusions, and plans the user landed on.",
+          "Earlier parts may show exploration; prioritize what the user ultimately chose or confirmed.",
+          "",
           "Extract ONLY the important context that would help another AI understand this user in future conversations.",
           "",
           "Write a concise memory entry covering:",
-          "- Decisions the user made or directions they chose",
+          "- Final decisions the user made or directions they chose",
           "- User preferences, opinions, or working style revealed",
           "- Key facts about their project, product, or situation",
           "- Action items or next steps they committed to",
+          "- Any plans, strategies, or frameworks they finalized",
           "",
           "Do NOT include:",
           "- Greetings, small talk, or filler",
           "- The AI's general advice (only capture if the user agreed with it)",
+          "- Early exploration that was later superseded by final decisions",
           "- Raw conversation back-and-forth",
           "",
-          "Format: Start with a one-line title summarizing the core topic.",
-          "Then write 2-6 bullet points of key context. Be specific and factual.",
+          "Format: Start with a one-line title summarizing the core topic/decision.",
+          "Then write 3-8 bullet points of key context. Be specific and factual.",
           "Write as if noting what matters about this user for future reference.",
           "",
           "--- CONVERSATION ---",
-          conversation.slice(0, 6000),
+          conversationWindow,
         ].join("\n");
 
         try {

@@ -1,0 +1,39 @@
+FROM node:20-bookworm-slim AS deps
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+
+FROM node:20-bookworm-slim AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY package*.json ./
+COPY tsconfig.json ./
+COPY src ./src
+COPY schema.sql ./schema.sql
+COPY openapi-agent.yaml ./openapi-agent.yaml
+RUN npm run build
+
+FROM node:20-bookworm-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package*.json ./
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/schema.sql ./schema.sql
+COPY --from=build /app/openapi-agent.yaml ./openapi-agent.yaml
+
+# Sandbox: ephemeral DB in /tmp (lost on container restart)
+RUN mkdir -p /tmp/sandbox-data
+
+ENV RM_API_KEY=sandbox-demo-key
+ENV RM_DEPLOYMENT_MODE=self-host
+ENV RM_TENANT_ID=sandbox-trial
+ENV RM_DISABLE_MODEL_EGRESS=true
+ENV RM_REQUIRE_INTERNAL_MODEL_BASE_URL=false
+ENV RM_ALLOW_PUBLIC_WEBHOOKS=false
+ENV RM_DB_PATH=/tmp/sandbox-data/reflect-sandbox.db
+ENV RM_SANDBOX_MEMORY_CAP=50
+ENV RM_OWNER_EMAIL=sandbox@demo.local
+
+EXPOSE 3000
+CMD ["node", "dist/index.js"]

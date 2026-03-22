@@ -22,8 +22,12 @@ export interface PlanLimits {
   maxMemories: number;
 }
 
+const sandboxCap = process.env.RM_SANDBOX_MEMORY_CAP
+  ? parseInt(process.env.RM_SANDBOX_MEMORY_CAP, 10)
+  : 0;
+
 export const PLAN_LIMITS: Record<string, PlanLimits> = {
-  free: { maxMemories: 500 },
+  free: { maxMemories: sandboxCap > 0 ? sandboxCap : 500 },
   pro: { maxMemories: 5_000 },
   builder: { maxMemories: 5_000 },
   admin: { maxMemories: Infinity },

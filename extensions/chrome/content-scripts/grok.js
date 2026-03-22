@@ -1,8 +1,11 @@
 /**
  * Grok content script adapter.
  *
- * Grok (grok.com) uses a textarea or contenteditable for input
- * and renders messages in a conversation thread.
+ * Grok (grok.com / x.com/i/grok) uses contenteditable for input and
+ * .message-bubble elements inside div.relative.group.flex.flex-col containers
+ * for conversation turns. Grok responses contain .response-content-markdown.
+ *
+ * React-controlled inputs require execCommand('insertText') for state sync.
  */
 
 (() => {
@@ -10,22 +13,29 @@
 
   const adapter = {
     getInputElement() {
-      return document.querySelector(
-        "textarea[placeholder], " +
-        "div[contenteditable='true'][role='textbox'], " +
-        "div[contenteditable='true'][data-placeholder]"
+      return (
+        document.querySelector("div.absolute.bottom-0 [contenteditable='true']") ||
+        document.querySelector("div.absolute.bottom-0 textarea") ||
+        document.querySelector("[contenteditable='true'][role='textbox']") ||
+        document.querySelector("[contenteditable='true'][data-placeholder]") ||
+        document.querySelector("textarea[placeholder]")
       );
     },
 
     getInputValue() {
       const el = this.getInputElement();
       if (!el) return "";
-      return el.value || el.innerText || "";
+      return el.tagName === "TEXTAREA"
+        ? el.value || ""
+        : el.innerText || "";
     },
 
     setInputValue(text) {
       const el = this.getInputElement();
       if (!el) return;
+
+      el.focus();
+
       if (el.tagName === "TEXTAREA") {
         const setter = Object.getOwnPropertyDescriptor(
           HTMLTextAreaElement.prototype, "value"
@@ -33,45 +43,97 @@
         if (setter) setter.call(el, text);
         else el.value = text;
         el.dispatchEvent(new Event("input", { bubbles: true }));
-      } else {
-        el.focus();
-        el.innerText = text;
-        el.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
       }
+
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand("insertText", false, text);
     },
 
     getMessages() {
       const messages = [];
-      const turns = document.querySelectorAll(
-        "[data-role], [class*='message-row'], [class*='chat-turn'], [class*='conversation-turn']"
-      );
-      turns.forEach((el) => {
-        const role = el.getAttribute("data-role");
-        const isUser =
-          role === "user" ||
-          el.classList.toString().includes("user") ||
-          !!el.querySelector("[class*='user-avatar']");
-        const text = el.innerText?.trim();
-        if (text && text.length > 15) {
-          messages.push({ role: isUser ? "user" : "assistant", text });
-        }
-      });
+
+      // Strategy 1: structured message boxes (current Grok DOM)
+      const boxes = document.querySelectorAll("div.relative.group.flex.flex-col");
+      for (const box of boxes) {
+        const bubble = box.querySelector(".message-bubble");
+        if (!bubble) continue;
+
+        const clone = bubble.cloneNode(true);
+        clone.querySelectorAll("svg, button, nav, header, footer, script, style, [aria-hidden='true']")
+          .forEach((el) => el.remove());
+        const text = clone.textContent?.trim();
+        if (!text || text.length < 10) continue;
+
+        const isGrok = !!bubble.querySelector(".response-content-markdown") ||
+          bubble.className?.includes("bg-surface-l1") ||
+          !!bubble.querySelector("[class*='bg-surface-l1']");
+
+        messages.push({
+          role: isGrok ? "assistant" : "user",
+          text,
+        });
+      }
+
+      if (messages.length > 0) return messages;
+
+      // Strategy 2: fallback to .message-bubble directly
+      const bubbles = document.querySelectorAll(".message-bubble");
+      for (const bubble of bubbles) {
+        const clone = bubble.cloneNode(true);
+        clone.querySelectorAll("svg, button, nav, header, footer, script, style, [aria-hidden='true']")
+          .forEach((el) => el.remove());
+        const text = clone.textContent?.trim();
+        if (!text || text.length < 10) continue;
+
+        const isGrok = !!bubble.querySelector(".response-content-markdown") ||
+          bubble.className?.includes("bg-surface-l1") ||
+          !!bubble.querySelector("[class*='bg-surface-l1']");
+
+        messages.push({
+          role: isGrok ? "assistant" : "user",
+          text,
+        });
+      }
+
+      if (messages.length > 0) return messages;
+
+      // Strategy 3: broadest fallback — dir="ltr" divs with substantial text
+      const ltrDivs = document.querySelectorAll("div[dir='ltr']");
+      for (const div of ltrDivs) {
+        const text = div.textContent?.trim();
+        if (!text || text.length < 15 || text.length > 50000) continue;
+        messages.push({
+          role: text.length > 300 ? "assistant" : "user",
+          text,
+        });
+      }
+
       return messages;
     },
 
     isNewConversation() {
       const path = window.location.pathname;
       if (path === "/" || path === "/chat" || path.endsWith("/new")) return true;
+      if (window.location.hostname === "x.com") {
+        if (path === "/i/grok" || path === "/i/grok/") return true;
+      }
       return this.getMessages().length === 0;
     },
 
     triggerSend() {
       const btn = document.querySelector(
         "button[aria-label*='send' i], " +
+        "button[aria-label*='Send' i], " +
         "button[aria-label*='Submit' i], " +
-        "button[data-testid='send-button']"
+        "button[data-testid='send-button'], " +
+        "button[data-testid*='send']"
       );
-      if (btn) {
+      if (btn && !btn.disabled) {
         btn.click();
         return;
       }
@@ -84,13 +146,11 @@
     },
 
     hideLastExchange() {
-      const turns = document.querySelectorAll(
-        "[class*='message'], [class*='turn'], [data-role]"
-      );
-      const toHide = [...turns].slice(-2);
+      const boxes = document.querySelectorAll("div.relative.group.flex.flex-col");
+      const withBubble = [...boxes].filter((b) => b.querySelector(".message-bubble"));
+      const toHide = withBubble.slice(-2);
       toHide.forEach((el) => {
-        const container = el.parentElement;
-        if (container) container.style.display = "none";
+        el.style.display = "none";
       });
     },
 

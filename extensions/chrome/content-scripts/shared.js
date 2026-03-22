@@ -371,8 +371,31 @@ const AFFIRMATION_PATTERNS = [
   /\b(that'?s? (the )?plan|let'?s (go|roll|execute|proceed))\b/i,
 ];
 
+const SAVE_TO_MEMORY_PATTERNS = [
+  /\b(write|save|store|log|record|push|add|put|send|sync)\b.{0,30}\b(memory|memories|reflect)\b/i,
+  /\breflect\s+memory\b.{0,20}\b(write|save|store|record|push|add|sync)\b/i,
+  /\b(write|save|store|record|push|send)\s+(this|that|it)\b.{0,30}\b(to|for|in|into)\b/i,
+  /\b(save|write|store|record)\s+(this|that|it)\s+(to|for)\s+(chatgpt|claude|grok|gemini|cursor|perplexity|other\s+ai)/i,
+  /\b(save|write|store|record)\s+(this|that|it)\s+(to|for)\s+.{0,15}\bto\s+pull\b/i,
+  /\bwrite\s+this\s+(for|so)\b.{0,30}\b(pull|access|read|see|know|remember)\b/i,
+  /\b(remember|memorize|commit)\s+(this|that)\b/i,
+  /\bsave\s+(this|that)\s+(context|conversation|chat|info|decision|takeaway)/i,
+  /\b(update|add\s+to|write\s+to)\s+(my\s+)?(memory|memories|context|reflect)\b/i,
+  /\bkeep\s+(this|that)\s+in\s+(memory|reflect|context)\b/i,
+  /\blog\s+(this|that)\s+(to|in|for)\b/i,
+  /\bsync\s+(this|that)\s+(across|to|with)\b/i,
+  /\bpersist\s+(this|that)\b/i,
+  /\bwrite\s+(this|that)\s+(down|out)\b/i,
+  /\b(capture|snapshot)\s+(this|that)\b/i,
+  /\bstore\s+(this|that)\s+(for\s+later|permanently)\b/i,
+];
+
 function isAffirmation(text) {
   return AFFIRMATION_PATTERNS.some((p) => p.test(text));
+}
+
+function isSaveToMemoryIntent(text) {
+  return SAVE_TO_MEMORY_PATTERNS.some((p) => p.test(text));
 }
 
 const NOISE_PATTERNS = [
@@ -409,6 +432,19 @@ function isPrimingContent(text) {
 }
 
 function extractCleanConversation() {
+  if (_activeAdapter?.getMessages) {
+    const messages = _activeAdapter.getMessages();
+    if (messages.length > 0) {
+      const cleaned = messages
+        .filter((m) => !isPrimingContent(m.text))
+        .map((m) => `[${m.role}]: ${m.text}`);
+      if (cleaned.length > 0) {
+        log("extractCleanConversation: using adapter.getMessages(),", cleaned.length, "turns");
+        return cleaned.join("\n\n");
+      }
+    }
+  }
+
   const main = document.querySelector("main") || document.body;
   const text = main.innerText || "";
 
@@ -418,6 +454,7 @@ function extractCleanConversation() {
     .filter((l) => !isNoiseLine(l))
     .filter((l) => !isPrimingContent(l));
 
+  log("extractCleanConversation: fallback to innerText scrape,", lines.length, "lines");
   return lines.join("\n");
 }
 
@@ -464,22 +501,29 @@ async function writeConversationToMemory(vendor) {
     return;
   }
 
+  const MAX_SEND = 20000;
+  const trimmed = conversation.length > MAX_SEND
+    ? conversation.slice(-MAX_SEND)
+    : conversation;
+
+  console.log(`[Reflect Memory] Writing conversation to memory (origin: ${vendor}, ${trimmed.length} chars, full: ${conversation.length} chars)`);
   log("writeBack: sending to AI for summarization...");
   const result = await sendToBackground({
     type: "SUMMARIZE_AND_WRITE",
-    conversation,
+    conversation: trimmed,
     vendor,
   });
 
+  writeInProgress = false;
+
   if (result?.id) {
     markAsWritten();
+    console.log(`[Reflect Memory] Memory saved successfully (ID: ${result.id})`);
     log("writeBack: SUCCESS. Memory ID:", result.id);
   } else if (result?.quota_exceeded) {
-    writeInProgress = false;
     log("writeBack: QUOTA EXCEEDED.", result.plan, result.limit);
     showQuotaNotice(result);
   } else {
-    writeInProgress = false;
     log("writeBack: FAILED.", JSON.stringify(result));
   }
 }
@@ -522,6 +566,7 @@ function showQuotaNotice(quotaInfo) {
 
 function initVendor(adapter, vendorName) {
   _activeAdapter = adapter;
+  console.log(`[Reflect Memory] ${vendorName} adapter loaded on ${location.hostname}`);
   log(`Initializing ${vendorName} adapter...`);
 
   let documentListenerAttached = false;
@@ -545,12 +590,25 @@ function initVendor(adapter, vendorName) {
     if (!userMessage) return;
 
     if (isAlreadyPrimed()) {
-      if (isWriteEnabled() && !hasAlreadyWritten() && isAffirmation(userMessage)) {
-        log("Affirmation detected:", userMessage.slice(0, 60));
-        setTimeout(() => {
-          log("writeBack: affirmation triggered immediate write");
-          writeConversationToMemory(vendorName);
-        }, 5000);
+      if (isWriteEnabled()) {
+        const explicitSave = isSaveToMemoryIntent(userMessage);
+        if (explicitSave) {
+          log("Save-to-memory intent detected:", userMessage.slice(0, 80));
+          if (hasAlreadyWritten()) {
+            log("writeBack: clearing previous write flag — user explicitly requested another save");
+            sessionStorage.removeItem(WRITTEN_KEY);
+          }
+          setTimeout(() => {
+            log("writeBack: explicit save intent triggered write");
+            writeConversationToMemory(vendorName);
+          }, 5000);
+        } else if (!hasAlreadyWritten() && isAffirmation(userMessage)) {
+          log("Affirmation detected:", userMessage.slice(0, 60));
+          setTimeout(() => {
+            log("writeBack: affirmation triggered immediate write");
+            writeConversationToMemory(vendorName);
+          }, 5000);
+        }
       }
       return;
     }
@@ -594,7 +652,7 @@ function initVendor(adapter, vendorName) {
   }
 
   document.addEventListener("click", (e) => {
-    if (isPriming || !isWriteEnabled() || hasAlreadyWritten()) return;
+    if (isPriming || !isWriteEnabled()) return;
     if (!isAlreadyPrimed()) return;
 
     const btn = e.target.closest?.("button");
@@ -604,8 +662,14 @@ function initVendor(adapter, vendorName) {
     if (!label.includes("send") && !label.includes("submit") && !label.includes("ask")) return;
 
     const userMessage = adapter.getInputValue()?.trim();
-    if (userMessage && isAffirmation(userMessage)) {
-      log("Affirmation via send button:", userMessage.slice(0, 60));
+    if (!userMessage) return;
+
+    const explicitSave = isSaveToMemoryIntent(userMessage);
+    if (explicitSave || (!hasAlreadyWritten() && isAffirmation(userMessage))) {
+      if (explicitSave && hasAlreadyWritten()) {
+        sessionStorage.removeItem(WRITTEN_KEY);
+      }
+      log("Write trigger via send button:", userMessage.slice(0, 80));
       setTimeout(() => writeConversationToMemory(vendorName), 5000);
     }
   }, { capture: true });
