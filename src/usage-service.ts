@@ -97,15 +97,14 @@ export function checkQuota(
     .get(userId) as { cnt: number };
   const memoryCount = row.cnt;
 
-  const remaining = limits.maxMemories === Infinity
-    ? Infinity
-    : Math.max(0, limits.maxMemories - memoryCount);
+  const unlimited = !isFinite(limits.maxMemories);
+  const remaining = unlimited ? -1 : Math.max(0, limits.maxMemories - memoryCount);
 
   return {
-    allowed: memoryCount < limits.maxMemories,
+    allowed: unlimited || memoryCount < limits.maxMemories,
     plan,
     memory_count: memoryCount,
-    limits,
+    limits: { maxMemories: unlimited ? -1 : limits.maxMemories },
     memories_remaining: remaining,
   };
 }
