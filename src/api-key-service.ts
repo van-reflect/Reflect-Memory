@@ -57,6 +57,18 @@ export function generateApiKey(
   };
 }
 
+export function countActiveApiKeys(
+  db: Database.Database,
+  userId: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM api_keys WHERE user_id = ? AND revoked_at IS NULL`,
+    )
+    .get(userId) as { cnt: number };
+  return row.cnt;
+}
+
 export function listApiKeys(
   db: Database.Database,
   userId: string,

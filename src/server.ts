@@ -22,6 +22,7 @@ import {
   listApiKeys,
   revokeApiKey,
   authenticateApiKey,
+  countActiveApiKeys,
 } from "./api-key-service.js";
 import {
   isStripeConfigured,
@@ -992,6 +993,29 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       db.prepare(`SELECT count(*) as n FROM api_keys WHERE revoked_at IS NULL`).get() as { n: number }
     ).n;
 
+    const domainClusters = db
+      .prepare(`
+        SELECT
+          LOWER(SUBSTR(email, INSTR(email, '@') + 1)) as domain,
+          COUNT(*) as user_count,
+          SUM(CASE WHEN plan = 'pro' OR plan = 'builder' THEN 1 ELSE 0 END) as paid_count
+        FROM users
+        WHERE email IS NOT NULL
+          AND email LIKE '%@%'
+          AND LOWER(SUBSTR(email, INSTR(email, '@') + 1)) NOT IN (
+            'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
+            'icloud.com', 'aol.com', 'protonmail.com', 'proton.me',
+            'live.com', 'me.com', 'mac.com', 'msn.com',
+            'ymail.com', 'mail.com', 'zoho.com', 'fastmail.com',
+            'hey.com', 'pm.me', 'tutanota.com', 'gmx.com',
+            'reflectmemory.com', 'demo.local'
+          )
+        GROUP BY domain
+        HAVING user_count >= 3
+        ORDER BY user_count DESC
+      `)
+      .all() as { domain: string; user_count: number; paid_count: number }[];
+
     const deletedMemories = (
       db.prepare(`SELECT count(*) as n FROM memories WHERE deleted_at IS NOT NULL`).get() as { n: number }
     ).n;
@@ -1046,6 +1070,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       api_keys: {
         active: totalApiKeys,
       },
+      domain_clusters: domainClusters,
       top_users: topUsers,
       generated_at: now,
     };
@@ -2061,7 +2086,24 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       },
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     },
-    async (request) => {
+    async (request, reply) => {
+      const user = db
+        .prepare(`SELECT plan FROM users WHERE id = ?`)
+        .get(request.userId) as { plan: string } | undefined;
+      const plan = user?.plan ?? "free";
+      const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
+      const activeCount = countActiveApiKeys(db, request.userId);
+
+      if (isFinite(limits.maxApiKeys) && activeCount >= limits.maxApiKeys) {
+        return reply.code(429).send({
+          error: "API key limit reached for your plan",
+          plan,
+          active_keys: activeCount,
+          limit: limits.maxApiKeys,
+          upgrade_url: "https://reflectmemory.com/dashboard/settings",
+        });
+      }
+
       const { label } = (request.body ?? {}) as { label?: string };
       const result = generateApiKey(db, request.userId, label ?? "Default");
       return {

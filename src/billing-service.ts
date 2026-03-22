@@ -20,6 +20,7 @@ export function isStripeConfigured(): boolean {
 
 export interface PlanLimits {
   maxMemories: number;
+  maxApiKeys: number;
 }
 
 const sandboxCap = process.env.RM_SANDBOX_MEMORY_CAP
@@ -27,10 +28,10 @@ const sandboxCap = process.env.RM_SANDBOX_MEMORY_CAP
   : 0;
 
 export const PLAN_LIMITS: Record<string, PlanLimits> = {
-  free: { maxMemories: sandboxCap > 0 ? sandboxCap : 500 },
-  pro: { maxMemories: 5_000 },
-  builder: { maxMemories: 5_000 },
-  admin: { maxMemories: Infinity },
+  free: { maxMemories: sandboxCap > 0 ? sandboxCap : 500, maxApiKeys: 2 },
+  pro: { maxMemories: 5_000, maxApiKeys: 5 },
+  builder: { maxMemories: 5_000, maxApiKeys: 5 },
+  admin: { maxMemories: Infinity, maxApiKeys: Infinity },
 };
 
 export async function createCheckoutSession(
