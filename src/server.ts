@@ -79,6 +79,7 @@ declare module "fastify" {
     role: "user" | "agent";
     vendor: string | null;
     authMethod: "dashboard" | "api_key" | "agent_key" | "sso";
+    dataAccessed: boolean;
   }
 }
 
@@ -458,6 +459,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   server.decorateRequest("role", "user");
   server.decorateRequest("vendor", null);
   server.decorateRequest("authMethod", "api_key");
+  server.decorateRequest("dataAccessed", false);
 
   const verifySsoToken = createSsoVerifier(deployment.sso);
 
@@ -702,33 +704,32 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   };
 
   server.addHook("onResponse", async (request, reply) => {
-    if (reply.statusCode >= 400) return;
-    if (!request.userId) return;
+    if (reply.statusCode >= 400 || !request.userId) return;
 
     const path = request.url.split("?")[0];
-    const route = METERED_ROUTES[path];
-    if (!route || request.method !== route.method) return;
+    const origin = request.vendor ?? (request.authMethod === "dashboard" ? "dashboard" : "api");
 
-    // GET routes for single memory reads
-    if (path.startsWith("/memories/") && request.method === "GET" && !path.includes("/list")) {
-      try { recordUsage(db, request.userId, "memory_read", request.vendor ?? "dashboard"); } catch {}
+    // POST routes from METERED_ROUTES table
+    const route = METERED_ROUTES[path];
+    if (route && request.method === route.method) {
+      // For reads: only meter when the handler actually returned data.
+      // Empty list results, empty searches, and 0-memory accounts
+      // should not inflate read metrics or mask real access patterns.
+      if (route.operation === "memory_read" && !request.dataAccessed) return;
+      try { recordUsage(db, request.userId, route.operation, origin); } catch {}
       return;
     }
 
-    const origin = request.vendor ?? (request.authMethod === "dashboard" ? "dashboard" : "api");
-    try { recordUsage(db, request.userId, route.operation, origin); } catch {}
-  });
-
-  // Also meter individual memory reads (GET /memories/:id, GET /agent/memories/latest, etc.)
-  server.addHook("onResponse", async (request, reply) => {
-    if (reply.statusCode >= 400 || !request.userId || request.method !== "GET") return;
-    const path = request.url.split("?")[0];
-    if (
-      (path.startsWith("/memories/") && path !== "/memories/list") ||
-      path.startsWith("/agent/memories/")
-    ) {
-      const origin = request.vendor ?? (request.authMethod === "dashboard" ? "dashboard" : "api");
-      try { recordUsage(db, request.userId, "memory_read", origin); } catch {}
+    // GET single-memory reads (GET /memories/:id, /agent/memories/:id, /agent/memories/latest)
+    // Only metered when the handler found and returned a memory (dataAccessed=true).
+    // 404s already exit above (statusCode >= 400), but dataAccessed is defense-in-depth.
+    if (request.method === "GET" && request.dataAccessed) {
+      const isMemoryGet =
+        (path.startsWith("/memories/") && path !== "/memories/list") ||
+        path.startsWith("/agent/memories/");
+      if (isMemoryGet) {
+        try { recordUsage(db, request.userId, "memory_read", origin); } catch {}
+      }
     }
   });
 
@@ -1259,6 +1260,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const desc = tag ? `tag "${tag}"` : originParam ? `origin "${originParam}"` : "";
       return { error: desc ? `No memories found with ${desc}` : "No memories found" };
     }
+    request.dataAccessed = true;
     return memory;
   });
 
@@ -1293,6 +1295,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         }
       }
 
+      request.dataAccessed = true;
       return memory;
     },
   );
@@ -1353,6 +1356,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         vendorFilter,
       );
 
+      if (memories.length > 0) request.dataAccessed = true;
       return {
         memories,
         total,
@@ -1394,6 +1398,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const summaries = listMemorySummaries(db, request.userId, filter, vendorFilter, pagination);
       const total = countMemories(db, request.userId, filter, vendorFilter);
 
+      if (summaries.length > 0) request.dataAccessed = true;
       return {
         memories: summaries,
         total,
@@ -1422,6 +1427,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
+      request.dataAccessed = true;
       return memory;
     },
   );
@@ -1454,6 +1460,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         null,
         pagination,
       );
+      if (memories.length > 0) request.dataAccessed = true;
       return { memories };
     },
   );
