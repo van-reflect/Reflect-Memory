@@ -668,6 +668,13 @@ export function deleteMemory(
   memoryId: string,
 ): boolean {
   const txn = db.transaction(() => {
+    // Verify ownership BEFORE touching memory_versions to prevent
+    // cross-user version deletion via guessed memory_id (IDOR).
+    const owns = db
+      .prepare(`SELECT 1 FROM memories WHERE id = ? AND user_id = ?`)
+      .get(memoryId, userId);
+    if (!owns) return false;
+
     db.prepare(`DELETE FROM memory_versions WHERE memory_id = ?`).run(memoryId);
     const result = db
       .prepare(`DELETE FROM memories WHERE id = ? AND user_id = ?`)

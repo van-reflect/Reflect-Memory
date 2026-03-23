@@ -835,7 +835,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // No sensitive data. Just what the server sees for this key.
   // ===========================================================================
 
-  server.get("/whoami", async (request) => {
+  server.get("/whoami", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (request) => {
     return {
       role: request.role,
       vendor: request.vendor,
@@ -1138,6 +1138,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       schema: {
         body: memoryBodySchema,
       },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       const body = request.body as {
@@ -1185,6 +1186,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       schema: {
         body: agentMemoryBodySchema,
       },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       const body = request.body as {
@@ -1232,7 +1234,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // agent's own writes.
   // ===========================================================================
 
-  server.get("/agent/memories/latest", async (request, reply) => {
+  server.get("/agent/memories/latest", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
     const vendorFilter = request.vendor;
     const query = request.query as { tag?: string; origin?: string };
     const tag = query.tag?.trim();
@@ -1278,6 +1280,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       schema: {
         params: memoryIdParamSchema,
       },
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
@@ -1328,6 +1331,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           },
         },
       },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     async (request) => {
       const { tags, limit, offset } = request.body as {
@@ -1381,6 +1385,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       schema: {
         body: browseBodySchema,
       },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     async (request) => {
       const { filter, limit, offset } = request.body as {
@@ -1419,6 +1424,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       schema: {
         params: memoryIdParamSchema,
       },
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
@@ -1442,6 +1448,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       schema: {
         body: listFilterBodySchema,
       },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     async (request) => {
       const body = request.body as {
@@ -1478,6 +1485,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         params: memoryIdParamSchema,
         body: updateMemoryBodySchema,
       },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
@@ -1522,6 +1530,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       schema: {
         params: memoryIdParamSchema,
       },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
@@ -1544,6 +1553,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       schema: {
         params: memoryIdParamSchema,
       },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
@@ -1640,7 +1650,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // populate the model selector.
   // ===========================================================================
 
-  server.get("/chat/models", async () => {
+  server.get("/chat/models", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async () => {
     const available = AVAILABLE_MODELS.filter((m) => {
       switch (m.id) {
         case "gpt-4o":
@@ -2304,7 +2314,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     "/webhooks/stripe",
     {
       config: {
-        rateLimit: { max: 100, timeWindow: "1 minute" },
+        rateLimit: { max: 30, timeWindow: "1 minute" },
         rawBody: true,
       },
     },
