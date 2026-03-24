@@ -598,6 +598,35 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     });
   });
 
+  // Diagnostic endpoint (proxied via /oauth/status)
+  app.get("/oauth/status", (_req, res) => {
+    try {
+      const pendingCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_pending_requests`).get() as { c: number }).c;
+      const clientCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_clients`).get() as { c: number }).c;
+      const tokenCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_tokens`).get() as { c: number }).c;
+      const codesCols = (db.prepare(`PRAGMA table_info(oauth_codes)`).all() as { name: string }[]).map(c => c.name);
+      const tokensCols = (db.prepare(`PRAGMA table_info(oauth_tokens)`).all() as { name: string }[]).map(c => c.name);
+      const pendingCols = (db.prepare(`PRAGMA table_info(oauth_pending_requests)`).all() as { name: string }[]).map(c => c.name);
+      res.json({
+        status: "ok",
+        has_user_id_cols: hasUserIdColumns(),
+        service_key_configured: (dashboardServiceKey?.length ?? 0) > 0,
+        jwt_secret_configured: (dashboardJwtSecret?.length ?? 0) > 0,
+        db: {
+          pending_requests: pendingCount,
+          clients: clientCount,
+          tokens: tokenCount,
+          codes_has_user_id: codesCols.includes("user_id"),
+          tokens_has_user_id: tokensCols.includes("user_id"),
+          pending_has_user_id: pendingCols.includes("user_id"),
+        },
+        sessions: Object.keys(transports).length,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   const vendors = Object.keys(agentKeys);
   app.listen(port, "0.0.0.0", () => {
     console.log(`MCP server listening on port ${port} (vendors: ${vendors.join(", ")})`);
