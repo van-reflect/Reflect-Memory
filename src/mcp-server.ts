@@ -287,6 +287,50 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   });
 
   // ---------------------------------------------------------------------------
+  // Server-to-server approval (dashboard calls this with its service key)
+  // ---------------------------------------------------------------------------
+
+  app.post("/oauth/approve-s2s", express.json(), async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Missing authorization" });
+      return;
+    }
+
+    const token = authHeader.slice(7);
+    const vendor = resolveVendor(token);
+    if (!vendor) {
+      res.status(403).json({ error: "Invalid service key" });
+      return;
+    }
+
+    const { pending_id, email } = req.body as { pending_id?: string; email?: string };
+    if (!pending_id) {
+      res.status(400).json({ error: "Missing pending_id" });
+      return;
+    }
+
+    let approvedUserId: string | undefined;
+    if (email) {
+      try {
+        approvedUserId = findOrCreateUserByEmail(db, email);
+        console.log(`[oauth-s2s] Resolved user ${approvedUserId} from email ${email}`);
+      } catch (err) {
+        console.error(`[oauth-s2s] User resolution failed for ${email}: ${(err as Error).message}`);
+      }
+    }
+
+    try {
+      const redirectUrl = oauthProvider.approvePendingRequest(pending_id, approvedUserId);
+      res.json({ redirect_url: redirectUrl });
+    } catch (err) {
+      const msg = (err as Error).message || String(err);
+      console.error(`[oauth-s2s] Approval failed: ${msg}`);
+      res.status(400).json({ error: msg });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
   // Hybrid auth: legacy RM_AGENT_KEY_* tokens + OAuth Bearer tokens
   // ---------------------------------------------------------------------------
 
