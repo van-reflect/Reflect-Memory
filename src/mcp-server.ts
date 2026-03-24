@@ -16,7 +16,9 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
-import { ReflectOAuthProvider } from "./oauth-store.js";
+import { ReflectOAuthProvider, resolveAgentKeyUser } from "./oauth-store.js";
+import { authenticateApiKey } from "./api-key-service.js";
+import { findOrCreateUserByEmail } from "./user-service.js";
 import {
   listMemories,
   listMemorySummaries,
@@ -28,6 +30,7 @@ import {
 
 export interface McpServerConfig {
   db: Database.Database;
+  /** Fallback userId only used when no per-user resolution is possible */
   userId: string;
   agentKeys: Record<string, string>;
   publicUrl?: string;
@@ -244,7 +247,14 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
         return;
       }
 
-      const redirectUrl = oauthProvider.approvePendingRequest(pendingId);
+      let approvedUserId: string | undefined;
+      const email = payload.email as string | undefined;
+      if (email) {
+        approvedUserId = findOrCreateUserByEmail(db, email);
+        console.log(`[oauth] Resolved user ${approvedUserId} from email ${email}`);
+      }
+
+      const redirectUrl = oauthProvider.approvePendingRequest(pendingId, approvedUserId);
       res.redirect(302, redirectUrl);
     } catch (err) {
       console.error("[oauth] Approval failed:", (err as Error).message);
@@ -258,16 +268,44 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
 
   const hybridVerifier: OAuthTokenVerifier = {
     async verifyAccessToken(token: string): Promise<AuthInfo> {
+      // 1. Dashboard-generated per-user API keys (rm_live_*)
+      const apiKeyAuth = authenticateApiKey(db, token);
+      if (apiKeyAuth) {
+        return {
+          token,
+          clientId: `apikey_${apiKeyAuth.keyId}`,
+          scopes: ["mcp:read", "mcp:write"],
+          expiresAt: Math.floor(Date.now() / 1000) + 86400,
+          extra: { vendor: "apikey", userId: apiKeyAuth.userId, isLegacy: false },
+        };
+      }
+
+      // 2. Per-user MCP agent keys (rmk_*)
+      const dbKey = resolveAgentKeyUser(db, token);
+      if (dbKey) {
+        return {
+          token,
+          clientId: `agentkey_${dbKey.vendor}`,
+          scopes: ["mcp:read", "mcp:write"],
+          expiresAt: Math.floor(Date.now() / 1000) + 86400,
+          extra: { vendor: dbKey.vendor, userId: dbKey.userId, isLegacy: false },
+        };
+      }
+
+      // 3. Legacy env-var keys (backward compat, mapped to global userId)
       const vendor = resolveVendor(token);
       if (vendor) {
+        console.warn(`[mcp] Legacy env-var key used (vendor=${vendor}). Migrate to per-user keys.`);
         return {
           token,
           clientId: `legacy_${vendor}`,
           scopes: ["mcp:read", "mcp:write"],
           expiresAt: Math.floor(Date.now() / 1000) + 86400,
-          extra: { vendor, isLegacy: true },
+          extra: { vendor, userId, isLegacy: true },
         };
       }
+
+      // 4. OAuth tokens (user_id stored on the token row)
       return oauthProvider.verifyAccessToken(token);
     },
   };
@@ -283,7 +321,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     const auth = (req as any).auth as AuthInfo | undefined;
     if (!auth) return next();
 
-    if (auth.extra?.isLegacy) {
+    if (auth.extra?.isLegacy || auth.extra?.vendor) {
       (req as any).vendor = auth.extra.vendor as string;
     } else {
       const client = oauthProvider.clientsStore.getClient(auth.clientId) as
@@ -292,6 +330,10 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       (req as any).vendor =
         client?.client_name?.toLowerCase().replace(/[^a-z0-9]/g, "") || "oauth";
     }
+
+    const resolvedUserId = auth.extra?.userId as string | undefined;
+    (req as any).resolvedUserId = resolvedUserId || userId;
+
     next();
   });
 
@@ -353,6 +395,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
         }
 
         const vendor = (req as any).vendor as string;
+        const sessionUserId = (req as any).resolvedUserId as string;
 
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -373,7 +416,8 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
           }
         };
 
-        const mcp = createMcpServerWithTools(db, userId, vendor);
+        console.log(`[mcp] New session for user=${sessionUserId} vendor=${vendor}`);
+        const mcp = createMcpServerWithTools(db, sessionUserId, vendor);
         await mcp.connect(transport);
         await transport.handleRequest(req, res, req.body);
         return;

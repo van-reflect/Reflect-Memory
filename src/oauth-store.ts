@@ -38,6 +38,7 @@ export function createOAuthTables(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS oauth_codes (
       code          TEXT NOT NULL PRIMARY KEY,
       client_id     TEXT NOT NULL,
+      user_id       TEXT,
       challenge     TEXT NOT NULL,
       redirect_uri  TEXT NOT NULL,
       scopes        TEXT NOT NULL DEFAULT '[]',
@@ -50,6 +51,7 @@ export function createOAuthTables(db: Database.Database): void {
       token         TEXT NOT NULL PRIMARY KEY,
       token_type    TEXT NOT NULL,
       client_id     TEXT NOT NULL,
+      user_id       TEXT,
       scopes        TEXT NOT NULL DEFAULT '[]',
       resource      TEXT,
       expires_at    TEXT,
@@ -61,6 +63,7 @@ export function createOAuthTables(db: Database.Database): void {
       id            TEXT NOT NULL PRIMARY KEY,
       client_id     TEXT NOT NULL,
       client_name   TEXT,
+      user_id       TEXT,
       redirect_uri  TEXT NOT NULL,
       code_challenge TEXT NOT NULL,
       scopes        TEXT NOT NULL DEFAULT '[]',
@@ -69,7 +72,30 @@ export function createOAuthTables(db: Database.Database): void {
       expires_at    TEXT NOT NULL,
       created_at    TEXT NOT NULL
     ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS agent_keys (
+      id         TEXT NOT NULL PRIMARY KEY,
+      user_id    TEXT NOT NULL,
+      vendor     TEXT NOT NULL,
+      key_hash   TEXT NOT NULL,
+      label      TEXT,
+      created_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_agent_keys_hash ON agent_keys(key_hash);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_keys_user_vendor ON agent_keys(user_id, vendor);
   `);
+
+  migrateOAuthUserColumns(db);
+}
+
+function migrateOAuthUserColumns(db: Database.Database): void {
+  const tables = ["oauth_codes", "oauth_tokens", "oauth_pending_requests"];
+  for (const table of tables) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === "user_id")) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN user_id TEXT`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +116,66 @@ function constantTimeEqual(a: string, b: string): boolean {
   const ha = createHash("sha256").update(a).digest();
   const hb = createHash("sha256").update(b).digest();
   return ha.length === hb.length && timingSafeEqual(ha, hb);
+}
+
+// ---------------------------------------------------------------------------
+// Agent keys: per-user bearer tokens for non-OAuth vendors (ChatGPT, Cursor)
+// ---------------------------------------------------------------------------
+
+export interface AgentKeyRow {
+  id: string;
+  user_id: string;
+  vendor: string;
+  key_hash: string;
+  label: string | null;
+  created_at: string;
+}
+
+export function createAgentKey(
+  db: Database.Database,
+  userId: string,
+  vendor: string,
+  label?: string,
+): { key: string; row: AgentKeyRow } {
+  const raw = `rmk_${randomUUID().replace(/-/g, "")}`;
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const keyHash = hashSecret(raw);
+
+  db.prepare(
+    `INSERT OR REPLACE INTO agent_keys (id, user_id, vendor, key_hash, label, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, userId, vendor, keyHash, label || null, now);
+
+  return { key: raw, row: { id, user_id: userId, vendor, key_hash: keyHash, label: label || null, created_at: now } };
+}
+
+export function resolveAgentKeyUser(
+  db: Database.Database,
+  bearerToken: string,
+): { userId: string; vendor: string } | null {
+  const tokenHash = hashSecret(bearerToken);
+  const row = db
+    .prepare(`SELECT user_id, vendor FROM agent_keys WHERE key_hash = ?`)
+    .get(tokenHash) as { user_id: string; vendor: string } | undefined;
+  if (!row) return null;
+  return { userId: row.user_id, vendor: row.vendor };
+}
+
+export function listAgentKeys(
+  db: Database.Database,
+  userId: string,
+): Omit<AgentKeyRow, "key_hash">[] {
+  return db
+    .prepare(`SELECT id, user_id, vendor, label, created_at FROM agent_keys WHERE user_id = ?`)
+    .all(userId) as Omit<AgentKeyRow, "key_hash">[];
+}
+
+export function deleteAgentKey(db: Database.Database, keyId: string, userId: string): boolean {
+  const result = db
+    .prepare(`DELETE FROM agent_keys WHERE id = ? AND user_id = ?`)
+    .run(keyId, userId);
+  return result.changes > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +296,7 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     res.redirect(302, consentUrl.toString());
   }
 
-  approvePendingRequest(pendingId: string): string {
+  approvePendingRequest(pendingId: string, userId?: string): string {
     const row = this.db
       .prepare(`SELECT * FROM oauth_pending_requests WHERE id = ?`)
       .get(pendingId) as Record<string, string> | undefined;
@@ -221,6 +307,8 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
       throw new Error("Pending request expired");
     }
 
+    const resolvedUserId = userId || row.user_id || null;
+
     this.db.prepare(`DELETE FROM oauth_pending_requests WHERE id = ?`).run(pendingId);
 
     const code = randomUUID().replace(/-/g, "");
@@ -229,12 +317,13 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
 
     this.db
       .prepare(
-        `INSERT INTO oauth_codes (code, client_id, challenge, redirect_uri, scopes, resource, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO oauth_codes (code, client_id, user_id, challenge, redirect_uri, scopes, resource, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         code,
         row.client_id,
+        resolvedUserId,
         row.code_challenge,
         row.redirect_uri,
         row.scopes,
@@ -290,20 +379,21 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     const refreshExpiry = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000); // 90 days
     const scopes = safeJson(row.scopes) as string[];
     const resourceStr = resource?.toString() || row.resource || null;
+    const tokenUserId = row.user_id || null;
 
     this.db
       .prepare(
-        `INSERT INTO oauth_tokens (token, token_type, client_id, scopes, resource, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO oauth_tokens (token, token_type, client_id, user_id, scopes, resource, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(accessToken, "access", client.client_id, JSON.stringify(scopes), resourceStr, accessExpiry.toISOString(), now.toISOString());
+      .run(accessToken, "access", client.client_id, tokenUserId, JSON.stringify(scopes), resourceStr, accessExpiry.toISOString(), now.toISOString());
 
     this.db
       .prepare(
-        `INSERT INTO oauth_tokens (token, token_type, client_id, scopes, resource, expires_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO oauth_tokens (token, token_type, client_id, user_id, scopes, resource, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(refreshToken, "refresh", client.client_id, JSON.stringify(scopes), resourceStr, refreshExpiry.toISOString(), now.toISOString());
+      .run(refreshToken, "refresh", client.client_id, tokenUserId, JSON.stringify(scopes), resourceStr, refreshExpiry.toISOString(), now.toISOString());
 
     return {
       access_token: accessToken,
@@ -339,14 +429,15 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     const refreshExpiry = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
     const tokenScopes = scopes || (safeJson(row.scopes) as string[]);
     const resourceStr = resource?.toString() || row.resource || null;
+    const tokenUserId = row.user_id || null;
 
     this.db
-      .prepare(`INSERT INTO oauth_tokens (token, token_type, client_id, scopes, resource, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(newAccess, "access", client.client_id, JSON.stringify(tokenScopes), resourceStr, accessExpiry.toISOString(), now.toISOString());
+      .prepare(`INSERT INTO oauth_tokens (token, token_type, client_id, user_id, scopes, resource, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(newAccess, "access", client.client_id, tokenUserId, JSON.stringify(tokenScopes), resourceStr, accessExpiry.toISOString(), now.toISOString());
 
     this.db
-      .prepare(`INSERT INTO oauth_tokens (token, token_type, client_id, scopes, resource, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(newRefresh, "refresh", client.client_id, JSON.stringify(tokenScopes), resourceStr, refreshExpiry.toISOString(), now.toISOString());
+      .prepare(`INSERT INTO oauth_tokens (token, token_type, client_id, user_id, scopes, resource, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(newRefresh, "refresh", client.client_id, tokenUserId, JSON.stringify(tokenScopes), resourceStr, refreshExpiry.toISOString(), now.toISOString());
 
     return {
       access_token: newAccess,
@@ -374,6 +465,7 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
       scopes: safeJson(row.scopes) as string[],
       expiresAt: row.expires_at ? Math.floor(new Date(row.expires_at).getTime() / 1000) : undefined,
       resource: row.resource ? new URL(row.resource) : undefined,
+      extra: { userId: row.user_id || null },
     };
   }
 
