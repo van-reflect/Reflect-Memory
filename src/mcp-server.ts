@@ -230,35 +230,59 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     }
 
     if (!dashboardJwtSecret) {
-      res.status(500).json({ error: "OAuth consent not configured" });
+      console.error("[oauth] RM_DASHBOARD_JWT_SECRET not configured");
+      res.status(500).json({ error: "OAuth consent not configured on server" });
       return;
     }
 
+    // Step 1: Verify the JWT from the dashboard
+    let payload: Record<string, unknown>;
     try {
       const key = new TextEncoder().encode(dashboardJwtSecret);
-      const { payload } = await jwtVerify(token, key, {
+      const result = await jwtVerify(token, key, {
         audience: "reflect-memory",
         issuer: "reflect-dashboard",
       });
+      payload = result.payload as Record<string, unknown>;
+    } catch (err) {
+      const msg = (err as Error).message || String(err);
+      console.error(`[oauth] JWT verification failed: ${msg}`);
+      res.status(403).json({ error: "Token verification failed. Check that AUTH_SECRET and RM_DASHBOARD_JWT_SECRET match." });
+      return;
+    }
 
-      const pendingId = payload.pending_id as string;
-      if (!pendingId) {
-        res.status(400).json({ error: "Invalid approval token" });
-        return;
-      }
+    const pendingId = payload.pending_id as string;
+    if (!pendingId) {
+      res.status(400).json({ error: "Missing pending_id in approval token" });
+      return;
+    }
 
-      let approvedUserId: string | undefined;
-      const email = payload.email as string | undefined;
-      if (email) {
+    // Step 2: Resolve the user from the email in the JWT (non-fatal if it fails)
+    let approvedUserId: string | undefined;
+    const email = payload.email as string | undefined;
+    if (email) {
+      try {
         approvedUserId = findOrCreateUserByEmail(db, email);
         console.log(`[oauth] Resolved user ${approvedUserId} from email ${email}`);
+      } catch (err) {
+        console.error(`[oauth] User resolution failed for ${email}: ${(err as Error).message}`);
       }
+    }
 
+    // Step 3: Approve the pending request and redirect
+    try {
       const redirectUrl = oauthProvider.approvePendingRequest(pendingId, approvedUserId);
       res.redirect(302, redirectUrl);
     } catch (err) {
-      console.error("[oauth] Approval failed:", (err as Error).message);
-      res.status(403).json({ error: "Invalid or expired approval" });
+      const msg = (err as Error).message || String(err);
+      console.error(`[oauth] Pending request approval failed: ${msg}`);
+      if (msg.includes("expired")) {
+        res.status(410).json({ error: "Authorization request expired. Go back to your AI tool and try connecting again." });
+      } else if (msg.includes("not found")) {
+        res.status(404).json({ error: "Authorization request not found. It may have been used already. Try connecting again." });
+      } else {
+        res.status(500).json({ error: `Approval failed: ${msg}` });
+      }
     }
   });
 
@@ -490,7 +514,18 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   });
 
   app.get("/health", (_req, res) => {
-    res.json({ service: "reflect-memory-mcp", status: "ok" });
+    const secretLen = dashboardJwtSecret?.length ?? 0;
+    res.json({
+      service: "reflect-memory-mcp",
+      status: "ok",
+      oauth: {
+        jwt_secret_configured: secretLen > 0,
+        jwt_secret_length: secretLen,
+        dashboard_url: dashboardUrl || "(not set)",
+        public_url: publicUrl || "(not set)",
+      },
+      sessions: Object.keys(transports).length,
+    });
   });
 
   const vendors = Object.keys(agentKeys);
