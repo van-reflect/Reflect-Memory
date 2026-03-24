@@ -700,6 +700,7 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
       publicUrl: mcpPublicUrl || undefined,
       dashboardUrl: optionalEnv("RM_DASHBOARD_URL", "https://reflectmemory.com"),
       dashboardJwtSecret: dashboardJwtSecret || undefined,
+      dashboardServiceKey: dashboardServiceKey || undefined,
     }, mcpPort);
   }
 });

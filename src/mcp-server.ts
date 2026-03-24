@@ -36,6 +36,7 @@ export interface McpServerConfig {
   publicUrl?: string;
   dashboardUrl?: string;
   dashboardJwtSecret?: string;
+  dashboardServiceKey?: string;
 }
 
 function createMcpServerWithTools(
@@ -177,7 +178,7 @@ function createMcpServerWithTools(
 }
 
 export function startMcpServer(config: McpServerConfig, port: number): void {
-  const { db, userId, agentKeys, publicUrl, dashboardUrl, dashboardJwtSecret } = config;
+  const { db, userId, agentKeys, publicUrl, dashboardUrl, dashboardJwtSecret, dashboardServiceKey } = config;
 
   const app = express();
   app.use(express.json({ limit: "256kb" }));
@@ -298,7 +299,8 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     }
 
     const token = authHeader.slice(7);
-    const vendor = resolveVendor(token);
+    const isDashboardKey = dashboardServiceKey && constantTimeEqual(token, dashboardServiceKey);
+    const vendor = isDashboardKey ? "dashboard" : resolveVendor(token);
     if (!vendor) {
       res.status(403).json({ error: "Invalid service key" });
       return;

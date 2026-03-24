@@ -445,6 +445,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       "/token",
       "/register",
       "/oauth/approve",
+      "/oauth/approve-s2s",
     ];
     for (const oauthPath of oauthPaths) {
       await server.register(proxy, {
