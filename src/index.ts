@@ -437,7 +437,7 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(ciTrashMigration
 }
 
 // Migration: create OAuth tables for MCP native connector
-import { createOAuthTables } from "./oauth-store.js";
+import { createOAuthTables, ensureOAuthUserColumns } from "./oauth-store.js";
 const oauthMigrationName = "012_oauth_tables";
 if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(oauthMigrationName)) {
   createOAuthTables(db);
@@ -548,6 +548,16 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(phantomReadsMigr
     phantomReadsMigration,
     new Date().toISOString(),
   );
+}
+
+const oauthUserIdMigration = "018_oauth_user_id_columns";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(oauthUserIdMigration)) {
+  ensureOAuthUserColumns(db);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    oauthUserIdMigration,
+    new Date().toISOString(),
+  );
+  console.log("[migration] Added user_id columns to OAuth tables and created agent_keys");
 }
 
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();

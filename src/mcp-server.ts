@@ -16,7 +16,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
-import { ReflectOAuthProvider, resolveAgentKeyUser } from "./oauth-store.js";
+import { ReflectOAuthProvider, resolveAgentKeyUser, hasUserIdColumns } from "./oauth-store.js";
 import { authenticateApiKey } from "./api-key-service.js";
 import { findOrCreateUserByEmail } from "./user-service.js";
 import {
@@ -561,15 +561,39 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
 
   app.get("/health", (_req, res) => {
     const secretLen = dashboardJwtSecret?.length ?? 0;
+    const svcKeyLen = dashboardServiceKey?.length ?? 0;
+
+    let dbDiag: Record<string, unknown> = {};
+    try {
+      const pendingCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_pending_requests`).get() as { c: number }).c;
+      const clientCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_clients`).get() as { c: number }).c;
+      const tokenCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_tokens`).get() as { c: number }).c;
+      const codesCols = (db.prepare(`PRAGMA table_info(oauth_codes)`).all() as { name: string }[]).map(c => c.name);
+      const tokensCols = (db.prepare(`PRAGMA table_info(oauth_tokens)`).all() as { name: string }[]).map(c => c.name);
+      const pendingCols = (db.prepare(`PRAGMA table_info(oauth_pending_requests)`).all() as { name: string }[]).map(c => c.name);
+      dbDiag = {
+        pending_requests: pendingCount,
+        clients: clientCount,
+        tokens: tokenCount,
+        codes_has_user_id: codesCols.includes("user_id"),
+        tokens_has_user_id: tokensCols.includes("user_id"),
+        pending_has_user_id: pendingCols.includes("user_id"),
+      };
+    } catch (err) {
+      dbDiag = { error: (err as Error).message };
+    }
+
     res.json({
       service: "reflect-memory-mcp",
       status: "ok",
       oauth: {
         jwt_secret_configured: secretLen > 0,
-        jwt_secret_length: secretLen,
+        service_key_configured: svcKeyLen > 0,
+        has_user_id_cols: hasUserIdColumns(),
         dashboard_url: dashboardUrl || "(not set)",
         public_url: publicUrl || "(not set)",
       },
+      db: dbDiag,
       sessions: Object.keys(transports).length,
     });
   });

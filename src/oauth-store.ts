@@ -24,8 +24,6 @@ import type {
 let _hasUserIdCols = false;
 
 export function createOAuthTables(db: Database.Database): void {
-  // Create core tables WITHOUT user_id so CREATE TABLE IF NOT EXISTS is a clean
-  // no-op on databases that already have these tables from before the migration.
   db.exec(`
     CREATE TABLE IF NOT EXISTS oauth_clients (
       client_id           TEXT NOT NULL PRIMARY KEY,
@@ -74,8 +72,27 @@ export function createOAuthTables(db: Database.Database): void {
       created_at    TEXT NOT NULL
     ) STRICT;
   `);
+}
 
-  // agent_keys table -- separate exec so failures don't block core tables
+/**
+ * Add user_id columns to OAuth tables and create agent_keys table.
+ * Safe to call multiple times -- each operation is idempotent.
+ * Called from migration 018 in index.ts AND from ReflectOAuthProvider constructor.
+ */
+export function ensureOAuthUserColumns(db: Database.Database): void {
+  const tables = ["oauth_codes", "oauth_tokens", "oauth_pending_requests"];
+  for (const table of tables) {
+    try {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+      if (!cols.some((c) => c.name === "user_id")) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN user_id TEXT`);
+        console.log(`[oauth] Added user_id column to ${table}`);
+      }
+    } catch (err) {
+      console.error(`[oauth] Failed to add user_id to ${table}: ${(err as Error).message}`);
+    }
+  }
+
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS agent_keys (
@@ -93,35 +110,14 @@ export function createOAuthTables(db: Database.Database): void {
     console.warn(`[oauth] agent_keys table setup: ${(err as Error).message}`);
   }
 
-  // Migrate user_id columns onto existing tables (each in its own try/catch)
-  _hasUserIdCols = migrateOAuthUserColumns(db);
-}
-
-function migrateOAuthUserColumns(db: Database.Database): boolean {
-  const tables = ["oauth_codes", "oauth_tokens", "oauth_pending_requests"];
-  let allOk = true;
-  for (const table of tables) {
-    try {
-      const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-      if (!cols.some((c) => c.name === "user_id")) {
-        db.exec(`ALTER TABLE ${table} ADD COLUMN user_id TEXT`);
-        console.log(`[oauth] Added user_id column to ${table}`);
-      }
-    } catch (err) {
-      console.error(`[oauth] Failed to add user_id to ${table}: ${(err as Error).message}`);
-      allOk = false;
-    }
-  }
-  // Final check: verify the columns actually exist
+  // Set the flag based on actual column existence
   try {
     const cols = db.prepare(`PRAGMA table_info(oauth_codes)`).all() as { name: string }[];
-    const hasIt = cols.some((c) => c.name === "user_id");
-    if (!hasIt) {
-      console.error(`[oauth] CRITICAL: user_id column still missing from oauth_codes after migration`);
-      allOk = false;
-    }
-  } catch { allOk = false; }
-  return allOk;
+    _hasUserIdCols = cols.some((c) => c.name === "user_id");
+  } catch {
+    _hasUserIdCols = false;
+  }
+  console.log(`[oauth] user_id columns available: ${_hasUserIdCols}`);
 }
 
 export function hasUserIdColumns(): boolean {
@@ -286,6 +282,8 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     this._clientsStore = new SqliteClientsStore(config.db);
     this.issuerUrl = config.issuerUrl;
     this.dashboardUrl = config.dashboardUrl || "https://reflectmemory.com";
+    // Ensure user_id columns exist every time the provider starts
+    ensureOAuthUserColumns(config.db);
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
