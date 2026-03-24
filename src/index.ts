@@ -637,8 +637,9 @@ const chatProviderNames = [
   chatProviders.xaiKey ? "xai" : "",
 ].filter(Boolean);
 
-const mcpPort = validVendors.length > 0
-  ? parseInt(optionalEnv("RM_MCP_PORT", "3001"), 10)
+const mcpPortEnv = optionalEnv("RM_MCP_PORT", "3001");
+const mcpPort = (validVendors.length > 0 || optionalEnv("RM_PUBLIC_URL", ""))
+  ? parseInt(mcpPortEnv, 10)
   : null;
 
 const config: ServerConfig = {
@@ -689,8 +690,8 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
     scheduleAuditPruning(auditRetentionDays);
   }
 
-  // Start MCP server when any agent key is configured (multi-vendor)
-  if (validVendors.length > 0 && mcpPort != null) {
+  // Start MCP server when agent keys or OAuth (RM_PUBLIC_URL) is configured
+  if (mcpPort != null) {
     const mcpPublicUrl = optionalEnv("RM_PUBLIC_URL", "");
     startMcpServer({
       db,
