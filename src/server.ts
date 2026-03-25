@@ -1176,7 +1176,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         title: body.title,
         content: body.content,
         tags: body.tags,
-        origin: request.authMethod === "dashboard" ? "dashboard" : "cursor",
+        origin: request.authMethod === "dashboard" ? "dashboard" : "api",
         allowed_vendors: allowedVendors,
         memory_type: body.memory_type as MemoryType | undefined,
       };
@@ -2502,7 +2502,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           title: body.seed_memory.title,
           content: body.seed_memory.content,
           tags: ["team-seed"],
-          origin: "user",
+          origin: "dashboard",
           allowed_vendors: ["*"],
         });
         shareMemoryToTeam(db, mem.id, request.userId, teamId);
