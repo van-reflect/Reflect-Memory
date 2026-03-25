@@ -14,6 +14,8 @@ export interface MemoryEntry {
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
+  shared_with_team_id?: string | null;
+  shared_at?: string | null;
 }
 
 export interface CreateMemoryInput {
@@ -67,6 +69,8 @@ interface MemoryRow {
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
+  shared_with_team_id?: string | null;
+  shared_at?: string | null;
 }
 
 function safeJsonArray(raw: string): string[] {
@@ -90,10 +94,12 @@ function rowToMemory(row: MemoryRow): MemoryEntry {
     created_at: row.created_at,
     updated_at: row.updated_at,
     deleted_at: row.deleted_at ?? undefined,
+    shared_with_team_id: row.shared_with_team_id ?? null,
+    shared_at: row.shared_at ?? null,
   };
 }
 
-const MEMORY_COLUMNS = ["id", "user_id", "title", "content", "tags", "origin", "allowed_vendors", "memory_type", "created_at", "updated_at", "deleted_at"] as const;
+const MEMORY_COLUMNS = ["id", "user_id", "title", "content", "tags", "origin", "allowed_vendors", "memory_type", "created_at", "updated_at", "deleted_at", "shared_with_team_id", "shared_at"] as const;
 const COLUMNS = MEMORY_COLUMNS.join(", ");
 const COLUMNS_ALIASED = MEMORY_COLUMNS.map(c => `m.${c}`).join(", ");
 
@@ -668,8 +674,6 @@ export function deleteMemory(
   memoryId: string,
 ): boolean {
   const txn = db.transaction(() => {
-    // Verify ownership BEFORE touching memory_versions to prevent
-    // cross-user version deletion via guessed memory_id (IDOR).
     const owns = db
       .prepare(`SELECT 1 FROM memories WHERE id = ? AND user_id = ?`)
       .get(memoryId, userId);
@@ -682,4 +686,93 @@ export function deleteMemory(
     return result.changes > 0;
   });
   return txn();
+}
+
+// ---------------------------------------------------------------------------
+// Team memory functions
+// ---------------------------------------------------------------------------
+
+export function shareMemoryToTeam(
+  db: Database.Database,
+  memoryId: string,
+  userId: string,
+  teamId: string,
+): MemoryEntry | null {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE memories SET shared_with_team_id = ?, shared_at = ?, updated_at = ?
+       WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+    )
+    .run(teamId, now, now, memoryId, userId);
+  if (result.changes === 0) return null;
+  return readMemoryById(db, userId, memoryId);
+}
+
+export function unshareMemory(
+  db: Database.Database,
+  memoryId: string,
+  userId: string,
+): MemoryEntry | null {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE memories SET shared_with_team_id = NULL, shared_at = NULL, updated_at = ?
+       WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+    )
+    .run(now, memoryId, userId);
+  if (result.changes === 0) return null;
+  return readMemoryById(db, userId, memoryId);
+}
+
+export interface TeamMemoryEntry extends MemoryEntry {
+  author_email: string;
+  author_first_name: string | null;
+  author_last_name: string | null;
+  shared_at: string | null;
+}
+
+export function listTeamMemories(
+  db: Database.Database,
+  teamId: string,
+  pagination?: PaginationOptions,
+): TeamMemoryEntry[] {
+  const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
+  const rows = db
+    .prepare(
+      `SELECT ${COLUMNS_ALIASED}, u.email AS author_email, u.first_name AS author_first_name,
+              u.last_name AS author_last_name, m.shared_at
+       FROM memories m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.shared_with_team_id = ? AND m.deleted_at IS NULL
+       ORDER BY m.shared_at DESC, m.created_at DESC${pagSql}`,
+    )
+    .all(teamId, ...pagParams) as (MemoryRow & {
+      author_email: string;
+      author_first_name: string | null;
+      author_last_name: string | null;
+      shared_at: string | null;
+    })[];
+
+  return rows.map((row) => ({
+    ...rowToMemory(row),
+    author_email: row.author_email,
+    author_first_name: row.author_first_name,
+    author_last_name: row.author_last_name,
+    shared_at: row.shared_at,
+  }));
+}
+
+export function countTeamMemories(
+  db: Database.Database,
+  teamId: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM memories
+       WHERE deleted_at IS NULL
+         AND user_id IN (SELECT id FROM users WHERE team_id = ?)`,
+    )
+    .get(teamId) as { cnt: number };
+  return row.cnt;
 }

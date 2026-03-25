@@ -26,7 +26,12 @@ CREATE TABLE users (
                         CHECK(role IN ('admin', 'private-alpha', 'user')),
     stripe_customer_id  TEXT UNIQUE,                  -- Stripe customer ID (NULL until subscribed)
     plan                TEXT NOT NULL DEFAULT 'free'
-                        CHECK(plan IN ('free', 'builder')),
+                        CHECK(plan IN ('free', 'builder', 'pro', 'team', 'admin')),
+    team_id             TEXT REFERENCES teams(id),
+    team_role           TEXT DEFAULT NULL
+                        CHECK(team_role IN ('owner', 'member')),
+    first_name          TEXT DEFAULT NULL,
+    last_name           TEXT DEFAULT NULL,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 ) STRICT;
@@ -56,26 +61,55 @@ CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
 CREATE INDEX idx_api_keys_key_hash ON api_keys(key_hash) WHERE revoked_at IS NULL;
 
 -- =============================================================================
+-- TEAMS
+-- =============================================================================
+-- Team tier: shared namespace for collaborative AI memory.
+-- =============================================================================
+
+CREATE TABLE teams (
+    id          TEXT NOT NULL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    owner_id    TEXT NOT NULL REFERENCES users(id),
+    plan        TEXT NOT NULL DEFAULT 'team',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE team_invites (
+    id          TEXT NOT NULL PRIMARY KEY,
+    team_id     TEXT NOT NULL REFERENCES teams(id),
+    email       TEXT,
+    token       TEXT NOT NULL UNIQUE,
+    invited_by  TEXT NOT NULL REFERENCES users(id),
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'accepted', 'expired')),
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL
+) STRICT;
+
+-- =============================================================================
 -- MEMORIES
 -- =============================================================================
 -- Single source of truth for all user-authored memory entries.
 -- =============================================================================
 
 CREATE TABLE memories (
-    id              TEXT NOT NULL PRIMARY KEY,
-    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    title           TEXT NOT NULL,
-    content         TEXT NOT NULL,
-    tags            TEXT NOT NULL DEFAULT '[]'
-                    CHECK(json_type(tags) = 'array'),
-    origin          TEXT NOT NULL DEFAULT 'user',
-    allowed_vendors TEXT NOT NULL DEFAULT '["*"]'
-                    CHECK(json_type(allowed_vendors) = 'array'),
-    memory_type     TEXT NOT NULL DEFAULT 'semantic'
-                    CHECK(memory_type IN ('semantic', 'episodic', 'procedural')),
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL,
-    deleted_at      TEXT
+    id                   TEXT NOT NULL PRIMARY KEY,
+    user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    title                TEXT NOT NULL,
+    content              TEXT NOT NULL,
+    tags                 TEXT NOT NULL DEFAULT '[]'
+                         CHECK(json_type(tags) = 'array'),
+    origin               TEXT NOT NULL DEFAULT 'user',
+    allowed_vendors      TEXT NOT NULL DEFAULT '["*"]'
+                         CHECK(json_type(allowed_vendors) = 'array'),
+    memory_type          TEXT NOT NULL DEFAULT 'semantic'
+                         CHECK(memory_type IN ('semantic', 'episodic', 'procedural')),
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    deleted_at           TEXT,
+    shared_with_team_id  TEXT REFERENCES teams(id),
+    shared_at            TEXT DEFAULT NULL
 ) STRICT;
 
 CREATE INDEX idx_memories_user_id ON memories(user_id);

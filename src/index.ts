@@ -560,6 +560,50 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(oauthUserIdMigra
   console.log("[migration] Added user_id columns to OAuth tables and created agent_keys");
 }
 
+const teamsAndSharedMigration = "019_teams_and_shared_namespace";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(teamsAndSharedMigration)) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS teams (
+      id          TEXT NOT NULL PRIMARY KEY,
+      name        TEXT NOT NULL,
+      owner_id    TEXT NOT NULL REFERENCES users(id),
+      plan        TEXT NOT NULL DEFAULT 'team',
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS team_invites (
+      id          TEXT NOT NULL PRIMARY KEY,
+      team_id     TEXT NOT NULL REFERENCES teams(id),
+      email       TEXT,
+      token       TEXT NOT NULL UNIQUE,
+      invited_by  TEXT NOT NULL REFERENCES users(id),
+      status      TEXT NOT NULL DEFAULT 'pending'
+                  CHECK(status IN ('pending', 'accepted', 'expired')),
+      created_at  TEXT NOT NULL,
+      expires_at  TEXT NOT NULL
+    ) STRICT;
+  `);
+
+  const addCol = (table: string, col: string, def: string) => {
+    try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`); }
+    catch (e) { if (!(e instanceof Error && e.message.includes("duplicate column"))) throw e; }
+  };
+
+  addCol("users", "team_id", "TEXT REFERENCES teams(id)");
+  addCol("users", "team_role", "TEXT DEFAULT NULL CHECK(team_role IN ('owner', 'member'))");
+  addCol("users", "first_name", "TEXT DEFAULT NULL");
+  addCol("users", "last_name", "TEXT DEFAULT NULL");
+  addCol("memories", "shared_with_team_id", "TEXT REFERENCES teams(id)");
+  addCol("memories", "shared_at", "TEXT DEFAULT NULL");
+
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    teamsAndSharedMigration,
+    new Date().toISOString(),
+  );
+  console.log("[migration] Created teams, team_invites tables and added team columns");
+}
+
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 
 let userId: string;

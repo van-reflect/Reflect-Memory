@@ -13,7 +13,15 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
-import { findOrCreateUserByEmail } from "./user-service.js";
+import {
+  findOrCreateUserByEmail,
+  getUserById,
+  updateUserName,
+  addUserToTeam,
+  removeUserFromTeam,
+  getTeamMembers,
+  getTeamMemberCount,
+} from "./user-service.js";
 import type { DeploymentConfig } from "./deployment-config.js";
 import { createSsoVerifier, validateSsoConfig } from "./sso-auth.js";
 import { recordAuditEvent, queryAuditEvents, countAuditEvents, exportAuditEvents } from "./audit-service.js";
@@ -54,6 +62,10 @@ import {
   type MemoryFilter,
   type MemoryType,
   type PaginationOptions,
+  shareMemoryToTeam,
+  unshareMemory,
+  listTeamMemories,
+  countTeamMemories,
 } from "./memory-service.js";
 import { buildPrompt, type PromptResult } from "./context-builder.js";
 import {
@@ -518,6 +530,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   server.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?")[0];
     if (path === "/health" || path === "/openapi.json") return;
+    if (request.method === "GET" && path.startsWith("/teams/invite/")) return;
     if (request.method === "POST" && (path === "/waitlist" || path === "/early-access" || path === "/integration-requests")) return;
     if (deployment.allowPublicWebhooks && request.method === "POST" && path === "/webhooks/clerk") return;
     if (deployment.allowPublicWebhooks && request.method === "POST" && path === "/webhooks/stripe") return;
@@ -2194,7 +2207,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           required: ["plan"],
           additionalProperties: false,
           properties: {
-            plan: { type: "string" as const, enum: ["pro", "builder"] },
+            plan: { type: "string" as const, enum: ["pro", "builder", "team"] },
             success_url: { type: "string" as const },
             cancel_url: { type: "string" as const },
           },
@@ -2208,7 +2221,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
 
       const { plan, success_url, cancel_url } = request.body as {
-        plan: "pro" | "builder";
+        plan: "pro" | "builder" | "team";
         success_url?: string;
         cancel_url?: string;
       };
@@ -2334,7 +2347,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return reply.code(400).send({ error: "Invalid webhook signature" });
       }
 
-      handleStripeWebhook(db, event);
+      await handleStripeWebhook(db, event);
       return { received: true };
     },
   );
@@ -2428,6 +2441,443 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
 
       return { received: true, ignored: true };
+    },
+  );
+
+  // ===========================================================================
+  // Team endpoints
+  // ===========================================================================
+
+  server.post(
+    "/teams",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["name"],
+          properties: {
+            name: { type: "string" as const, minLength: 1, maxLength: 100 },
+            first_name: { type: "string" as const, maxLength: 100 },
+            last_name: { type: "string" as const, maxLength: 100 },
+            seed_memory: {
+              type: "object" as const,
+              properties: {
+                title: { type: "string" as const },
+                content: { type: "string" as const },
+              },
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const user = getUserById(db, request.userId);
+      if (!user) return reply.code(404).send({ error: "User not found" });
+      if (user.team_id) return reply.code(409).send({ error: "Already on a team" });
+
+      const body = request.body as {
+        name: string;
+        first_name?: string;
+        last_name?: string;
+        seed_memory?: { title: string; content: string };
+      };
+
+      const teamId = randomUUID();
+      const now = new Date().toISOString();
+
+      db.prepare(
+        `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at) VALUES (?, ?, ?, 'team', ?, ?)`,
+      ).run(teamId, body.name.trim(), request.userId, now, now);
+
+      addUserToTeam(db, request.userId, teamId, "owner");
+
+      if (body.first_name || body.last_name) {
+        updateUserName(db, request.userId, body.first_name ?? "", body.last_name ?? "");
+      }
+
+      if (body.seed_memory?.title && body.seed_memory?.content) {
+        const mem = createMemory(db, request.userId, {
+          title: body.seed_memory.title,
+          content: body.seed_memory.content,
+          tags: ["team-seed"],
+          origin: "user",
+          allowed_vendors: ["*"],
+        });
+        shareMemoryToTeam(db, mem.id, request.userId, teamId);
+      }
+
+      reply.code(201);
+      return {
+        id: teamId,
+        name: body.name.trim(),
+        owner_id: request.userId,
+        plan: "team",
+        created_at: now,
+      };
+    },
+  );
+
+  server.get(
+    "/teams/:id",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: teamId } = request.params as { id: string };
+      const user = getUserById(db, request.userId);
+      if (!user || user.team_id !== teamId) {
+        return reply.code(403).send({ error: "Not a member of this team" });
+      }
+
+      const team = db.prepare(`SELECT id, name, owner_id, plan, created_at, updated_at FROM teams WHERE id = ?`).get(teamId) as {
+        id: string; name: string; owner_id: string; plan: string; created_at: string; updated_at: string;
+      } | undefined;
+
+      if (!team) return reply.code(404).send({ error: "Team not found" });
+
+      const members = getTeamMembers(db, teamId);
+      const memoryCount = countTeamMemories(db, teamId);
+
+      const invites = db
+        .prepare(`SELECT id, email, status, created_at, expires_at FROM team_invites WHERE team_id = ? AND status = 'pending' ORDER BY created_at DESC`)
+        .all(teamId);
+
+      return { ...team, members, memory_count: memoryCount, pending_invites: invites };
+    },
+  );
+
+  server.post(
+    "/teams/:id/invite",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["emails"],
+          properties: {
+            emails: { type: "array" as const, items: { type: "string" as const }, minItems: 1, maxItems: 10 },
+          },
+          additionalProperties: false,
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id: teamId } = request.params as { id: string };
+      const user = getUserById(db, request.userId);
+      if (!user || user.team_id !== teamId || user.team_role !== "owner") {
+        return reply.code(403).send({ error: "Only team owner can invite" });
+      }
+
+      const memberCount = getTeamMemberCount(db, teamId);
+      const body = request.body as { emails: string[] };
+
+      if (memberCount + body.emails.length > 10) {
+        return reply.code(400).send({
+          error: `Team is limited to 10 seats. Currently ${memberCount} members.`,
+        });
+      }
+
+      const team = db.prepare(`SELECT name FROM teams WHERE id = ?`).get(teamId) as { name: string } | undefined;
+      const inviterName = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.email;
+      const results: { email: string; token: string; status: string }[] = [];
+      const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      for (const rawEmail of body.emails) {
+        const email = rawEmail.trim().toLowerCase();
+        if (!email) continue;
+
+        const existing = db
+          .prepare(`SELECT id FROM team_invites WHERE team_id = ? AND email = ? AND status = 'pending'`)
+          .get(teamId, email) as { id: string } | undefined;
+        if (existing) {
+          results.push({ email, token: "", status: "already_invited" });
+          continue;
+        }
+
+        const alreadyMember = db
+          .prepare(`SELECT id FROM users WHERE team_id = ? AND email = ?`)
+          .get(teamId, email) as { id: string } | undefined;
+        if (alreadyMember) {
+          results.push({ email, token: "", status: "already_member" });
+          continue;
+        }
+
+        const token = randomUUID();
+        const inviteId = randomUUID();
+        db.prepare(
+          `INSERT INTO team_invites (id, team_id, email, token, invited_by, status, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        ).run(inviteId, teamId, email, token, request.userId, now, expiresAt);
+
+        results.push({ email, token, status: "invited" });
+      }
+
+      return { invites: results, team_name: team?.name ?? "" };
+    },
+  );
+
+  server.post(
+    "/teams/join",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["token"],
+          properties: {
+            token: { type: "string" as const },
+            first_name: { type: "string" as const, maxLength: 100 },
+            last_name: { type: "string" as const, maxLength: 100 },
+          },
+          additionalProperties: false,
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const body = request.body as { token: string; first_name?: string; last_name?: string };
+      const invite = db
+        .prepare(`SELECT id, team_id, email, status, expires_at FROM team_invites WHERE token = ?`)
+        .get(body.token) as {
+          id: string; team_id: string; email: string | null; status: string; expires_at: string;
+        } | undefined;
+
+      if (!invite) return reply.code(404).send({ error: "Invite not found" });
+      if (invite.status !== "pending") return reply.code(400).send({ error: "Invite already used" });
+      if (new Date(invite.expires_at) < new Date()) {
+        db.prepare(`UPDATE team_invites SET status = 'expired' WHERE id = ?`).run(invite.id);
+        return reply.code(400).send({ error: "Invite expired" });
+      }
+
+      const user = getUserById(db, request.userId);
+      if (!user) return reply.code(404).send({ error: "User not found" });
+      if (user.team_id) return reply.code(409).send({ error: "Already on a team" });
+
+      const memberCount = getTeamMemberCount(db, invite.team_id);
+      if (memberCount >= 10) {
+        return reply.code(400).send({ error: "Team is full (10 seats)" });
+      }
+
+      addUserToTeam(db, request.userId, invite.team_id, "member");
+      if (body.first_name || body.last_name) {
+        updateUserName(db, request.userId, body.first_name ?? "", body.last_name ?? "");
+      }
+
+      db.prepare(`UPDATE team_invites SET status = 'accepted' WHERE id = ?`).run(invite.id);
+
+      const team = db.prepare(`SELECT id, name FROM teams WHERE id = ?`).get(invite.team_id) as { id: string; name: string };
+      return { team_id: team.id, team_name: team.name, role: "member" };
+    },
+  );
+
+  server.get(
+    "/teams/invite/:token",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { token } = request.params as { token: string };
+      const invite = db
+        .prepare(
+          `SELECT ti.id, ti.team_id, ti.email, ti.status, ti.expires_at, ti.invited_by,
+                  t.name AS team_name, u.first_name AS inviter_first, u.last_name AS inviter_last, u.email AS inviter_email
+           FROM team_invites ti
+           JOIN teams t ON t.id = ti.team_id
+           JOIN users u ON u.id = ti.invited_by
+           WHERE ti.token = ?`,
+        )
+        .get(token) as {
+          id: string; team_id: string; email: string | null; status: string; expires_at: string;
+          team_name: string; inviter_first: string | null; inviter_last: string | null; inviter_email: string;
+        } | undefined;
+
+      if (!invite) return reply.code(404).send({ error: "Invite not found" });
+
+      const expired = new Date(invite.expires_at) < new Date();
+      if (expired && invite.status === "pending") {
+        db.prepare(`UPDATE team_invites SET status = 'expired' WHERE id = ?`).run(invite.id);
+      }
+
+      const inviterName = [invite.inviter_first, invite.inviter_last].filter(Boolean).join(" ") || invite.inviter_email;
+
+      return {
+        team_name: invite.team_name,
+        inviter_name: inviterName,
+        status: expired ? "expired" : invite.status,
+        email: invite.email,
+      };
+    },
+  );
+
+  // ===========================================================================
+  // Memory sharing endpoints
+  // ===========================================================================
+
+  server.post(
+    "/memories/:id/share",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: memoryId } = request.params as { id: string };
+      const user = getUserById(db, request.userId);
+      if (!user?.team_id) return reply.code(400).send({ error: "Not on a team" });
+
+      const result = shareMemoryToTeam(db, memoryId, request.userId, user.team_id);
+      if (!result) return reply.code(404).send({ error: "Memory not found or already shared" });
+      return result;
+    },
+  );
+
+  server.post(
+    "/memories/:id/unshare",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: memoryId } = request.params as { id: string };
+      const result = unshareMemory(db, memoryId, request.userId);
+      if (!result) return reply.code(404).send({ error: "Memory not found" });
+      return result;
+    },
+  );
+
+  server.get(
+    "/teams/:id/memories",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: teamId } = request.params as { id: string };
+      const user = getUserById(db, request.userId);
+      if (!user || user.team_id !== teamId) {
+        return reply.code(403).send({ error: "Not a member of this team" });
+      }
+
+      const qs = request.query as { limit?: string; offset?: string };
+      const pagination: PaginationOptions = {
+        limit: qs.limit ? parseInt(qs.limit, 10) : 50,
+        offset: qs.offset ? parseInt(qs.offset, 10) : 0,
+      };
+
+      const memories = listTeamMemories(db, teamId, pagination);
+      const total = countTeamMemories(db, teamId);
+      return { memories, total };
+    },
+  );
+
+  // ===========================================================================
+  // Team management endpoints
+  // ===========================================================================
+
+  server.patch(
+    "/teams/:id",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          properties: {
+            name: { type: "string" as const, minLength: 1, maxLength: 100 },
+          },
+          additionalProperties: false,
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id: teamId } = request.params as { id: string };
+      const user = getUserById(db, request.userId);
+      if (!user || user.team_id !== teamId || user.team_role !== "owner") {
+        return reply.code(403).send({ error: "Only team owner can update" });
+      }
+
+      const body = request.body as { name?: string };
+      if (body.name) {
+        db.prepare(`UPDATE teams SET name = ?, updated_at = ? WHERE id = ?`).run(
+          body.name.trim(),
+          new Date().toISOString(),
+          teamId,
+        );
+      }
+
+      return { success: true };
+    },
+  );
+
+  server.delete(
+    "/teams/:id/members/:userId",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: teamId, userId: targetUserId } = request.params as { id: string; userId: string };
+      const user = getUserById(db, request.userId);
+      if (!user || user.team_id !== teamId || user.team_role !== "owner") {
+        return reply.code(403).send({ error: "Only team owner can remove members" });
+      }
+      if (targetUserId === request.userId) {
+        return reply.code(400).send({ error: "Cannot remove yourself" });
+      }
+
+      removeUserFromTeam(db, targetUserId);
+      return { success: true };
+    },
+  );
+
+  server.post(
+    "/teams/leave",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const user = getUserById(db, request.userId);
+      if (!user?.team_id) return reply.code(400).send({ error: "Not on a team" });
+      if (user.team_role === "owner") {
+        return reply.code(400).send({ error: "Team owner cannot leave. Transfer ownership or delete the team." });
+      }
+
+      removeUserFromTeam(db, request.userId);
+      return { success: true };
+    },
+  );
+
+  server.delete(
+    "/teams/:id/invites/:inviteId",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: teamId, inviteId } = request.params as { id: string; inviteId: string };
+      const user = getUserById(db, request.userId);
+      if (!user || user.team_id !== teamId || user.team_role !== "owner") {
+        return reply.code(403).send({ error: "Only team owner can revoke invites" });
+      }
+
+      db.prepare(`DELETE FROM team_invites WHERE id = ? AND team_id = ?`).run(inviteId, teamId);
+      return { success: true };
+    },
+  );
+
+  // ===========================================================================
+  // User profile update (name)
+  // ===========================================================================
+
+  server.patch(
+    "/users/me",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          properties: {
+            first_name: { type: "string" as const, maxLength: 100 },
+            last_name: { type: "string" as const, maxLength: 100 },
+          },
+          additionalProperties: false,
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const body = request.body as { first_name?: string; last_name?: string };
+      if (body.first_name !== undefined || body.last_name !== undefined) {
+        updateUserName(db, request.userId, body.first_name ?? "", body.last_name ?? "");
+      }
+      const updated = getUserById(db, request.userId);
+      return updated;
+    },
+  );
+
+  server.get(
+    "/users/me",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request) => {
+      return getUserById(db, request.userId);
     },
   );
 

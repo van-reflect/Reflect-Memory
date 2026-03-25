@@ -31,20 +31,24 @@ export const PLAN_LIMITS: Record<string, PlanLimits> = {
   free: { maxMemories: sandboxCap > 0 ? sandboxCap : 500, maxApiKeys: 2 },
   pro: { maxMemories: 5_000, maxApiKeys: 5 },
   builder: { maxMemories: 5_000, maxApiKeys: 5 },
+  team: { maxMemories: 10_000, maxApiKeys: 10 },
   admin: { maxMemories: Infinity, maxApiKeys: Infinity },
 };
 
 export async function createCheckoutSession(
   db: Database.Database,
   userId: string,
-  plan: "pro" | "builder",
+  plan: "pro" | "builder" | "team",
   successUrl: string,
   cancelUrl: string,
 ): Promise<string | null> {
   const stripe = getStripe();
   if (!stripe) return null;
 
-  const priceId = process.env.STRIPE_PRICE_PRO ?? process.env.STRIPE_PRICE_BUILDER;
+  const priceId =
+    plan === "team"
+      ? process.env.STRIPE_PRICE_TEAM
+      : (process.env.STRIPE_PRICE_PRO ?? process.env.STRIPE_PRICE_BUILDER);
   if (!priceId) return null;
 
   const user = db
@@ -99,10 +103,11 @@ export async function createBillingPortalSession(
   return session.url;
 }
 
-export function handleStripeWebhook(
+export async function handleStripeWebhook(
   db: Database.Database,
   event: Stripe.Event,
-): void {
+): Promise<void> {
+  const stripe = getStripe();
   switch (event.type) {
     case "checkout.session.completed": {
       const session = event.data.object as Stripe.Checkout.Session;
@@ -110,8 +115,14 @@ export function handleStripeWebhook(
       const customerId = session.customer as string;
 
       if (userId && customerId) {
-        db.prepare(`UPDATE users SET stripe_customer_id = ?, plan = 'pro', updated_at = ? WHERE id = ?`)
-          .run(customerId, new Date().toISOString(), userId);
+        const sub = session.subscription
+          ? await stripe!.subscriptions.retrieve(session.subscription as string)
+          : null;
+        const resolvedPlan = sub
+          ? determinePlanFromPrice(sub.items.data[0]?.price?.id)
+          : "pro";
+        db.prepare(`UPDATE users SET stripe_customer_id = ?, plan = ?, updated_at = ? WHERE id = ?`)
+          .run(customerId, resolvedPlan, new Date().toISOString(), userId);
       }
       break;
     }
@@ -152,6 +163,7 @@ export function handleStripeWebhook(
 
 function determinePlanFromPrice(priceId: string | undefined): string {
   if (!priceId) return "free";
+  if (priceId === process.env.STRIPE_PRICE_TEAM) return "team";
   if (priceId === process.env.STRIPE_PRICE_PRO) return "pro";
   if (priceId === process.env.STRIPE_PRICE_BUILDER) return "pro";
   return "free";
