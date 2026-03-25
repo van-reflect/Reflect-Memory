@@ -18,13 +18,15 @@ import { jwtVerify } from "jose";
 import type Database from "better-sqlite3";
 import { ReflectOAuthProvider, resolveAgentKeyUser, hasUserIdColumns } from "./oauth-store.js";
 import { authenticateApiKey } from "./api-key-service.js";
-import { findOrCreateUserByEmail } from "./user-service.js";
+import { findOrCreateUserByEmail, getUserById } from "./user-service.js";
 import {
   listMemories,
   listMemorySummaries,
   createMemory,
   readMemoryById,
   countMemories,
+  shareMemoryToTeam,
+  listTeamMemories,
   type PaginationOptions,
 } from "./memory-service.js";
 
@@ -171,6 +173,67 @@ function createMcpServerWithTools(
         memory_type,
       });
       return { content: [{ type: "text", text: JSON.stringify(memory, null, 2) }] };
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Team memory tools — shared knowledge pool across team members
+  // ---------------------------------------------------------------------------
+
+  mcp.tool(
+    "read_team_memories",
+    "Get memories shared with your team. Returns the team knowledge pool with author attribution. Only available if you belong to a team.",
+    {
+      limit: z.number().min(1).max(50).default(20).describe("Max team memories to return (1-50)"),
+      offset: z.number().min(0).default(0).describe("Skip this many results for pagination"),
+    },
+    { title: "Read Team Memories", readOnlyHint: true },
+    async ({ limit, offset }) => {
+      const user = getUserById(db, userId);
+      if (!user?.team_id) {
+        return { content: [{ type: "text", text: "You are not part of a team. Team memories are only available to team members." }], isError: true };
+      }
+
+      const memories = listTeamMemories(db, user.team_id, { limit, offset });
+      if (memories.length === 0) {
+        return { content: [{ type: "text", text: "No shared team memories yet. Use share_memory to share a personal memory with your team." }] };
+      }
+
+      const formatted = memories.map((m) => ({
+        id: m.id,
+        title: m.title,
+        content: m.content,
+        tags: m.tags,
+        origin: m.origin,
+        memory_type: m.memory_type,
+        author: [m.author_first_name, m.author_last_name].filter(Boolean).join(" ") || m.author_email,
+        shared_at: m.shared_at,
+        created_at: m.created_at,
+      }));
+
+      return { content: [{ type: "text", text: JSON.stringify({ team_memories: formatted, count: formatted.length, offset, has_more: formatted.length === limit }, null, 2) }] };
+    },
+  );
+
+  mcp.tool(
+    "share_memory",
+    "Share one of your personal memories with your team. The memory becomes visible to all team members via read_team_memories. You must own the memory.",
+    {
+      memory_id: z.string().describe("The UUID of your memory to share with the team"),
+    },
+    { title: "Share Memory with Team", destructiveHint: true },
+    async ({ memory_id }) => {
+      const user = getUserById(db, userId);
+      if (!user?.team_id) {
+        return { content: [{ type: "text", text: "You are not part of a team. Team sharing is only available to team members." }], isError: true };
+      }
+
+      const updated = shareMemoryToTeam(db, memory_id, userId, user.team_id);
+      if (!updated) {
+        return { content: [{ type: "text", text: "Memory not found or you don't own it." }], isError: true };
+      }
+
+      return { content: [{ type: "text", text: JSON.stringify({ shared: true, memory: updated }, null, 2) }] };
     },
   );
 

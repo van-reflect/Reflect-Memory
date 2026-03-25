@@ -586,7 +586,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         request.vendor = null;
         request.authMethod = "dashboard";
         return;
-      } catch {
+      } catch (err) {
+        const msg = (err as Error).message || "";
+        if (msg.includes("Seat limit reached")) {
+          logSecurity("seat_limit_reached", request, { status_code: 403, auth_method: "dashboard" });
+          return reply.code(403).send({ error: msg });
+        }
         logSecurity("dashboard_token_expired", request, { status_code: 401, auth_method: "dashboard" });
         return reply.code(401).send({ error: "Invalid or expired dashboard token" });
       }
@@ -595,7 +600,16 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     if (deployment.sso.enabled && token.includes(".") && token.split(".").length === 3) {
       const ssoResult = await verifySsoToken(token);
       if (ssoResult.identity) {
-        request.userId = findOrCreateUserByEmail(db, ssoResult.identity.email);
+        try {
+          request.userId = findOrCreateUserByEmail(db, ssoResult.identity.email);
+        } catch (err) {
+          const msg = (err as Error).message || "";
+          if (msg.includes("Seat limit reached")) {
+            logSecurity("seat_limit_reached", request, { status_code: 403, auth_method: "sso" });
+            return reply.code(403).send({ error: msg });
+          }
+          throw err;
+        }
         request.role = "user";
         request.vendor = null;
         request.authMethod = "sso";

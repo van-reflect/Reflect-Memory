@@ -33,6 +33,18 @@ export function findOrCreateUserByEmail(
 
   if (existing) return existing.id;
 
+  const maxSeats = parseInt(process.env.RM_MAX_SEATS || "0", 10);
+  if (maxSeats > 0) {
+    const { count } = db
+      .prepare(`SELECT COUNT(*) as count FROM users`)
+      .get() as { count: number };
+    if (count >= maxSeats) {
+      throw new Error(
+        `Seat limit reached (${maxSeats}). Contact your Reflect Memory administrator to increase RM_MAX_SEATS.`,
+      );
+    }
+  }
+
   const id = randomUUID();
   const now = new Date().toISOString();
 
