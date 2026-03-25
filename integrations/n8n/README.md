@@ -81,9 +81,10 @@ agent to decide when to read/write memories.
 
 4. Set **Tools to Include** to "All" (or select specific tools)
 
-The agent will automatically discover all 7 Reflect Memory tools:
+The agent will automatically discover all 9 Reflect Memory tools:
 `read_memories`, `get_memory_by_id`, `get_latest_memory`, `browse_memories`,
-`search_memories`, `get_memories_by_tag`, `write_memory`.
+`search_memories`, `get_memories_by_tag`, `write_memory`, `read_team_memories`,
+`share_memory`.
 
 ### When to use MCP Client Tool vs Community Node
 
@@ -92,7 +93,7 @@ The agent will automatically discover all 7 Reflect Memory tools:
 | **Best for** | Deterministic workflows | AI Agent workflows |
 | **Control** | You choose the operation | Agent decides |
 | **Setup** | Install package + credentials | Point at MCP URL |
-| **Operations** | 5 (REST-based) | 7 (MCP tools) |
+| **Operations** | 5 (REST-based) | 9 (MCP tools) |
 
 ---
 

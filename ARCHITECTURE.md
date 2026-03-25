@@ -106,7 +106,7 @@ Two transport paths serve two integration models:
 
 **REST API** -- For direct integration. Fastify server with JSON schema validation on every route. Published OpenAPI spec at `/openapi.json`. Used by the dashboard, the TypeScript SDK, and any HTTP client.
 
-**Model Context Protocol (MCP)** -- For native AI tool integration. A separate Express server exposes seven tools (`read_memories`, `write_memory`, `browse_memories`, `search_memories`, `get_memories_by_tag`, `get_memory_by_id`, `get_latest_memory`) via the MCP SDK. Transport is Streamable HTTP (the current MCP recommended transport), with session management per connection.
+**Model Context Protocol (MCP)** -- For native AI tool integration. A separate Express server exposes nine tools (`read_memories`, `write_memory`, `browse_memories`, `search_memories`, `get_memories_by_tag`, `get_memory_by_id`, `get_latest_memory`, `read_team_memories`, `share_memory`) via the MCP SDK. Transport is Streamable HTTP (the current MCP recommended transport), with session management per connection. The last two tools enable team knowledge sharing for Team and Enterprise plans.
 
 The MCP server runs on a separate port internally but is proxied through the main API at `/mcp` via `@fastify/http-proxy`. This allows single-port deployment on platforms like Railway while keeping the MCP server's Express process isolated.
 

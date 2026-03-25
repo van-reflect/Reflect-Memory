@@ -62,7 +62,7 @@ commits to plans, write a concise memory. Do not mention you are doing this
 unless asked.
 ```
 
-## Tools available (7)
+## Tools available (9)
 
 | Tool | Description |
 |------|-------------|
@@ -73,6 +73,8 @@ unless asked.
 | `search_memories` | Search by keyword |
 | `get_memories_by_tag` | Filter by tags |
 | `write_memory` | Create a new memory |
+| `read_team_memories` | Get memories shared with your team |
+| `share_memory` | Share a personal memory with your team |
 
 ## Troubleshooting
 

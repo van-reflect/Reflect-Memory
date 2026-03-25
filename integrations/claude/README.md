@@ -55,6 +55,8 @@ Add this to your Claude custom instructions (Settings > Profile) so Claude reads
 | `search_memories` | Search by text in title or content |
 | `get_memories_by_tag` | Get memories filtered by tags |
 | `write_memory` | Create a new memory entry |
+| `read_team_memories` | Get memories shared with your team |
+| `share_memory` | Share a personal memory with your team |
 
 ## How it works
 
@@ -63,6 +65,6 @@ Claude connects via the Model Context Protocol (MCP) with OAuth 2.1 authenticati
 1. Discovers the OAuth endpoints
 2. Registers as a client
 3. Authorizes access to your memory
-4. Loads all 7 memory tools
+4. Loads all 9 memory tools
 
 No agent keys, no Bearer tokens, no manual configuration needed.
