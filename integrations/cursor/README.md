@@ -12,6 +12,7 @@ Create or edit `.cursor/mcp.json` in your project root:
 {
   "mcpServers": {
     "reflect-memory": {
+      "type": "streamable-http",
       "url": "https://api.reflectmemory.com/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_AGENT_KEY"
@@ -23,7 +24,7 @@ Create or edit `.cursor/mcp.json` in your project root:
 
 Replace `YOUR_AGENT_KEY` with your Cursor agent key from [reflectmemory.com/dashboard](https://reflectmemory.com/dashboard) (API Keys section).
 
-Restart Cursor. Done. It discovers all 7 memory tools automatically.
+Restart Cursor. Done. It discovers all 9 memory tools automatically.
 
 ### Option B: Use Cursor Settings UI
 
@@ -78,9 +79,10 @@ unless asked.
 
 ## Troubleshooting
 
+- **503 / 404 / Connection failed** — Make sure your config includes `"type": "streamable-http"`. Without it, Cursor defaults to the old SSE protocol which our server does not support.
 - **Tools not showing** — Restart Cursor completely (quit and reopen). Check that `.cursor/mcp.json` is valid JSON.
 - **401 Unauthorized** — Wrong or expired agent key. Generate a new one from your [dashboard](https://reflectmemory.com/dashboard).
-- **Connection failed** — Make sure the URL is exactly `https://api.reflectmemory.com/mcp` with no trailing slash.
+- **URL** — Must be exactly `https://api.reflectmemory.com/mcp` with no trailing slash.
 
 ## Advanced: Local server (optional)
 
