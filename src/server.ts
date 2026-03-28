@@ -82,6 +82,33 @@ import {
 } from "./chat-gateway.js";
 
 // =============================================================================
+// Welcome memory content (seeded on first signup via Clerk webhook)
+// =============================================================================
+
+const WELCOME_MEMORY_CONTENT = `Welcome to Reflect Memory \u2014 your AI now remembers across every tool you use.
+
+This is your first memory. It's already saved and available from any AI you connect.
+
+AVAILABLE COMMANDS (use these in any connected AI):
+\u2022 "pull latest memory" \u2192 retrieves your most recent memory
+\u2022 "write this to memory: [anything]" \u2192 saves a new memory
+\u2022 "search memories for [topic]" \u2192 finds relevant memories
+\u2022 "browse memories" \u2192 see summaries of all your memories
+\u2022 "get memories tagged [tag]" \u2192 filter by tags
+\u2022 "read team memories" \u2192 see your team's shared knowledge
+\u2022 "share memory" \u2192 share a personal memory with your team
+
+TRY IT NOW:
+1. Connect an AI tool (Claude, ChatGPT, or Cursor) using the setup cards on your dashboard
+2. Open that AI and type: "pull latest memory"
+3. You should see this welcome memory appear \u2014 proof it works
+4. Now type: "write this to memory: [anything you're working on]"
+5. Go to a DIFFERENT AI tool and type: "pull latest memory"
+6. Your memory is already there. Across tools. Instantly.
+
+That's it. Your AI remembers you now.`;
+
+// =============================================================================
 // Type augmentation
 // =============================================================================
 
@@ -2425,6 +2452,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           return reply.code(400).send({ error: "No email in webhook" });
         }
 
+        let isNewUser = false;
+        let resolvedUserId: string | null = null;
+
         const existing = db
           .prepare(`SELECT id FROM users WHERE clerk_id = ?`)
           .get(data.id) as { id: string } | undefined;
@@ -2432,6 +2462,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         if (existing) {
           db.prepare(`UPDATE users SET email = ?, updated_at = ? WHERE clerk_id = ?`)
             .run(email, new Date().toISOString(), data.id);
+          resolvedUserId = existing.id;
         } else {
           const byEmail = db
             .prepare(`SELECT id FROM users WHERE email = ?`)
@@ -2440,6 +2471,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           if (byEmail) {
             db.prepare(`UPDATE users SET clerk_id = ?, updated_at = ? WHERE id = ?`)
               .run(data.id, new Date().toISOString(), byEmail.id);
+            resolvedUserId = byEmail.id;
           } else {
             const newId = randomUUID();
             const now = new Date().toISOString();
@@ -2447,6 +2479,28 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
               `INSERT INTO users (id, clerk_id, email, role, plan, created_at, updated_at)
                VALUES (?, ?, ?, 'user', 'free', ?, ?)`,
             ).run(newId, data.id, email, now, now);
+            isNewUser = true;
+            resolvedUserId = newId;
+          }
+        }
+
+        // Seed a welcome memory for brand-new users (idempotent: skip if one already exists)
+        if (isNewUser && eventType === "user.created" && resolvedUserId) {
+          const hasWelcome = listMemories(db, resolvedUserId, { by: "tags", tags: ["welcome"] }, null, { limit: 1 });
+          if (hasWelcome.length === 0) {
+            try {
+              createMemory(db, resolvedUserId, {
+                title: "Welcome to Reflect Memory",
+                content: WELCOME_MEMORY_CONTENT,
+                tags: ["welcome", "frx", "onboarding"],
+                origin: "system",
+                allowed_vendors: ["*"],
+                memory_type: "procedural",
+              });
+              console.log(`[clerk] Seeded welcome memory for ${email}`);
+            } catch (err) {
+              console.error(`[clerk] Failed to seed welcome memory for ${email}:`, err);
+            }
           }
         }
 
