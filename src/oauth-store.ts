@@ -297,7 +297,7 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
   ): Promise<void> {
     const pendingId = randomUUID();
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 10 * 60 * 1000);
+    const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
 
     this.db
       .prepare(
