@@ -317,8 +317,7 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
         now.toISOString(),
       );
 
-    const verifyRow = this.db.prepare(`SELECT id FROM oauth_pending_requests WHERE id = ?`).get(pendingId);
-    console.log(`[oauth] Created pending request ${pendingId} for client=${client.client_id} (verified=${!!verifyRow})`);
+    console.log(`[oauth] Created pending request ${pendingId.slice(0, 8)}... for client=${client.client_id}`);
 
     const consentUrl = new URL(`${this.dashboardUrl}/oauth/consent`);
     consentUrl.searchParams.set("pending_id", pendingId);
@@ -328,9 +327,6 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
   }
 
   approvePendingRequest(pendingId: string, userId?: string): string {
-    const allPending = this.db.prepare(`SELECT id FROM oauth_pending_requests`).all() as { id: string }[];
-    console.log(`[oauth] Approving ${pendingId}, total pending rows: ${allPending.length}, ids: ${allPending.map(r => r.id.slice(0, 8)).join(", ")}`);
-
     const row = this.db
       .prepare(`SELECT * FROM oauth_pending_requests WHERE id = ?`)
       .get(pendingId) as Record<string, string> | undefined;
