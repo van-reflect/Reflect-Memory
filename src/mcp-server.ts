@@ -244,6 +244,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   const { db, userId, agentKeys, publicUrl, dashboardUrl, dashboardJwtSecret, dashboardServiceKey } = config;
 
   const app = express();
+  app.set("trust proxy", true);
   app.use(express.json({ limit: "256kb" }));
 
   // ---------------------------------------------------------------------------
