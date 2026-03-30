@@ -688,6 +688,31 @@ export function deleteMemory(
   return txn();
 }
 
+/** Permanently delete all trashed memories for a user. Returns count of deleted rows. */
+export function emptyTrash(
+  db: Database.Database,
+  userId: string,
+): number {
+  const txn = db.transaction(() => {
+    const trashed = db
+      .prepare(`SELECT id FROM memories WHERE user_id = ? AND deleted_at IS NOT NULL`)
+      .all(userId) as { id: string }[];
+
+    if (trashed.length === 0) return 0;
+
+    const ids = trashed.map((r) => r.id);
+    for (const id of ids) {
+      db.prepare(`DELETE FROM memory_versions WHERE memory_id = ?`).run(id);
+    }
+
+    const result = db
+      .prepare(`DELETE FROM memories WHERE user_id = ? AND deleted_at IS NOT NULL`)
+      .run(userId);
+    return result.changes;
+  });
+  return txn();
+}
+
 // ---------------------------------------------------------------------------
 // Team memory functions
 // ---------------------------------------------------------------------------

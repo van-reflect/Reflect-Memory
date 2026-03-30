@@ -56,6 +56,8 @@ import {
   updateMemory,
   softDeleteMemory,
   restoreMemory,
+  deleteMemory,
+  emptyTrash,
   type MemoryEntry,
   type CreateMemoryInput,
   type UpdateMemoryInput,
@@ -1619,6 +1621,44 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return { error: "Memory not found or not in trash" };
       }
       return memory;
+    },
+  );
+
+  // ===========================================================================
+  // DELETE /memories/:id/permanent -- Permanently delete a single memory
+  // ===========================================================================
+
+  server.delete(
+    "/memories/:id/permanent",
+    {
+      schema: {
+        params: memoryIdParamSchema,
+      },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const deleted = deleteMemory(db, request.userId, id);
+      if (!deleted) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+      reply.code(204);
+    },
+  );
+
+  // ===========================================================================
+  // DELETE /memories/trash -- Empty trash (permanently delete all trashed)
+  // ===========================================================================
+
+  server.delete(
+    "/memories/trash",
+    {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const count = emptyTrash(db, request.userId);
+      return { deleted: count };
     },
   );
 
