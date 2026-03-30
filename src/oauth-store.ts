@@ -274,6 +274,7 @@ interface OAuthStoreConfig {
 export class ReflectOAuthProvider implements OAuthServerProvider {
   private db: Database.Database;
   private _clientsStore: SqliteClientsStore;
+  private _approvalCache = new Map<string, { redirectUrl: string; expiresAt: number }>();
   public issuerUrl: string;
   public dashboardUrl: string;
 
@@ -282,7 +283,6 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     this._clientsStore = new SqliteClientsStore(config.db);
     this.issuerUrl = config.issuerUrl;
     this.dashboardUrl = config.dashboardUrl || "https://reflectmemory.com";
-    // Ensure user_id columns exist every time the provider starts
     ensureOAuthUserColumns(config.db);
   }
 
@@ -327,6 +327,13 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
   }
 
   approvePendingRequest(pendingId: string, userId?: string): string {
+    // Idempotent: if this pendingId was already approved within the last 60 s,
+    // return the cached redirect so duplicate form submissions don't fail.
+    const cached = this._approvalCache.get(pendingId);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.redirectUrl;
+    }
+
     const row = this.db
       .prepare(`SELECT * FROM oauth_pending_requests WHERE id = ?`)
       .get(pendingId) as Record<string, string> | undefined;
@@ -367,7 +374,18 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
       redirectUrl.searchParams.set("state", row.state);
     }
 
-    return redirectUrl.toString();
+    const result = redirectUrl.toString();
+
+    this._approvalCache.set(pendingId, { redirectUrl: result, expiresAt: Date.now() + 60_000 });
+    // Evict stale entries periodically
+    if (this._approvalCache.size > 100) {
+      const now = Date.now();
+      for (const [k, v] of this._approvalCache) {
+        if (v.expiresAt <= now) this._approvalCache.delete(k);
+      }
+    }
+
+    return result;
   }
 
   async challengeForAuthorizationCode(
