@@ -388,6 +388,9 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
 
     try {
       const redirectUrl = oauthProvider.approvePendingRequest(pending_id, approvedUserId);
+      // #region agent log
+      console.log(`[oauth-s2s] Approval succeeded, redirect_url host: ${new URL(redirectUrl).host}`);
+      // #endregion
       res.json({ redirect_url: redirectUrl });
     } catch (err) {
       const msg = (err as Error).message || String(err);
