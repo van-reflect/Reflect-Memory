@@ -604,6 +604,59 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(teamsAndSharedMi
   console.log("[migration] Created teams, team_invites tables and added team columns");
 }
 
+const planCheckMigration = "020_expand_plan_check_constraint";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(planCheckMigration)) {
+  const currentSql = (
+    db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'`).get() as { sql: string } | undefined
+  )?.sql ?? "";
+
+  const needsRebuild = currentSql.includes("'free', 'builder')") && !currentSql.includes("'team'");
+
+  if (needsRebuild) {
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE users_new (
+          id                  TEXT NOT NULL PRIMARY KEY,
+          clerk_id            TEXT UNIQUE,
+          email               TEXT NOT NULL UNIQUE,
+          role                TEXT NOT NULL DEFAULT 'user'
+                              CHECK(role IN ('admin', 'private-alpha', 'user')),
+          stripe_customer_id  TEXT UNIQUE,
+          plan                TEXT NOT NULL DEFAULT 'free'
+                              CHECK(plan IN ('free', 'builder', 'pro', 'team', 'admin')),
+          team_id             TEXT REFERENCES teams(id),
+          team_role           TEXT DEFAULT NULL
+                              CHECK(team_role IN ('owner', 'member')),
+          first_name          TEXT DEFAULT NULL,
+          last_name           TEXT DEFAULT NULL,
+          created_at          TEXT NOT NULL,
+          updated_at          TEXT NOT NULL
+        ) STRICT;
+      `);
+
+      const cols = (db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[]).map((c) => c.name);
+      const newCols = new Set(
+        (db.prepare(`PRAGMA table_info(users_new)`).all() as { name: string }[]).map((c) => c.name),
+      );
+      const shared = cols.filter((c) => newCols.has(c)).join(", ");
+
+      db.exec(`INSERT INTO users_new (${shared}) SELECT ${shared} FROM users`);
+      db.exec(`DROP TABLE users`);
+      db.exec(`ALTER TABLE users_new RENAME TO users`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_users_clerk_id ON users(clerk_id)`);
+    })();
+    db.exec("PRAGMA foreign_keys = ON");
+    console.log("[migration] Rebuilt users table with expanded plan CHECK constraint");
+  }
+
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    planCheckMigration,
+    new Date().toISOString(),
+  );
+}
+
 const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
 
 let userId: string;

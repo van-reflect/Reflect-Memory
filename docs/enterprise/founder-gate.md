@@ -388,6 +388,108 @@ docker exec reflect-memory-reflect-memory-selfhost-1 \
 
 ---
 
+## STEP 11 — Verify MCP endpoint is running
+
+**What this does:** Confirms the MCP (Model Context Protocol) endpoint is active. This is how AI tools like Cursor and Claude connect to your instance.
+
+**Prerequisite:** At least one `RM_AGENT_KEY_*` must be set in your `.env` / `.env.enterprise`. Without an agent key, the MCP endpoint will not start and this test will correctly return 404.
+
+**Command:**
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" \
+  -X POST http://127.0.0.1:3000/mcp \
+  -H "Authorization: Bearer PASTE_YOUR_AGENT_KEY_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+**Expected output:**
+
+```
+400
+```
+
+> `400` means the MCP endpoint is alive and rejecting an empty (malformed) MCP request — this is correct. `404` means the endpoint never started — check that an `RM_AGENT_KEY_*` variable is set. `401` means the agent key is wrong.
+
+- [ ] **PASS** — output is `400` (endpoint alive, rejects malformed body)
+- [ ] **FAIL** — output is `404` (MCP not started) or `401` (wrong key)
+
+---
+
+## STEP 12 — Connect Cursor to your local instance
+
+**What this does:** Verifies that Cursor can connect to the MCP endpoint and discover memory tools.
+
+1. Create `.cursor/mcp.json` in any project folder:
+
+```json
+{
+  "mcpServers": {
+    "reflect-memory": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer PASTE_YOUR_AGENT_KEY_HERE"
+      }
+    }
+  }
+}
+```
+
+2. Restart Cursor completely (quit and reopen).
+3. Open the MCP section in Cursor Settings — you should see 9 tools listed under "reflect-memory".
+
+**Important notes:**
+- `type` must be `"streamable-http"` — without it, Cursor defaults to SSE which is not supported
+- The Bearer token must be the value of your `RM_AGENT_KEY_CURSOR` (or whichever agent key you set), **not** `RM_API_KEY`
+- The MCP endpoint uses a separate auth system from the REST API
+
+- [ ] **PASS** — Cursor shows 9 reflect-memory tools
+- [ ] **FAIL** — Tools not showing, or connection error in Cursor
+
+---
+
+## STEP 13 — Set up team memories (optional)
+
+**What this does:** Creates a team so the `read_team_memories` and `share_memory` MCP tools become active. This enables shared context across team members.
+
+**Command — create a team:**
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/teams \
+  -H "Authorization: Bearer PASTE_YOUR_API_KEY_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "My Team"}' | python3 -m json.tool
+```
+
+**Expected output:**
+
+```json
+{
+    "id": "...",
+    "name": "My Team",
+    "created_by": "...",
+    "created_at": "..."
+}
+```
+
+**Command — invite a team member (optional):**
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/teams/TEAM_ID/invite \
+  -H "Authorization: Bearer PASTE_YOUR_API_KEY_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "teammate@example.com"}' | python3 -m json.tool
+```
+
+> In a single-user local deployment, the team owner is the only member. Team tools still work — you can share memories with the team and read them back. To test with multiple users, you would need separate API keys and user accounts.
+
+- [ ] **PASS** — team created, ID returned
+- [ ] **FAIL** — error response
+
+---
+
 ## ONE-COMMAND DEMO RUN
 
 To run the full setup from scratch in one shot (after filling in `.env.enterprise`):
@@ -453,6 +555,15 @@ Go through each item. Every box must be checked before approving for enterprise 
 
 **Audit trail**
 - [ ] Audit events table exists and is recording security events
+
+**MCP and integrations**
+- [ ] MCP endpoint returns `400` on empty POST (alive, not 404)
+- [ ] Cursor connects and shows 9 tools
+- [ ] Agent key auth works (not `RM_API_KEY`)
+
+**Team memories**
+- [ ] Team creation succeeds via REST API
+- [ ] Team tools (`read_team_memories`, `share_memory`) visible in MCP clients
 
 **Compatibility**
 - [ ] Existing hosted product is unaffected (run `npm run compat:check` against production URL)

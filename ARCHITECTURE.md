@@ -112,6 +112,8 @@ The MCP server runs on a separate port internally but is proxied through the mai
 
 Key design choice: **one MCP endpoint, multiple vendors.** Rather than running separate MCP servers per vendor, a single server resolves the vendor identity from the Bearer token on each request. The `resolveVendor` function iterates all configured agent keys with timing-safe comparison and returns the matching vendor name. Each MCP session is then scoped to that vendor -- the `createMcpServerWithTools` function binds the vendor into every tool's closure, so all reads are automatically filtered.
 
+**MCP startup conditions:** The MCP server starts when either (a) at least one `RM_AGENT_KEY_*` environment variable is set, or (b) `RM_PUBLIC_URL` is set. Without either, the `/mcp` endpoint returns 404. In Docker Compose deployments, agent keys are the recommended approach -- they serve double duty as the MCP enablement flag and the authentication credential. `RM_PUBLIC_URL` enables the OAuth flow used by Claude's native connector (it needs to know the server's public address to build redirect URLs).
+
 ---
 
 ## 4. Persistence & Isolation
@@ -154,6 +156,8 @@ This means:
 **Origin tracking** -- Every memory records which surface wrote it. For agent writes, `origin` is set server-side from the authenticated vendor identity (`request.vendor`). The agent cannot set or override it. For user writes via the dashboard, origin is `"dashboard"`. This creates an auditable provenance chain.
 
 **Append-only collaboration** -- Agents write new memories; they do not overwrite each other's entries. An agent can read what another agent wrote (if visibility allows) and build on it by writing a new memory. This prevents context loss from overwrites and creates a natural timeline of accumulated knowledge.
+
+**Team memories** -- Users on a team can share personal memories with the team pool via `share_memory` (MCP) or `POST /memories/:id/share` (REST). Shared memories are readable by all team members via `read_team_memories` (MCP) or `GET /memories/team` (REST). The `teams` table stores team metadata; `team_invites` tracks pending invitations. Users join a team via invitation (`POST /teams/:id/invite`), and team membership is stored as `team_id` + `team_role` columns on the `users` table. Team API endpoints are registered unconditionally -- they are not gated by deployment mode.
 
 ---
 

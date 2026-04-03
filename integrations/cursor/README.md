@@ -84,20 +84,54 @@ unless asked.
 - **401 Unauthorized** — Wrong or expired agent key. Generate a new one from your [dashboard](https://reflectmemory.com/dashboard).
 - **URL** — Must be exactly `https://api.reflectmemory.com/mcp` with no trailing slash.
 
-## Advanced: Local server (optional)
+## Self-Hosted / Private Deploy
 
-If you prefer running a local MCP server instead of the remote one:
+If you're running Reflect Memory locally via Docker Compose, point Cursor at your local instance:
 
 ```json
 {
   "mcpServers": {
     "reflect-memory": {
-      "command": "node",
-      "args": ["/path/to/reflective-memory/integrations/cursor/server.mjs"],
-      "env": {
-        "REFLECT_MEMORY_API_KEY": "your-agent-key-here"
+      "type": "streamable-http",
+      "url": "http://localhost:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_RM_AGENT_KEY_CURSOR"
       }
     }
   }
 }
 ```
+
+### Requirements
+
+1. At least one `RM_AGENT_KEY_*` env var must be set in your `.env` — this tells the server to start the MCP endpoint. Without it, `/mcp` returns 404.
+
+2. The Bearer token must be the value of `RM_AGENT_KEY_CURSOR` (or whichever agent key you set), **not** `RM_API_KEY`. The MCP endpoint uses a separate auth system from the REST API.
+
+3. `type` must be `"streamable-http"`. Without it, Cursor defaults to SSE which is not supported.
+
+### Example `.env` for local Docker
+
+```bash
+RM_API_KEY=your-api-key
+RM_MODEL_API_KEY=sk-...
+RM_MODEL_NAME=gpt-4o-mini
+RM_AGENT_KEY_CURSOR=my-cursor-secret
+```
+
+```bash
+docker compose --profile isolated-hosted up --build -d
+```
+
+### Team memories in self-hosted mode
+
+Team tools (`read_team_memories`, `share_memory`) work the same way in self-hosted mode. Create a team via the REST API:
+
+```bash
+curl -s -X POST http://localhost:3000/teams \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "My Team"}' | jq
+```
+
+Once your user belongs to a team, the MCP tools appear automatically in Cursor.

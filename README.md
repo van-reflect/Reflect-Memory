@@ -257,6 +257,122 @@ curl -s -X POST http://localhost:3000/query \
 
 The `vendor_filter` field in the receipt shows which vendor filter was applied (`null` for users, vendor name for agents).
 
+## MCP Server
+
+Reflect Memory includes a built-in MCP (Model Context Protocol) server for native integration with Claude, Cursor, and other MCP-compatible tools.
+
+**Endpoint:** `/mcp` (proxied through the main API — single port, no extra config)
+
+**Transport:** Streamable HTTP (MCP clients must use `streamable-http` / `streamableHttp`)
+
+**Enabling MCP:** Set at least one agent key environment variable. Agent keys serve double duty: they tell the server to start the MCP endpoint *and* authenticate requests against it.
+
+```bash
+export RM_AGENT_KEY_CURSOR="your-cursor-key"
+export RM_AGENT_KEY_CLAUDE="your-claude-key"
+```
+
+Without any `RM_AGENT_KEY_*` variables set, the `/mcp` endpoint returns 404.
+
+**Cursor** — create `.cursor/mcp.json` in your project:
+
+```json
+{
+  "mcpServers": {
+    "reflect-memory": {
+      "type": "streamable-http",
+      "url": "https://api.reflectmemory.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_AGENT_KEY"
+      }
+    }
+  }
+}
+```
+
+**Claude** — go to Claude.ai Settings > Connectors, click +, paste `https://api.reflectmemory.com/mcp`. Claude handles OAuth automatically.
+
+**Tools (9):** `read_memories`, `get_memory_by_id`, `get_latest_memory`, `browse_memories`, `search_memories`, `get_memories_by_tag`, `write_memory`, `read_team_memories`, `share_memory`.
+
+See `integrations/cursor/README.md` and `integrations/claude/README.md` for detailed setup guides.
+
+## Team Memories
+
+Team Memories let multiple users share context through a shared pool. Any team member can share personal memories with the team, and all members can read them from any connected tool.
+
+```bash
+# Create a team
+curl -s -X POST http://localhost:3000/teams \
+  -H "Authorization: Bearer your-secret-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "My Team"}' | jq
+
+# Invite a member
+curl -s -X POST http://localhost:3000/teams/TEAM_ID/invite \
+  -H "Authorization: Bearer your-secret-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "teammate@example.com"}' | jq
+```
+
+Team tools (`read_team_memories`, `share_memory`) are available in all MCP clients once the user belongs to a team. The team API endpoints (`/teams`, `/teams/:id/invite`, etc.) use standard Bearer token auth.
+
+## Docker Quick Start (Private Deploy)
+
+Run Reflect Memory locally with Docker Compose. Data stays on your machine.
+
+1. Clone the repo and create a `.env` file:
+
+```bash
+git clone https://github.com/van-reflect/Reflect-Memory.git
+cd Reflect-Memory
+```
+
+```bash
+# .env
+RM_API_KEY=your-api-key
+RM_MODEL_API_KEY=sk-...
+RM_MODEL_NAME=gpt-4o-mini
+
+# MCP — at least one agent key is required to enable /mcp
+RM_AGENT_KEY_CURSOR=pick-any-strong-secret
+RM_AGENT_KEY_CLAUDE=pick-any-strong-secret
+```
+
+2. Build and start:
+
+```bash
+docker compose --profile isolated-hosted up --build -d
+```
+
+3. Verify:
+
+```bash
+curl -s http://localhost:3000/health | jq
+# → { "service": "reflect-memory", "status": "ok", ... }
+
+curl -s http://localhost:3000/whoami \
+  -H "Authorization: Bearer your-api-key" | jq
+# → { "role": "user", "vendor": null }
+```
+
+4. Connect Cursor to your local instance:
+
+```json
+{
+  "mcpServers": {
+    "reflect-memory": {
+      "type": "streamable-http",
+      "url": "http://localhost:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer your-RM_AGENT_KEY_CURSOR-value"
+      }
+    }
+  }
+}
+```
+
+**Important:** The `/mcp` endpoint uses agent keys for auth, not `RM_API_KEY`. Your `RM_API_KEY` works for REST/curl calls, but MCP clients must use the corresponding `RM_AGENT_KEY_*` value.
+
 ## Deploy to Railway
 
 ### 1. Environment variables
