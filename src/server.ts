@@ -452,6 +452,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     if (statusCode >= 500) {
       console.error(`[server] Unhandled error: ${error.message}`, error.stack);
     }
+    if (reply.sent) return;
     reply.code(statusCode).send({
       error: statusCode >= 500 ? "Internal server error" : error.message,
     });
@@ -504,6 +505,10 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       upstream: mcpUpstream,
       prefix: "/mcp",
       rewritePrefix: "/mcp",
+      undici: {
+        bodyTimeout: 0,
+        headersTimeout: 0,
+      },
     });
 
     // OAuth discovery and auth endpoints served by the MCP server's mcpAuthRouter.
