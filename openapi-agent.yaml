@@ -166,11 +166,9 @@ paths:
       x-openai-isConsequential: true
       summary: Update an existing memory by ID (full replacement)
       description: >
-        Edit a memory you previously wrote. Replaces title, content, tags, and allowed_vendors.
-        Preserves version history (old content is saved before overwriting).
-        Use this to correct, refine, or append to a memory instead of writing duplicates.
-        You can only update memories you created (origin must match your vendor).
-        Trashed memories cannot be updated.
+        Edit a memory you own. Replaces title, content, tags, and allowed_vendors.
+        Preserves version history. Use to correct or refine instead of duplicating.
+        Only your own non-trashed memories can be updated.
       parameters:
         - name: id
           in: path
