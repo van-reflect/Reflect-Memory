@@ -801,3 +801,49 @@ export function countTeamMemories(
     .get(teamId) as { cnt: number };
   return row.cnt;
 }
+
+export interface MemoryVersion {
+  id: string;
+  memory_id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  origin: string;
+  allowed_vendors: string[];
+  memory_type: MemoryType;
+  version_number: number;
+  created_at: string;
+}
+
+export function getVersionHistory(
+  db: Database.Database,
+  userId: string,
+  memoryId: string,
+): MemoryVersion[] {
+  const owner = db
+    .prepare(`SELECT id FROM memories WHERE id = ? AND user_id = ?`)
+    .get(memoryId, userId);
+  if (!owner) return [];
+
+  const rows = db
+    .prepare(
+      `SELECT id, memory_id, title, content, tags, memory_type, origin, allowed_vendors, version_number, created_at
+       FROM memory_versions
+       WHERE memory_id = ?
+       ORDER BY version_number DESC`,
+    )
+    .all(memoryId) as Array<Record<string, string | number>>;
+
+  return rows.map((row) => ({
+    id: row.id as string,
+    memory_id: row.memory_id as string,
+    title: row.title as string,
+    content: row.content as string,
+    tags: safeJsonArray(row.tags as string),
+    origin: row.origin as string,
+    allowed_vendors: safeJsonArray(row.allowed_vendors as string),
+    memory_type: (row.memory_type as MemoryType) || "semantic",
+    version_number: row.version_number as number,
+    created_at: row.created_at as string,
+  }));
+}

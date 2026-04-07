@@ -20,6 +20,7 @@ servers:
   - url: https://api.reflectmemory.com
 
 components:
+  schemas: {}
   securitySchemes:
     oauth:
       type: oauth2
@@ -278,6 +279,48 @@ paths:
           description: Cannot delete a memory you did not create
         "404":
           description: Memory not found or already deleted
+  /agent/memories/{id}/versions:
+    get:
+      operationId: getVersionHistory
+      x-openai-isConsequential: false
+      summary: Get edit history for a memory
+      description: >
+        Returns all previous versions of a memory in reverse chronological order.
+        Each version is a full snapshot captured before an edit.
+        Use to review changes, audit edits, or compare past states.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The memory UUID
+      responses:
+        "200":
+          description: Version history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        memory_id: { type: string }
+                        title: { type: string }
+                        content: { type: string }
+                        tags: { type: array, items: { type: string } }
+                        origin: { type: string }
+                        version_number: { type: integer }
+                        created_at: { type: string }
+                  current_version:
+                    type: integer
+                    description: The current version number (versions + 1)
+        "404":
+          description: Memory not found or not accessible
   /agent/memories/search:
     post:
       operationId: searchMemories

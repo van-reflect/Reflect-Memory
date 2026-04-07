@@ -69,6 +69,7 @@ import {
   unshareMemory,
   listTeamMemories,
   countTeamMemories,
+  getVersionHistory,
 } from "./memory-service.js";
 import { buildPrompt, type PromptResult } from "./context-builder.js";
 import {
@@ -1610,6 +1611,35 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
+  // GET /agent/memories/:id/versions -- Version history for agents
+  // ===========================================================================
+
+  server.get(
+    "/agent/memories/:id/versions",
+    {
+      schema: { params: memoryIdParamSchema },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const memory = readMemoryById(db, request.userId, id);
+      if (!memory || memory.deleted_at) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+      if (request.vendor) {
+        const allowed = memory.allowed_vendors.includes("*") || memory.allowed_vendors.includes(request.vendor);
+        if (!allowed) {
+          reply.code(404);
+          return { error: "Memory not found" };
+        }
+      }
+      const versions = getVersionHistory(db, request.userId, id);
+      return { versions, current_version: versions.length + 1 };
+    },
+  );
+
+  // ===========================================================================
   // PUT /agent/memories/:id -- Update a memory (agent path)
   // ===========================================================================
   // Agents can update memories they wrote (origin must match vendor).
@@ -1970,6 +2000,30 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
       request.dataAccessed = true;
       return memory;
+    },
+  );
+
+  // ===========================================================================
+  // GET /memories/:id/versions -- Version history for a memory (dashboard)
+  // ===========================================================================
+
+  server.get(
+    "/memories/:id/versions",
+    {
+      schema: { params: memoryIdParamSchema },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const versions = getVersionHistory(db, request.userId, id);
+      if (versions.length === 0) {
+        const memory = readMemoryById(db, request.userId, id);
+        if (!memory) {
+          reply.code(404);
+          return { error: "Memory not found" };
+        }
+      }
+      return { versions };
     },
   );
 
