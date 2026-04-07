@@ -24,6 +24,8 @@ import {
   listMemorySummaries,
   createMemory,
   readMemoryById,
+  updateMemory,
+  softDeleteMemory,
   countMemories,
   shareMemoryToTeam,
   listTeamMemories,
@@ -156,10 +158,10 @@ function createMcpServerWithTools(
     "write_memory",
     "Create a new memory entry. Returns the created memory with its ID.",
     {
-      title: z.string().min(1).describe("Short title for the memory"),
-      content: z.string().min(1).describe("The memory content"),
-      tags: z.array(z.string()).default([]).describe("Tags for categorization"),
-      allowed_vendors: z.array(z.string()).default(["*"]).describe("Which vendors can see this. Use ['*'] for all."),
+      title: z.string().min(1).max(500).describe("Short title for the memory"),
+      content: z.string().min(1).max(100_000).describe("The memory content"),
+      tags: z.array(z.string().min(1).max(100)).max(50).default([]).describe("Tags for categorization"),
+      allowed_vendors: z.array(z.string().min(1).max(50)).min(1).max(50).default(["*"]).describe("Which vendors can see this. Use ['*'] for all."),
       memory_type: z.enum(["semantic", "episodic", "procedural"]).default("semantic").describe("Type of memory: semantic (facts/knowledge), episodic (events/decisions), procedural (workflows/patterns)"),
     },
     { title: "Create Memory", destructiveHint: true },
@@ -173,6 +175,47 @@ function createMcpServerWithTools(
         memory_type,
       });
       return { content: [{ type: "text", text: JSON.stringify(memory, null, 2) }] };
+    },
+  );
+
+  mcp.tool(
+    "update_memory",
+    "Edit an existing memory by ID. Replaces title, content, and tags. Use this to correct, refine, or append to a memory instead of creating duplicates. Preserves version history.",
+    {
+      id: z.string().min(1).describe("The memory UUID to update"),
+      title: z.string().min(1).max(500).describe("Updated title"),
+      content: z.string().min(1).max(100_000).describe("Updated content (full replacement)"),
+      tags: z.array(z.string().min(1).max(100)).max(50).default([]).describe("Updated tags"),
+      allowed_vendors: z.array(z.string().min(1).max(50)).min(1).max(50).default(["*"]).describe("Which vendors can see this. Use ['*'] for all."),
+    },
+    { title: "Update Memory", destructiveHint: true },
+    async ({ id, title, content, tags, allowed_vendors }) => {
+      const updated = updateMemory(db, userId, id, {
+        title,
+        content,
+        tags,
+        allowed_vendors,
+      });
+      if (!updated) {
+        return { content: [{ type: "text", text: "Memory not found, deleted, or you don't own it." }], isError: true };
+      }
+      return { content: [{ type: "text", text: JSON.stringify(updated, null, 2) }] };
+    },
+  );
+
+  mcp.tool(
+    "delete_memory",
+    "Soft-delete a memory by ID. Moves it to trash (recoverable from the dashboard). Use when a memory is outdated, wrong, or no longer needed.",
+    {
+      id: z.string().min(1).describe("The memory UUID to delete"),
+    },
+    { title: "Delete Memory", destructiveHint: true },
+    async ({ id }) => {
+      const deleted = softDeleteMemory(db, userId, id);
+      if (!deleted) {
+        return { content: [{ type: "text", text: "Memory not found, already deleted, or you don't own it." }], isError: true };
+      }
+      return { content: [{ type: "text", text: `Memory "${deleted.title}" moved to trash.` }] };
     },
   );
 
@@ -346,7 +389,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       } else if (msg.includes("not found")) {
         res.status(404).json({ error: "Authorization request not found. It may have been used already. Try connecting again." });
       } else {
-        res.status(500).json({ error: `Approval failed: ${msg}` });
+        res.status(500).json({ error: "Approval failed. Please try again." });
       }
     }
   });
@@ -395,7 +438,10 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
     } catch (err) {
       const msg = (err as Error).message || String(err);
       console.error(`[oauth-s2s] Approval failed: ${msg}`);
-      res.status(400).json({ error: msg });
+      const safeMsg = msg.includes("not found") ? "Request not found"
+        : msg.includes("expired") ? "Request expired"
+        : "Approval failed";
+      res.status(400).json({ error: safeMsg });
     }
   });
 
@@ -627,70 +673,33 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
   });
 
   app.get("/health", (_req, res) => {
-    const secretLen = dashboardJwtSecret?.length ?? 0;
-    const svcKeyLen = dashboardServiceKey?.length ?? 0;
-
-    let dbDiag: Record<string, unknown> = {};
-    try {
-      const pendingCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_pending_requests`).get() as { c: number }).c;
-      const clientCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_clients`).get() as { c: number }).c;
-      const tokenCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_tokens`).get() as { c: number }).c;
-      const codesCols = (db.prepare(`PRAGMA table_info(oauth_codes)`).all() as { name: string }[]).map(c => c.name);
-      const tokensCols = (db.prepare(`PRAGMA table_info(oauth_tokens)`).all() as { name: string }[]).map(c => c.name);
-      const pendingCols = (db.prepare(`PRAGMA table_info(oauth_pending_requests)`).all() as { name: string }[]).map(c => c.name);
-      dbDiag = {
-        pending_requests: pendingCount,
-        clients: clientCount,
-        tokens: tokenCount,
-        codes_has_user_id: codesCols.includes("user_id"),
-        tokens_has_user_id: tokensCols.includes("user_id"),
-        pending_has_user_id: pendingCols.includes("user_id"),
-      };
-    } catch (err) {
-      dbDiag = { error: (err as Error).message };
-    }
-
     res.json({
       service: "reflect-memory-mcp",
       status: "ok",
-      oauth: {
-        jwt_secret_configured: secretLen > 0,
-        service_key_configured: svcKeyLen > 0,
-        has_user_id_cols: hasUserIdColumns(),
-        dashboard_url: dashboardUrl || "(not set)",
-        public_url: publicUrl || "(not set)",
-      },
-      db: dbDiag,
-      sessions: Object.keys(transports).length,
     });
   });
 
-  // Diagnostic endpoint (proxied via /oauth/status)
-  app.get("/oauth/status", (_req, res) => {
+  app.get("/oauth/status", (req, res) => {
+    const authHeader = req.headers.authorization;
+    const isDashboard = dashboardServiceKey && authHeader?.startsWith("Bearer ")
+      && constantTimeEqual(authHeader.slice(7), dashboardServiceKey);
+    const isAgentKey = authHeader?.startsWith("Bearer ") && resolveVendor(authHeader.slice(7));
+    if (!isDashboard && !isAgentKey) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
     try {
       const pendingCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_pending_requests`).get() as { c: number }).c;
       const clientCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_clients`).get() as { c: number }).c;
       const tokenCount = (db.prepare(`SELECT COUNT(*) as c FROM oauth_tokens`).get() as { c: number }).c;
-      const codesCols = (db.prepare(`PRAGMA table_info(oauth_codes)`).all() as { name: string }[]).map(c => c.name);
-      const tokensCols = (db.prepare(`PRAGMA table_info(oauth_tokens)`).all() as { name: string }[]).map(c => c.name);
-      const pendingCols = (db.prepare(`PRAGMA table_info(oauth_pending_requests)`).all() as { name: string }[]).map(c => c.name);
       res.json({
         status: "ok",
         has_user_id_cols: hasUserIdColumns(),
-        service_key_configured: (dashboardServiceKey?.length ?? 0) > 0,
-        jwt_secret_configured: (dashboardJwtSecret?.length ?? 0) > 0,
-        db: {
-          pending_requests: pendingCount,
-          clients: clientCount,
-          tokens: tokenCount,
-          codes_has_user_id: codesCols.includes("user_id"),
-          tokens_has_user_id: tokensCols.includes("user_id"),
-          pending_has_user_id: pendingCols.includes("user_id"),
-        },
+        db: { pending_requests: pendingCount, clients: clientCount, tokens: tokenCount },
         sessions: Object.keys(transports).length,
       });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+    } catch {
+      res.status(500).json({ error: "Internal error" });
     }
   });
 

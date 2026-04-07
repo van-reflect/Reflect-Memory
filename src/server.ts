@@ -440,6 +440,29 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     return Readable.from(raw);
   });
 
+  // ---------------------------------------------------------------------------
+  // Global error handler: never leak stack traces or internal details
+  // ---------------------------------------------------------------------------
+  server.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+    const statusCode = error.statusCode ?? 500;
+    if (statusCode >= 500) {
+      console.error(`[server] Unhandled error: ${error.message}`, error.stack);
+    }
+    reply.code(statusCode).send({
+      error: statusCode >= 500 ? "Internal server error" : error.message,
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Security headers (HSTS, sniff protection, etc.)
+  // ---------------------------------------------------------------------------
+  server.addHook("onSend", async (_request, reply) => {
+    reply.header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  });
+
   // CORS: only allow the production dashboard and local dev
   await server.register(cors, {
     origin: [
@@ -1362,6 +1385,101 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
+  // PUT /agent/memories/:id -- Update a memory (agent path)
+  // ===========================================================================
+  // Agents can update memories they wrote (origin must match vendor).
+  // Version history preserved. Trashed memories cannot be updated.
+  // ===========================================================================
+
+  server.put(
+    "/agent/memories/:id",
+    {
+      schema: {
+        params: memoryIdParamSchema,
+        body: updateMemoryBodySchema,
+      },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const body = request.body as {
+        title: string;
+        content: string;
+        tags: string[];
+        allowed_vendors: string[];
+      };
+
+      const existing = readMemoryById(db, request.userId, id);
+      if (!existing || existing.deleted_at) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+
+      if (request.vendor && existing.origin !== request.vendor) {
+        reply.code(403);
+        return { error: "Agents can only update memories they created" };
+      }
+
+      const vendorErr = validateAllowedVendors(body.allowed_vendors, validVendors);
+      if (vendorErr) {
+        reply.code(400);
+        return { error: vendorErr };
+      }
+
+      const memory = updateMemory(db, request.userId, id, {
+        title: body.title,
+        content: body.content,
+        tags: body.tags,
+        allowed_vendors: body.allowed_vendors,
+      });
+      if (!memory) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+      return memory;
+    },
+  );
+
+  // ===========================================================================
+  // DELETE /agent/memories/:id -- Soft-delete a memory (agent path)
+  // ===========================================================================
+  // Agents can delete memories they wrote (origin must match vendor).
+  // Moves to trash (recoverable from dashboard).
+  // ===========================================================================
+
+  server.delete(
+    "/agent/memories/:id",
+    {
+      schema: {
+        params: memoryIdParamSchema,
+      },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+
+      const existing = readMemoryById(db, request.userId, id);
+      if (!existing || existing.deleted_at) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+
+      if (request.vendor && existing.origin !== request.vendor) {
+        reply.code(403);
+        return { error: "Agents can only delete memories they created" };
+      }
+
+      const memory = softDeleteMemory(db, request.userId, id);
+      if (!memory) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+      reply.code(200);
+      return { deleted: true, id, title: memory.title };
+    },
+  );
+
+  // ===========================================================================
   // POST /agent/memories/by-tag -- Full-body retrieval by tags for agents
   // ===========================================================================
   // Returns complete memory entries (with content) filtered by tags.
@@ -1469,6 +1587,140 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         offset: pagination.offset,
         has_more: (pagination.offset ?? 0) + summaries.length < total,
       };
+    },
+  );
+
+  // ===========================================================================
+  // POST /agent/memories/search -- Full-content text search for agents
+  // ===========================================================================
+
+  server.post(
+    "/agent/memories/search",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["term"],
+          additionalProperties: false,
+          properties: {
+            term: { type: "string" as const, minLength: 1, maxLength: 500 },
+            limit: { type: "integer" as const, minimum: 1, maximum: 50 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request) => {
+      const { term, limit } = request.body as { term: string; limit?: number };
+      const vendorFilter = request.role === "agent" ? request.vendor : null;
+      const memories = listMemories(db, request.userId, { by: "search", term }, vendorFilter, { limit: limit ?? 10 });
+      if (memories.length > 0) request.dataAccessed = true;
+      return { memories, count: memories.length };
+    },
+  );
+
+  // ===========================================================================
+  // POST /agent/memories/list -- Bulk read recent memories for agents
+  // ===========================================================================
+
+  server.post(
+    "/agent/memories/list",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          additionalProperties: false,
+          properties: {
+            limit: { type: "integer" as const, minimum: 1, maximum: 50 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request) => {
+      const { limit } = request.body as { limit?: number };
+      const vendorFilter = request.role === "agent" ? request.vendor : null;
+      const memories = listMemories(db, request.userId, { by: "all" }, vendorFilter, { limit: limit ?? 10 });
+      if (memories.length > 0) request.dataAccessed = true;
+      return { memories, count: memories.length };
+    },
+  );
+
+  // ===========================================================================
+  // GET /agent/team/memories -- Read team memories for agents
+  // ===========================================================================
+
+  server.get(
+    "/agent/team/memories",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const query = request.query as { limit?: string; offset?: string };
+      const limit = Math.min(Math.max(parseInt(query.limit || "20", 10) || 20, 1), 50);
+      const offset = Math.max(parseInt(query.offset || "0", 10) || 0, 0);
+
+      const user = getUserById(db, request.userId);
+      if (!user?.team_id) {
+        reply.code(404);
+        return { error: "Not a member of any team" };
+      }
+
+      const memories = listTeamMemories(db, user.team_id, { limit, offset });
+      const total = countTeamMemories(db, user.team_id);
+      return {
+        team_memories: memories,
+        total,
+        limit,
+        offset,
+        has_more: offset + memories.length < total,
+      };
+    },
+  );
+
+  // ===========================================================================
+  // POST /agent/team/share -- Share a memory with the team for agents
+  // ===========================================================================
+
+  server.post(
+    "/agent/team/share",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["memory_id"],
+          additionalProperties: false,
+          properties: {
+            memory_id: { type: "string" as const, minLength: 1 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 15, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { memory_id } = request.body as { memory_id: string };
+
+      const user = getUserById(db, request.userId);
+      if (!user?.team_id) {
+        reply.code(404);
+        return { error: "Not a member of any team" };
+      }
+
+      const memory = readMemoryById(db, request.userId, memory_id);
+      if (!memory || memory.deleted_at) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+
+      try {
+        shareMemoryToTeam(db, memory_id, request.userId, user.team_id);
+        return { shared: true, memory_id, team_id: user.team_id };
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (msg.includes("already shared")) {
+          return { shared: true, memory_id, team_id: user.team_id, note: "Already shared" };
+        }
+        reply.code(400);
+        return { error: "Failed to share memory" };
+      }
     },
   );
 

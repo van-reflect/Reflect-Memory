@@ -295,6 +295,15 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
+    const registeredUris = client.redirect_uris || [];
+    if (registeredUris.length > 0 && !registeredUris.includes(params.redirectUri)) {
+      console.error(
+        `[oauth] redirect_uri mismatch: ${params.redirectUri} not in registered URIs for client ${client.client_id}`,
+      );
+      res.status(400).json({ error: "Invalid redirect_uri" });
+      return;
+    }
+
     const pendingId = randomUUID();
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);

@@ -51,7 +51,7 @@ Dashboard multi-user auth (required for dashboard deployment):
 
 ```bash
 export RM_DASHBOARD_SERVICE_KEY="..."   # Shared with dashboard. Generate: openssl rand -hex 32
-export RM_DASHBOARD_JWT_SECRET="..."    # Must match dashboard AUTH_SECRET. Same value for JWT verification.
+export RM_DASHBOARD_JWT_SECRET="..."    # Must match dashboard AUTH_SECRET. Minimum 32 characters.
 ```
 
 Multi-vendor chat (dashboard Chat tab -- enables GPT, Claude, Gemini, Perplexity, Grok):
@@ -319,6 +319,8 @@ Team tools (`read_team_memories`, `share_memory`) are available in all MCP clien
 ## Docker Quick Start (Private Deploy)
 
 Run Reflect Memory locally with Docker Compose. Data stays on your machine.
+
+> **Upgrading?** The container runs as a non-root user. If you have an existing `/data` volume with root-owned files, run `docker compose down && docker compose --profile isolated-hosted up --build` to rebuild. If the database fails to open, fix volume permissions: `docker run --rm -v rm_data_isolated:/data node:20-bookworm-slim chown -R 65534:65534 /data`
 
 1. Clone the repo and create a `.env` file:
 

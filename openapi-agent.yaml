@@ -1,15 +1,21 @@
 openapi: 3.1.0
 info:
   title: Reflect Memory Agent API
-  version: 2.1.0
+  version: 3.0.0
   description: >
-    Cross-agent memory system. Write, browse, retrieve, and query structured memories.
-    Use /agent/memories/browse to discover available memories (lightweight, no content).
-    Use /agent/memories/{id} for surgical full-body retrieval by ID.
-    Use /agent/memories/by-tag for full-body retrieval by topic.
-    Use /agent/memories/latest for the single most recent memory (strict chronological by created_at).
+    Cross-agent memory system. Write, read, update, delete, search, browse, and query structured memories.
+    Use updateMemory to edit an existing memory (preserves version history).
+    Use deleteMemory to soft-delete (moves to trash, recoverable from dashboard).
+    Use searchMemories for full-text search with full content returned.
+    Use readMemories for bulk recent memories with full content.
+    Use browseMemories to discover what exists (summaries only, no content).
+    Use getMemoryById for surgical full-body retrieval by UUID.
+    Use getMemoriesByTag for full-body retrieval by topic.
+    Use getLatestMemory for the single most recent memory (strict chronological).
+    Use readTeamMemories and shareMemory for team knowledge sharing.
     Use /query with specific filters to get AI responses grounded in relevant context.
-    IMPORTANT: For "most recent memory chronologically" always use getLatestMemory -- never /query.
+    IMPORTANT: For "most recent memory chronologically" always use getLatestMemory, not /query.
+    IMPORTANT: To edit a memory, use updateMemory with the memory ID, not writeMemory.
 servers:
   - url: https://api.reflectmemory.com
 paths:
@@ -155,6 +161,293 @@ paths:
                   updated_at: { type: string }
         "404":
           description: Memory not found or not accessible
+    put:
+      operationId: updateMemory
+      x-openai-isConsequential: true
+      summary: Update an existing memory by ID (full replacement)
+      description: >
+        Edit a memory you previously wrote. Replaces title, content, tags, and allowed_vendors.
+        Preserves version history (old content is saved before overwriting).
+        Use this to correct, refine, or append to a memory instead of writing duplicates.
+        You can only update memories you created (origin must match your vendor).
+        Trashed memories cannot be updated.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The memory UUID to update
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+                - content
+                - tags
+                - allowed_vendors
+              properties:
+                title:
+                  type: string
+                  maxLength: 500
+                  description: "Updated title"
+                content:
+                  type: string
+                  maxLength: 100000
+                  description: "Updated content (full replacement, not a patch)"
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  maxItems: 50
+                  description: "Updated tags"
+                allowed_vendors:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 1
+                  maxItems: 50
+                  description: "Which vendors can see this. Use ['*'] for all."
+      responses:
+        "200":
+          description: Updated memory
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  title: { type: string }
+                  content: { type: string }
+                  tags: { type: array, items: { type: string } }
+                  origin: { type: string }
+                  allowed_vendors: { type: array, items: { type: string } }
+                  memory_type: { type: string }
+                  created_at: { type: string }
+                  updated_at: { type: string }
+        "403":
+          description: Cannot update a memory you did not create
+        "404":
+          description: Memory not found or deleted
+    delete:
+      operationId: deleteMemory
+      x-openai-isConsequential: true
+      summary: Soft-delete a memory by ID (moves to trash)
+      description: >
+        Delete a memory you previously wrote. Moves it to trash (recoverable from the dashboard).
+        You can only delete memories you created (origin must match your vendor).
+        Already-deleted memories return 404.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The memory UUID to delete
+      responses:
+        "200":
+          description: Memory deleted (moved to trash)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: string }
+                  title: { type: string }
+        "403":
+          description: Cannot delete a memory you did not create
+        "404":
+          description: Memory not found or already deleted
+  /agent/memories/search:
+    post:
+      operationId: searchMemories
+      x-openai-isConsequential: false
+      summary: Search memories by text (returns full content)
+      description: >
+        Full-text search across memory titles and content. Returns complete memory
+        entries (with content) matching the search term. Use for finding specific
+        information when you know keywords but not tags or IDs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - term
+              properties:
+                term:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                  description: "Search term to match against title and content"
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  description: "Max memories to return. Default: 10."
+      responses:
+        "200":
+          description: Matching memories with full content
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        content: { type: string }
+                        tags: { type: array, items: { type: string } }
+                        origin: { type: string }
+                        allowed_vendors: { type: array, items: { type: string } }
+                        memory_type: { type: string }
+                        created_at: { type: string }
+                        updated_at: { type: string }
+                  count:
+                    type: integer
+  /agent/memories/list:
+    post:
+      operationId: readMemories
+      x-openai-isConsequential: false
+      summary: Read recent memories (full content, bulk)
+      description: >
+        Get the most recent memories with full content. Use limit to control how many.
+        For discovering what exists without loading full content, use browseMemories instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+                  description: "Max memories to return. Default: 10."
+      responses:
+        "200":
+          description: Recent memories with full content
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        content: { type: string }
+                        tags: { type: array, items: { type: string } }
+                        origin: { type: string }
+                        allowed_vendors: { type: array, items: { type: string } }
+                        memory_type: { type: string }
+                        created_at: { type: string }
+                        updated_at: { type: string }
+                  count:
+                    type: integer
+  /agent/team/memories:
+    get:
+      operationId: readTeamMemories
+      x-openai-isConsequential: false
+      summary: Read team shared memories
+      description: >
+        Get memories shared with your team. Returns the team knowledge pool with
+        author attribution. Only available if you belong to a team.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+          description: "Max team memories to return. Default: 20."
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: "Skip this many results for pagination. Default: 0."
+      responses:
+        "200":
+          description: Team shared memories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  team_memories:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        content: { type: string }
+                        tags: { type: array, items: { type: string } }
+                        origin: { type: string }
+                        memory_type: { type: string }
+                        author: { type: string }
+                        shared_at: { type: string }
+                        created_at: { type: string }
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                  has_more:
+                    type: boolean
+        "404":
+          description: Not a member of any team
+  /agent/team/share:
+    post:
+      operationId: shareMemory
+      x-openai-isConsequential: true
+      summary: Share a memory with your team
+      description: >
+        Share one of your personal memories with your team. The memory becomes
+        visible to all team members via readTeamMemories. You must own the memory.
+        Already-shared memories are handled gracefully (no error).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - memory_id
+              properties:
+                memory_id:
+                  type: string
+                  description: "The UUID of your memory to share with the team"
+      responses:
+        "200":
+          description: Memory shared with team
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shared: { type: boolean }
+                  memory_id: { type: string }
+                  team_id: { type: string }
+        "404":
+          description: Not a team member or memory not found
   /agent/memories/by-tag:
     post:
       operationId: getMemoriesByTag

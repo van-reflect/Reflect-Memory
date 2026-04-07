@@ -132,6 +132,14 @@ if (
 const dashboardServiceKey = optionalEnv("RM_DASHBOARD_SERVICE_KEY", "");
 const dashboardJwtSecret = optionalEnv("RM_DASHBOARD_JWT_SECRET", "");
 
+if (dashboardJwtSecret && dashboardJwtSecret.length < 32) {
+  console.error(
+    "[SECURITY] RM_DASHBOARD_JWT_SECRET must be at least 32 characters. " +
+    "Generate one with: openssl rand -hex 32",
+  );
+  process.exit(1);
+}
+
 if (deployment.tenantId) {
   const dataDir = dirname(DB_PATH);
   const markerPath = resolve(dataDir, ".tenant_id");

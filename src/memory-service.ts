@@ -597,7 +597,7 @@ export function updateMemory(
     const allowedVendorsJson = JSON.stringify(input.allowed_vendors);
 
     const current = db
-      .prepare(`SELECT * FROM memories WHERE id = ? AND user_id = ?`)
+      .prepare(`SELECT * FROM memories WHERE id = ? AND user_id = ? AND deleted_at IS NULL`)
       .get(memoryId, userId) as MemoryRow | undefined;
 
     if (!current) return null;
