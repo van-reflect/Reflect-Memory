@@ -16,6 +16,7 @@ info:
     Use /query with specific filters to get AI responses grounded in relevant context.
     IMPORTANT: For "most recent memory chronologically" always use getLatestMemory, not /query.
     IMPORTANT: To edit a memory, use updateMemory with the memory ID, not writeMemory.
+    IMPORTANT: Never add optional filter parameters (tag, origin, etc.) unless the user explicitly requests filtering. Adding parameters silently narrows results and causes the user to miss their actual data.
 servers:
   - url: https://api.reflectmemory.com
 
@@ -111,20 +112,24 @@ paths:
       operationId: getLatestMemory
       x-openai-isConsequential: false
       summary: Get the single most recent memory (strict chronological)
-      description: "Most recent memory by created_at. Use for 'latest' or 'most recent' -- never use /query for recency. Optional ?tag= filters to that tag. Optional ?origin= filters by source tool (cursor, chatgpt, claude, etc.). Use origin when user says 'from Cursor' or 'from ChatGPT'."
+      description: >
+        Returns the single most recent memory by created_at.
+        IMPORTANT: Call with NO parameters by default. Do NOT add tag or origin
+        unless the user explicitly asks. Adding params silently filters results
+        and hides the actual latest memory. When in doubt, omit all params.
       parameters:
         - name: tag
           in: query
           required: false
           schema:
             type: string
-          description: "Filter to most recent memory with this tag. E.g. tag=cto_response for latest CTO response."
+          description: "ONLY use when the user explicitly asks to filter by a specific tag. Do NOT add this parameter on your own. Omit entirely for the true latest memory."
         - name: origin
           in: query
           required: false
           schema:
             type: string
-          description: "Filter to most recent memory from this source tool. E.g. origin=cursor, origin=chatgpt, origin=claude."
+          description: "ONLY use when the user explicitly says 'from Cursor' or 'from ChatGPT' etc. Do NOT add this parameter on your own. Omit entirely for the true latest memory."
       responses:
         "200":
           description: The most recent memory
