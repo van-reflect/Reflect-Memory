@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
+    "@fastify/formbody": "^8.0.2",
     "@fastify/http-proxy": "^11.4.1",
     "@fastify/rate-limit": "^10.3.0",
     "@modelcontextprotocol/sdk": "^1.27.1",

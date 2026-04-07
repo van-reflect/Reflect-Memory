@@ -7,6 +7,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import proxy from "@fastify/http-proxy";
+import formbody from "@fastify/formbody";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -119,7 +120,7 @@ declare module "fastify" {
     userId: string;
     role: "user" | "agent";
     vendor: string | null;
-    authMethod: "dashboard" | "api_key" | "agent_key" | "sso";
+    authMethod: "dashboard" | "api_key" | "agent_key" | "sso" | "oauth";
     dataAccessed: boolean;
   }
 }
@@ -167,6 +168,8 @@ export interface ServerConfig {
   dashboardJwtSecret: string | null;
   mcpPort: number | null;
   deployment: DeploymentConfig;
+  chatgptClientId: string | null;
+  chatgptClientSecret: string | null;
 }
 
 // =============================================================================
@@ -475,6 +478,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     credentials: true,
   });
 
+  await server.register(formbody);
+
   // Global rate limit: 100 req/min per IP
   await server.register(rateLimit, {
     max: 100,
@@ -519,6 +524,183 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         rewritePrefix: oauthPath,
       });
     }
+  }
+
+  // ===========================================================================
+  // ChatGPT OAuth 2.0 (standard auth-code flow, no PKCE)
+  // Separate from MCP's OAuth 2.1 which requires PKCE.
+  // ===========================================================================
+
+  const { chatgptClientId, chatgptClientSecret } = config;
+
+  if (chatgptClientId && chatgptClientSecret) {
+    const chatgptSecretHash = createHash("sha256").update(chatgptClientSecret).digest("hex");
+
+    // Auto-register the ChatGPT OAuth client if it doesn't exist
+    const existingClient = db
+      .prepare(`SELECT client_id FROM oauth_clients WHERE client_id = ?`)
+      .get(chatgptClientId);
+    if (!existingClient) {
+      db.prepare(
+        `INSERT INTO oauth_clients (client_id, client_secret, client_secret_hash, redirect_uris, client_name, grant_types, response_types, scope, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        chatgptClientId,
+        null,
+        chatgptSecretHash,
+        JSON.stringify(["https://chat.openai.com/aip/g-*/oauth/callback", "https://chatgpt.com/aip/g-*/oauth/callback"]),
+        "ChatGPT",
+        JSON.stringify(["authorization_code", "refresh_token"]),
+        JSON.stringify(["code"]),
+        "memory:read memory:write",
+        new Date().toISOString(),
+      );
+      console.log(`[oauth-chatgpt] Registered ChatGPT client: ${chatgptClientId}`);
+    }
+
+    const dashboardUrl = config.dashboardServiceKey
+      ? (process.env.RM_DASHBOARD_URL || "https://reflectmemory.com")
+      : "https://reflectmemory.com";
+
+    // GET /chatgpt/authorize -- Authorization endpoint for ChatGPT OAuth
+    server.get("/chatgpt/authorize", async (request, reply) => {
+      const query = request.query as Record<string, string>;
+      const { client_id, redirect_uri, state, scope, response_type } = query;
+
+      if (response_type !== "code") {
+        return reply.code(400).send({ error: "Unsupported response_type" });
+      }
+      if (client_id !== chatgptClientId) {
+        return reply.code(400).send({ error: "Unknown client_id" });
+      }
+
+      const pendingId = randomUUID();
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 30 * 60 * 1000);
+
+      db.prepare(
+        `INSERT INTO oauth_pending_requests (id, client_id, client_name, redirect_uri, code_challenge, scopes, state, resource, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        pendingId,
+        client_id,
+        "ChatGPT",
+        redirect_uri || "",
+        "none",
+        JSON.stringify(scope ? scope.split(" ") : []),
+        state || null,
+        null,
+        expiresAt.toISOString(),
+        now.toISOString(),
+      );
+
+      const consentUrl = new URL(`${dashboardUrl}/oauth/consent`);
+      consentUrl.searchParams.set("pending_id", pendingId);
+      consentUrl.searchParams.set("client_name", "ChatGPT");
+
+      return reply.code(302).redirect(consentUrl.toString());
+    });
+
+    // POST /chatgpt/token -- Token endpoint for ChatGPT OAuth
+    server.post("/chatgpt/token", async (request, reply) => {
+      const body = request.body as Record<string, string>;
+      const { grant_type, code, refresh_token, client_id, client_secret, redirect_uri } = body;
+
+      if (client_id !== chatgptClientId) {
+        return reply.code(401).send({ error: "invalid_client" });
+      }
+      const providedHash = createHash("sha256").update(client_secret || "").digest("hex");
+      if (providedHash !== chatgptSecretHash) {
+        return reply.code(401).send({ error: "invalid_client" });
+      }
+
+      if (grant_type === "authorization_code") {
+        if (!code) {
+          return reply.code(400).send({ error: "invalid_request", error_description: "Missing code" });
+        }
+        const codeRow = db
+          .prepare(`SELECT * FROM oauth_codes WHERE code = ? AND client_id = ?`)
+          .get(code, client_id) as Record<string, string> | undefined;
+
+        if (!codeRow) {
+          return reply.code(400).send({ error: "invalid_grant" });
+        }
+        if (new Date(codeRow.expires_at) < new Date()) {
+          db.prepare(`DELETE FROM oauth_codes WHERE code = ?`).run(code);
+          return reply.code(400).send({ error: "invalid_grant", error_description: "Code expired" });
+        }
+
+        db.prepare(`DELETE FROM oauth_codes WHERE code = ?`).run(code);
+
+        const accessToken = `rma_${randomUUID().replace(/-/g, "")}`;
+        const refreshTkn = `rmr_${randomUUID().replace(/-/g, "")}`;
+        const now = new Date();
+        const accessExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const refreshExpiry = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+        const tokenUserId = codeRow.user_id || null;
+
+        db.prepare(
+          `INSERT INTO oauth_tokens (token, token_type, client_id, user_id, scopes, resource, expires_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(accessToken, "access", client_id, tokenUserId, codeRow.scopes || "[]", null, accessExpiry.toISOString(), now.toISOString());
+        db.prepare(
+          `INSERT INTO oauth_tokens (token, token_type, client_id, user_id, scopes, resource, expires_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(refreshTkn, "refresh", client_id, tokenUserId, codeRow.scopes || "[]", null, refreshExpiry.toISOString(), now.toISOString());
+
+        return reply.send({
+          access_token: accessToken,
+          token_type: "bearer",
+          expires_in: 604800,
+          refresh_token: refreshTkn,
+        });
+      }
+
+      if (grant_type === "refresh_token") {
+        if (!refresh_token) {
+          return reply.code(400).send({ error: "invalid_request", error_description: "Missing refresh_token" });
+        }
+        const rtRow = db
+          .prepare(`SELECT * FROM oauth_tokens WHERE token = ? AND token_type = 'refresh' AND client_id = ?`)
+          .get(refresh_token, client_id) as Record<string, string> | undefined;
+
+        if (!rtRow) {
+          return reply.code(400).send({ error: "invalid_grant" });
+        }
+        if (rtRow.expires_at && new Date(rtRow.expires_at) < new Date()) {
+          db.prepare(`DELETE FROM oauth_tokens WHERE token = ?`).run(refresh_token);
+          return reply.code(400).send({ error: "invalid_grant", error_description: "Refresh token expired" });
+        }
+
+        db.prepare(`DELETE FROM oauth_tokens WHERE token = ?`).run(refresh_token);
+
+        const newAccess = `rma_${randomUUID().replace(/-/g, "")}`;
+        const newRefresh = `rmr_${randomUUID().replace(/-/g, "")}`;
+        const now = new Date();
+        const accessExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const refreshExpiry = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+
+        db.prepare(
+          `INSERT INTO oauth_tokens (token, token_type, client_id, user_id, scopes, resource, expires_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(newAccess, "access", client_id, rtRow.user_id || null, rtRow.scopes || "[]", null, accessExpiry.toISOString(), now.toISOString());
+        db.prepare(
+          `INSERT INTO oauth_tokens (token, token_type, client_id, user_id, scopes, resource, expires_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(newRefresh, "refresh", client_id, rtRow.user_id || null, rtRow.scopes || "[]", null, refreshExpiry.toISOString(), now.toISOString());
+
+        return reply.send({
+          access_token: newAccess,
+          token_type: "bearer",
+          expires_in: 604800,
+          refresh_token: newRefresh,
+        });
+      }
+
+      return reply.code(400).send({ error: "unsupported_grant_type" });
+    });
+
+    console.log("[oauth-chatgpt] ChatGPT OAuth endpoints registered: /chatgpt/authorize, /chatgpt/token");
   }
 
   server.decorateRequest("userId", "");
@@ -593,6 +775,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     if (path === "/authorize" || path === "/token" || path === "/register" || path.startsWith("/mcp")) {
       return;
     }
+    // ChatGPT OAuth endpoints are handled by their own routes (no bearer auth)
+    if (path === "/chatgpt/authorize" || path === "/chatgpt/token") return;
 
     const header = request.headers.authorization;
 
@@ -723,6 +907,47 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       request.vendor = null;
       request.authMethod = "api_key";
       return;
+    }
+
+    // Try OAuth access tokens (issued via ChatGPT or MCP OAuth flows)
+    if (token.startsWith("rma_")) {
+      const oauthRow = db
+        .prepare(`SELECT client_id, user_id, expires_at FROM oauth_tokens WHERE token = ? AND token_type = 'access'`)
+        .get(token) as { client_id: string; user_id: string | null; expires_at: string | null } | undefined;
+      if (oauthRow) {
+        if (oauthRow.expires_at && new Date(oauthRow.expires_at) < new Date()) {
+          db.prepare(`DELETE FROM oauth_tokens WHERE token = ?`).run(token);
+        } else {
+          const resolvedUserId = oauthRow.user_id || userId;
+          const clientRow = db
+            .prepare(`SELECT client_name FROM oauth_clients WHERE client_id = ?`)
+            .get(oauthRow.client_id) as { client_name: string | null } | undefined;
+          const vendor = clientRow?.client_name?.toLowerCase().replace(/[^a-z0-9]/g, "") || "oauth";
+          request.userId = resolvedUserId;
+          request.role = "agent";
+          request.vendor = vendor;
+          request.authMethod = "oauth";
+
+          const allowed =
+            path === "/health" ||
+            path === "/whoami" ||
+            path === "/query" ||
+            path.startsWith("/agent/") ||
+            (config.mcpPort != null && path.startsWith("/mcp"));
+          if (!allowed) {
+            logSecurity("oauth_route_forbidden", request, {
+              vendor,
+              path,
+              status_code: 403,
+              auth_method: "oauth",
+            });
+            return reply.code(403).send({
+              error: "OAuth tokens cannot access this endpoint",
+            });
+          }
+          return;
+        }
+      }
     }
 
     logSecurity("auth_invalid_key", request, { status_code: 401 });

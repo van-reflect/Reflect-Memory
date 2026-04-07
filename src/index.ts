@@ -757,6 +757,9 @@ const mcpPort = (validVendors.length > 0 || optionalEnv("RM_PUBLIC_URL", ""))
   ? parseInt(mcpPortEnv, 10)
   : null;
 
+const chatgptClientId = optionalEnv("RM_CHATGPT_CLIENT_ID", "");
+const chatgptClientSecret = optionalEnv("RM_CHATGPT_CLIENT_SECRET", "");
+
 const config: ServerConfig = {
   db,
   apiKey: API_KEY,
@@ -772,6 +775,8 @@ const config: ServerConfig = {
   dashboardJwtSecret: dashboardJwtSecret || null,
   mcpPort,
   deployment,
+  chatgptClientId: chatgptClientId || null,
+  chatgptClientSecret: chatgptClientSecret || null,
 };
 
 const server = await createServer(config);

@@ -18,6 +18,24 @@ info:
     IMPORTANT: To edit a memory, use updateMemory with the memory ID, not writeMemory.
 servers:
   - url: https://api.reflectmemory.com
+
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.reflectmemory.com/chatgpt/authorize
+          tokenUrl: https://api.reflectmemory.com/chatgpt/token
+          scopes:
+            memory:read: Read memories
+            memory:write: Write, update, and delete memories
+
+security:
+  - oauth:
+      - memory:read
+      - memory:write
+
 paths:
   /agent/memories:
     post:
