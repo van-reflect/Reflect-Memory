@@ -769,7 +769,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
   server.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?")[0];
-    if (path === "/health" || path === "/openapi.json") return;
+    if (path === "/health" || path === "/openapi.json" || path === "/favicon.ico" || path === "/icon.png") return;
     if (request.method === "GET" && path.startsWith("/teams/invite/")) return;
     if (request.method === "POST" && (path === "/waitlist" || path === "/early-access" || path === "/integration-requests")) return;
     if (deployment.allowPublicWebhooks && request.method === "POST" && path === "/webhooks/clerk") return;
@@ -1104,6 +1104,30 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       model_egress: deployment.disableModelEgress ? "disabled" : "enabled",
       public_webhooks: deployment.allowPublicWebhooks,
     };
+  });
+
+  // ===========================================================================
+  // GET /favicon.ico, /icon.png -- Public brand assets (used by Claude connectors, crawlers)
+  // ===========================================================================
+
+  const publicAssetsDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "public");
+
+  server.get("/favicon.ico", async (_request, reply) => {
+    try {
+      const buf = readFileSync(resolve(publicAssetsDir, "favicon.ico"));
+      return reply.header("content-type", "image/x-icon").header("cache-control", "public, max-age=86400").send(buf);
+    } catch {
+      return reply.code(404).send();
+    }
+  });
+
+  server.get("/icon.png", async (_request, reply) => {
+    try {
+      const buf = readFileSync(resolve(publicAssetsDir, "icon.png"));
+      return reply.header("content-type", "image/png").header("cache-control", "public, max-age=86400").send(buf);
+    } catch {
+      return reply.code(404).send();
+    }
   });
 
   // ===========================================================================
