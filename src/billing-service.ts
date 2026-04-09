@@ -28,10 +28,10 @@ const sandboxCap = process.env.RM_SANDBOX_MEMORY_CAP
   : 0;
 
 export const PLAN_LIMITS: Record<string, PlanLimits> = {
-  free: { maxMemories: sandboxCap > 0 ? sandboxCap : 500, maxApiKeys: 2 },
-  pro: { maxMemories: 5_000, maxApiKeys: 5 },
-  builder: { maxMemories: 5_000, maxApiKeys: 5 },
-  team: { maxMemories: 10_000, maxApiKeys: 10 },
+  free: { maxMemories: sandboxCap > 0 ? sandboxCap : 200, maxApiKeys: 2 },
+  pro: { maxMemories: 400, maxApiKeys: 5 },
+  builder: { maxMemories: 400, maxApiKeys: 5 },
+  team: { maxMemories: 4_000, maxApiKeys: 10 },
   admin: { maxMemories: Infinity, maxApiKeys: Infinity },
 };
 

@@ -104,7 +104,7 @@ const txn = db.transaction(() => {
   createMemory(jordanId, "Memory model design", "Memories have: title, content, tags, origin, allowed_vendors, memory_type (semantic/episodic/procedural). Soft delete with deleted_at. Versions tracked in memory_versions table.", ["data-model", "architecture"], "cursor", teamId);
   createMemory(jordanId, "Personal: Jordan's debugging approach", "When debugging, I start with the error message, check the request/response cycle, then trace through the service layer. I use console.log liberally and clean up after.", ["personal", "debugging"], "user", null);
   createMemory(jordanId, "Rate limiting strategy", "Backend uses @fastify/rate-limit. Default 100 req/min for reads, 30/min for writes, 5/min for billing actions. Dashboard API routes have their own rate limits via lib/rate-limit.ts.", ["security", "api"], "user", teamId);
-  createMemory(jordanId, "Team feature architecture", "Team tier uses dual namespace: personal memories + shared team pool. Users explicitly share via 'Share to Team'. Team quota counts all members' memories against 10k limit.", ["architecture", "team"], "cursor", teamId);
+  createMemory(jordanId, "Team feature architecture", "Team tier uses dual namespace: personal memories + shared team pool. Users explicitly share via 'Share to Team'. Team quota counts all members' memories against 4k limit.", ["architecture", "team"], "cursor", teamId);
 
   // 4. Seed pending invites
   const inviteToken1 = randomUUID();

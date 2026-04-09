@@ -12,18 +12,24 @@ In the Stripe dashboard → Products, create:
 ### Free Plan
 - Name: "Reflect Memory Free"
 - Price: $0/month (no Stripe subscription needed)
-- Limits: 100 memories, 500 reads/month, 3 AI tool connections
+- Limits: 200 memories, 2 API keys
 
 ### Pro Plan
 - Name: "Reflect Memory Pro"
 - Price: $20/month
-- Limits: 5,000 memories, unlimited reads, unlimited AI tool connections
+- Limits: 400 memories, 5 API keys
+
+### Team Plan
+- Name: "Reflect Memory Team"
+- Price: $200/month
+- Limits: 4,000 shared memories, 10 API keys, up to 10 seats
+- Additional seats: $20/mo each (+400 memories per seat)
 
 ### Enterprise
 - Custom pricing (Contact Sales)
 - Private deploy, SSO, audit trail, custom limits
 
-**Copy the Price ID** (starts with `price_`) for the Pro plan.
+**Copy the Price IDs** (starts with `price_`) for the Pro and Team plans.
 
 ## Step 3: Get API Keys
 
