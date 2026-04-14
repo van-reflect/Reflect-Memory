@@ -3,7 +3,7 @@
 // No UI. No logging. No default behavior.
 // Every request requires auth and explicit intent.
 
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import proxy from "@fastify/http-proxy";
@@ -501,35 +501,50 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   if (mcpPort != null) {
     const mcpUpstream = `http://127.0.0.1:${mcpPort}`;
 
-    await server.register(proxy, {
-      upstream: mcpUpstream,
-      prefix: "/mcp",
-      rewritePrefix: "/mcp",
-      undici: {
-        bodyTimeout: 0,
-        headersTimeout: 0,
-      },
-    });
+    await server.register(async (mcpProxyScope) => {
+      // Root @fastify/formbody parses application/x-www-form-urlencoded into objects, and
+      // that parser inherits into encapsulated routes. @fastify/reply-from (used by the
+      // MCP proxy) then calls Buffer.byteLength on the parsed object when forwarding POST
+      // bodies, which throws ERR_INVALID_ARG_TYPE and yields 500 on OAuth token exchange.
+      // Parse URL-encoded bodies as raw strings in this subtree only so the proxy forwards
+      // a string/buffer upstream (see MCP SDK token handler: urlencoded grant_type, etc.).
+      mcpProxyScope.removeContentTypeParser("application/x-www-form-urlencoded");
+      mcpProxyScope.addContentTypeParser(
+        "application/x-www-form-urlencoded",
+        { parseAs: "string" },
+        async (_req: FastifyRequest, body: string) => body,
+      );
 
-    // OAuth discovery and auth endpoints served by the MCP server's mcpAuthRouter.
-    // PRM is path-aware per RFC 9728: /.well-known/oauth-protected-resource/mcp
-    const oauthPaths = [
-      "/.well-known/oauth-protected-resource",
-      "/.well-known/oauth-authorization-server",
-      "/authorize",
-      "/token",
-      "/register",
-      "/oauth/approve",
-      "/oauth/approve-s2s",
-      "/oauth/status",
-    ];
-    for (const oauthPath of oauthPaths) {
-      await server.register(proxy, {
+      await mcpProxyScope.register(proxy, {
         upstream: mcpUpstream,
-        prefix: oauthPath,
-        rewritePrefix: oauthPath,
+        prefix: "/mcp",
+        rewritePrefix: "/mcp",
+        undici: {
+          bodyTimeout: 0,
+          headersTimeout: 0,
+        },
       });
-    }
+
+      // OAuth discovery and auth endpoints served by the MCP server's mcpAuthRouter.
+      // PRM is path-aware per RFC 9728: /.well-known/oauth-protected-resource/mcp
+      const oauthPaths = [
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-authorization-server",
+        "/authorize",
+        "/token",
+        "/register",
+        "/oauth/approve",
+        "/oauth/approve-s2s",
+        "/oauth/status",
+      ];
+      for (const oauthPath of oauthPaths) {
+        await mcpProxyScope.register(proxy, {
+          upstream: mcpUpstream,
+          prefix: oauthPath,
+          rewritePrefix: oauthPath,
+        });
+      }
+    });
   }
 
   // ===========================================================================
