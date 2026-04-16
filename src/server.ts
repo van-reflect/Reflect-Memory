@@ -489,20 +489,23 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
   await server.register(formbody);
 
-  // Global rate limit: 100 req/min per IP
-  await server.register(rateLimit, {
-    max: 100,
-    timeWindow: "1 minute",
-    onExceeded: (request) => {
-      console.log(`[security] ${JSON.stringify({
-        event: "rate_limit_exceeded",
-        ip: request.ip,
-        method: request.method,
-        path: request.url.split("?")[0],
-        time: new Date().toISOString(),
-      })}`);
-    },
-  });
+  // Global rate limit: 100 req/min per IP. Skipped in test mode so an integration
+  // suite of dozens of POSTs/sec doesn't hit per-route 1-minute caps.
+  if (!testMode) {
+    await server.register(rateLimit, {
+      max: 100,
+      timeWindow: "1 minute",
+      onExceeded: (request) => {
+        console.log(`[security] ${JSON.stringify({
+          event: "rate_limit_exceeded",
+          ip: request.ip,
+          method: request.method,
+          path: request.url.split("?")[0],
+          time: new Date().toISOString(),
+        })}`);
+      },
+    });
+  }
 
   // Proxy /mcp and OAuth endpoints to the MCP server (Railway exposes only one port)
   if (mcpPort != null) {
