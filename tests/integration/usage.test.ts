@@ -84,26 +84,39 @@ describe("GET /usage/check", () => {
 
   it("memory_count decrements after soft-delete and again after permanent delete", async () => {
     const tag = uniqueTag("dec");
+    const beforeCreate = await getQuota();
     const id = await createMemory(tag);
     const afterCreate = await getQuota();
+    expect(afterCreate.memory_count).toBe(beforeCreate.memory_count + 1);
 
-    await api("DELETE", `/agent/memories/${id}`, { token: withAgentKey("cursor") });
+    const del = await api<{ deleted: boolean }>("DELETE", `/agent/memories/${id}`, {
+      token: withAgentKey("cursor"),
+    });
+    expect(del.status).toBe(200);
+    expect(del.json.deleted).toBe(true);
     const afterTrash = await getQuota();
-    // Soft-delete moves to trash (deleted_at set), so memory_count drops.
     expect(afterTrash.memory_count).toBe(afterCreate.memory_count - 1);
 
     const perm = await api("DELETE", `/memories/${id}/permanent`);
     expect(perm.status).toBe(204);
     const afterPerm = await getQuota();
-    // Already removed from active count by trash; permanent delete keeps it removed.
     expect(afterPerm.memory_count).toBe(afterTrash.memory_count);
   });
 
   it("memory_count restores after restoring a trashed memory", async () => {
     const tag = uniqueTag("restore");
+    const beforeCreate = await getQuota();
     const id = await createMemory(tag);
-    await api("DELETE", `/agent/memories/${id}`, { token: withAgentKey("cursor") });
+    const afterCreate = await getQuota();
+    expect(afterCreate.memory_count).toBe(beforeCreate.memory_count + 1);
+
+    const del = await api<{ deleted: boolean }>("DELETE", `/agent/memories/${id}`, {
+      token: withAgentKey("cursor"),
+    });
+    expect(del.status).toBe(200);
+    expect(del.json.deleted).toBe(true);
     const afterTrash = await getQuota();
+    expect(afterTrash.memory_count).toBe(afterCreate.memory_count - 1);
 
     const restored = await api("POST", `/memories/${id}/restore`, { body: {} });
     expect(restored.status).toBe(200);

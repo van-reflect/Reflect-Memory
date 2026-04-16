@@ -11,6 +11,11 @@ export default defineConfig({
     sequence: {
       concurrent: false,
     },
+    // Critical: integration tests share an ephemeral server + SQLite DB. Files MUST
+    // run sequentially or count-delta assertions race against writes from other files.
+    // singleFork alone is not enough — fileParallelism defaults to true and lets files
+    // interleave inside the single fork.
+    fileParallelism: false,
     globalSetup: ["tests/global-setup.ts"],
     pool: "forks",
     forks: {
