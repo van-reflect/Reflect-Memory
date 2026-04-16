@@ -15,7 +15,13 @@
     "bootstrap:enterprise": "bash scripts/enterprise-bootstrap.sh .env.enterprise",
     "validate:enterprise": "node scripts/validate-enterprise-env.mjs .env.enterprise",
     "smoke:enterprise": "node scripts/smoke-test-enterprise.mjs",
-    "compat:check": "node scripts/compat-check.mjs"
+    "compat:check": "node scripts/compat-check.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:live-smoke": "node tests/live/live-smoke.test.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
@@ -38,7 +44,9 @@
     "@types/better-sqlite3": "^7",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22",
+    "@vitest/coverage-v8": "^4.1.4",
     "tsx": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.4"
   }
 }

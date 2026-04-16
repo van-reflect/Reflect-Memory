@@ -171,6 +171,12 @@ export interface ServerConfig {
   deployment: DeploymentConfig;
   chatgptClientId: string | null;
   chatgptClientSecret: string | null;
+  /**
+   * When true, the CI-test-memory quarantine guard (isCiTestMemory) is bypassed
+   * so integration tests can write + read back memories with CI-looking titles.
+   * MUST be false in production — entrypoint asserts NODE_ENV!=='production'.
+   */
+  testMode: boolean;
 }
 
 // =============================================================================
@@ -420,6 +426,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     dashboardJwtSecret,
     mcpPort,
     deployment,
+    testMode,
   } = config;
 
   const server = Fastify({
@@ -1567,7 +1574,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       };
 
       const memory = createMemory(db, request.userId, input);
-      if (isCiTestMemory(memory)) {
+      if (!testMode && isCiTestMemory(memory)) {
         softDeleteMemory(db, request.userId, memory.id);
       }
       reply.code(201);

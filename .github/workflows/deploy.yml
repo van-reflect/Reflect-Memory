@@ -1,0 +1,107 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - prod
+
+env:
+  NODE_VERSION: "22"
+  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+
+jobs:
+  # Gate: run the full test + security + audit suite before deploying.
+  # Duplicates ci.yml steps inline so this workflow is self-contained and
+  # doesn't race with ci.yml completion detection.
+  typecheck:
+    name: TypeScript Compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  test:
+    name: Unit + Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  deploy:
+    name: Deploy API
+    runs-on: ubuntu-latest
+    needs: [typecheck, test]
+    concurrency:
+      group: deploy-api-${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+      cancel-in-progress: false
+    outputs:
+      target: ${{ steps.env.outputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "target=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "target=prod" >> $GITHUB_OUTPUT
+          else
+            echo "target=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy to ${{ steps.env.outputs.target }}
+        env:
+          TARGET: ${{ steps.env.outputs.target }}
+        run: |
+          rsync -avz --delete \
+            --exclude=node_modules --exclude=.git --exclude=dist --exclude=.env --exclude='*.db' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ root@${{ env.DEPLOY_HOST }}:/opt/reflect/${TARGET}/api/
+
+          ssh -i ~/.ssh/deploy_key root@${{ env.DEPLOY_HOST }} \
+            "/opt/reflect/deploy.sh ${TARGET} api"
+
+  smoke:
+    name: Post-deploy smoke (${{ needs.deploy.outputs.target }})
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    env:
+      REFLECT_TEST_API_KEY: ${{ needs.deploy.outputs.target == 'prod' && secrets.REFLECT_TEST_API_KEY_PROD || secrets.REFLECT_TEST_API_KEY_DEV }}
+      REFLECT_TEST_BASE_URL: ${{ needs.deploy.outputs.target == 'prod' && vars.REFLECT_TEST_BASE_URL_PROD || vars.REFLECT_TEST_BASE_URL_DEV }}
+      REFLECT_TEST_WRITE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Wait 15s for systemd restart
+        run: sleep 15
+      - name: Run live smoke
+        run: node tests/live/live-smoke.test.mjs

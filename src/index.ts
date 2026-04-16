@@ -59,6 +59,19 @@ function isPublicModelHost(urlValue: string): boolean {
 const PORT = parseInt(optionalEnv("RM_PORT", optionalEnv("PORT", "3000")), 10);
 const DB_PATH = optionalEnv("RM_DB_PATH", "/data/reflect-memory.db");
 const API_KEY = requireEnv("RM_API_KEY");
+
+const TEST_MODE = process.env.RM_TEST_MODE === "1";
+if (TEST_MODE && process.env.NODE_ENV === "production") {
+  console.error(
+    "[SECURITY] Refusing to start: RM_TEST_MODE=1 is set while NODE_ENV=production. " +
+    "RM_TEST_MODE disables the CI-memory quarantine and must never run in production. " +
+    "If you're sure, unset one of them.",
+  );
+  process.exit(1);
+}
+if (TEST_MODE) {
+  console.warn("[test-mode] RM_TEST_MODE=1 -- CI-memory quarantine DISABLED. Do not use in prod.");
+}
 const deployment = freezeDeploymentConfig(resolveDeploymentConfig(process.env));
 validateDeploymentConfig(deployment);
 
@@ -418,9 +431,10 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(uniqueVersionMig
   );
 }
 
-// Migration: bulk soft-delete existing CI integration test memories
+// Migration: bulk soft-delete existing CI integration test memories.
+// Skipped when RM_TEST_MODE=1 (tests need to write + read CI-looking memories).
 const ciTrashMigrationName = "011_bulk_trash_ci_test_memories";
-if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(ciTrashMigrationName)) {
+if (!TEST_MODE && !db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(ciTrashMigrationName)) {
   const now = new Date().toISOString();
   const stmt = db.prepare(`
     UPDATE memories
@@ -777,6 +791,7 @@ const config: ServerConfig = {
   deployment,
   chatgptClientId: chatgptClientId || null,
   chatgptClientSecret: chatgptClientSecret || null,
+  testMode: TEST_MODE,
 };
 
 const server = await createServer(config);

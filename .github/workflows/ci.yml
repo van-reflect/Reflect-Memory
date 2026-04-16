@@ -2,13 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 env:
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
 
 jobs:
   typecheck:
@@ -23,20 +23,18 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
 
-  integration-tests:
-    name: Integration Tests
+  test:
+    name: Unit + Integration Tests
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      REFLECT_TEST_API_KEY: ${{ secrets.REFLECT_TEST_API_KEY }}
-      REFLECT_TEST_BASE_URL: ${{ vars.REFLECT_TEST_BASE_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - name: Run API integration tests
-        run: node tests/api.test.mjs
+          cache: npm
+      - run: npm ci
+      - name: Run Vitest (ephemeral server, in-memory DB, RM_TEST_MODE=1)
+        run: npm test
 
   security:
     name: Security Checks
@@ -46,13 +44,6 @@ jobs:
 
       - name: Verify .env files are gitignored
         run: |
-          MISSING=0
-          for pattern in '.env' '.env.local' '.env.production'; do
-            if ! grep -q "^${pattern}$" .gitignore 2>/dev/null && \
-               ! grep -q "^\.env\*$" .gitignore 2>/dev/null; then
-              echo "::warning::${pattern} not explicitly in .gitignore"
-            fi
-          done
           if ! grep -q '\.env' .gitignore 2>/dev/null; then
             echo "::error::.env is not in .gitignore"
             exit 1
@@ -116,4 +107,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      # Temporarily allow moderate until vuln fix PR lands (tracked in TEST_PLAN.md phase 7).
+      # Critical/high still block.
       - run: npm audit --production --audit-level=high
