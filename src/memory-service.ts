@@ -126,7 +126,8 @@ function buildPaginationClause(opts?: PaginationOptions): { sql: string; params:
 // Deduplication: same-origin similarity check before creating new memories
 // ---------------------------------------------------------------------------
 
-function tokenize(text: string): Set<string> {
+/** @internal — exported for unit tests; do not use outside this module. */
+export function tokenize(text: string): Set<string> {
   return new Set(
     text
       .toLowerCase()
@@ -136,7 +137,8 @@ function tokenize(text: string): Set<string> {
   );
 }
 
-function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+/** @internal — exported for unit tests; do not use outside this module. */
+export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   if (a.size === 0 && b.size === 0) return 1;
   let intersection = 0;
   for (const w of a) {
@@ -146,9 +148,10 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   return union === 0 ? 0 : intersection / union;
 }
 
-const TITLE_SIMILARITY_THRESHOLD = 0.5;
-const CONTENT_SIMILARITY_THRESHOLD = 0.4;
-const DEDUP_WINDOW_HOURS = 48;
+/** @internal — exposed so unit tests can assert against the same constants the prod path uses. */
+export const TITLE_SIMILARITY_THRESHOLD = 0.5;
+export const CONTENT_SIMILARITY_THRESHOLD = 0.4;
+export const DEDUP_WINDOW_HOURS = 48;
 
 export interface DedupResult {
   action: "created" | "merged";

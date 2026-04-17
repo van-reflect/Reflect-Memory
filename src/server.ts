@@ -190,12 +190,9 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 /** Detects CI integration test memories for auto-trash. */
-function isCiTestMemory(m: { title: string; tags: string[] }): boolean {
-  if (m.title.startsWith("CI ") || m.title.includes("ci-")) return true;
-  return m.tags.some(
-    (t) => t.startsWith("ci_") || t.includes("integration_test"),
-  );
-}
+// CI-test-memory pattern matcher lives in src/quarantine.ts so it can be unit-tested
+// without booting the Fastify server.
+import { isCiTestMemory } from "./quarantine.js";
 
 // =============================================================================
 // JSON Schemas
