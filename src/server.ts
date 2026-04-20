@@ -3010,7 +3010,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return reply.code(400).send({ error: "Invalid webhook signature" });
       }
 
+      console.log(`[stripe-webhook] received ${event.id} type=${event.type}`);
       await handleStripeWebhook(db, event);
+      console.log(`[stripe-webhook] processed ${event.id}`);
       return { received: true };
     },
   );
@@ -3066,6 +3068,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       if (!eventType || !data?.id) {
         return reply.code(400).send({ error: "Invalid webhook payload" });
       }
+
+      console.log(`[clerk-webhook] received type=${eventType} clerk_id=${data.id}`);
 
       const email = data.email_addresses?.[0]?.email_address?.trim().toLowerCase();
 
@@ -3130,6 +3134,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return { received: true };
       }
 
+      console.log(`[clerk-webhook] ignored type=${eventType} clerk_id=${data.id}`);
       return { received: true, ignored: true };
     },
   );

@@ -158,6 +158,9 @@ export async function handleStripeWebhook(
       console.log(`[billing] Payment failed for customer ${customerId}`);
       break;
     }
+
+    default:
+      console.log(`[billing] No handler for event type ${event.type} (id=${event.id})`);
   }
 }
 
