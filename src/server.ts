@@ -157,7 +157,10 @@ export interface AgentQueryReceipt {
 export interface ServerConfig {
   db: Database.Database;
   apiKey: string;
+  /** Primary owner user ID. Used for orphan consolidation and legacy single-tenant paths. */
   userId: string;
+  /** Full set of admin user IDs (superset of `userId`). Used for /admin/* authorization. */
+  ownerUserIds: Set<string>;
   modelGateway: ModelGatewayConfig;
   systemPrompt: string;
   startedAt: number;
@@ -412,6 +415,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     db,
     apiKey,
     userId,
+    ownerUserIds,
     modelGateway,
     systemPrompt,
     startedAt,
@@ -1209,17 +1213,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // ===========================================================================
 
   server.get("/admin/check", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
-    if (request.userId !== userId) {
+    if (!ownerUserIds.has(request.userId)) {
       reply.code(403);
-      return { error: "Admin access restricted to owner" };
+      return { error: "Admin access required" };
     }
     return { owner: true };
   });
 
   server.get("/admin/users", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
-    if (request.userId !== userId) {
+    if (!ownerUserIds.has(request.userId)) {
       reply.code(403);
-      return { error: "Admin access restricted to owner" };
+      return { error: "Admin access required" };
     }
     const rows = db
       .prepare(`SELECT id, email, created_at FROM users ORDER BY created_at DESC`)
@@ -1228,9 +1232,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   server.get("/admin/metrics", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
-    if (request.userId !== userId) {
+    if (!ownerUserIds.has(request.userId)) {
       reply.code(403);
-      return { error: "Admin access restricted to owner" };
+      return { error: "Admin access required" };
     }
 
     const now = new Date().toISOString();
@@ -1440,9 +1444,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // ===========================================================================
 
   server.get("/admin/audit", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (request, reply) => {
-    if (request.userId !== userId) {
+    if (!ownerUserIds.has(request.userId)) {
       reply.code(403);
-      return { error: "Admin access restricted to owner" };
+      return { error: "Admin access required" };
     }
     const q = request.query as Record<string, string | undefined>;
     const events = queryAuditEvents(db, {
@@ -1469,9 +1473,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // ===========================================================================
 
   server.get("/admin/audit/export", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
-    if (request.userId !== userId) {
+    if (!ownerUserIds.has(request.userId)) {
       reply.code(403);
-      return { error: "Admin access restricted to owner" };
+      return { error: "Admin access required" };
     }
     const q = request.query as Record<string, string | undefined>;
     if (!q.since || !q.until) {
@@ -2541,9 +2545,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     "/admin/waitlist",
     { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      if (request.userId !== userId) {
+      if (!ownerUserIds.has(request.userId)) {
         reply.code(403);
-        return { error: "Admin access restricted to owner" };
+        return { error: "Admin access required" };
       }
 
       const rows = db
@@ -2564,9 +2568,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     "/admin/early-access",
     { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      if (request.userId !== userId) {
+      if (!ownerUserIds.has(request.userId)) {
         reply.code(403);
-        return { error: "Admin access restricted to owner" };
+        return { error: "Admin access required" };
       }
 
       const rows = db
@@ -2620,9 +2624,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      if (request.userId !== userId) {
+      if (!ownerUserIds.has(request.userId)) {
         reply.code(403);
-        return { error: "Admin access restricted to owner" };
+        return { error: "Admin access required" };
       }
 
       const { id } = request.params as { id: string };
@@ -2676,9 +2680,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      if (request.userId !== userId) {
+      if (!ownerUserIds.has(request.userId)) {
         reply.code(403);
-        return { error: "Admin access restricted to owner" };
+        return { error: "Admin access required" };
       }
 
       const { ids } = request.body as { ids: string[] };
@@ -2747,9 +2751,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     "/admin/integration-requests",
     { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      if (request.userId !== userId) {
+      if (!ownerUserIds.has(request.userId)) {
         reply.code(403);
-        return { error: "Admin access restricted to owner" };
+        return { error: "Admin access required" };
       }
 
       const rows = db
