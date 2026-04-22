@@ -247,4 +247,39 @@ describe("OpenAPI spec coverage (what ChatGPT actually sees)", () => {
     );
     expect(r.json.paths["/agent/briefing"]?.get?.operationId).toBe("getMemoryBriefing");
   });
+
+  // ChatGPT's CustomGPT importer rejects the action manifest with a hard
+  // error when any operation description exceeds 300 characters. We hit
+  // this on 2026-04-22 with writeChildMemory/readThread/getMemoryBriefing.
+  // Lock the limit in so we don't break Action import on the next edit.
+  it("no operation description exceeds ChatGPT's 300-character limit", async () => {
+    interface Spec {
+      paths: Record<
+        string,
+        Record<string, { operationId?: string; description?: string }>
+      >;
+    }
+    const r = await api<Spec>("GET", "/openapi.json", { token: null });
+    expect(r.status).toBe(200);
+
+    const offenders: { op: string; len: number }[] = [];
+    for (const [path, methods] of Object.entries(r.json.paths)) {
+      for (const [method, op] of Object.entries(methods)) {
+        if (op.description && op.description.length > 300) {
+          offenders.push({
+            op: `${method.toUpperCase()} ${path} (${op.operationId})`,
+            len: op.description.length,
+          });
+        }
+      }
+    }
+    expect(
+      offenders,
+      `Operation descriptions over 300 chars (ChatGPT will reject): ${JSON.stringify(
+        offenders,
+        null,
+        2,
+      )}`,
+    ).toEqual([]);
+  });
 });
