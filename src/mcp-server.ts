@@ -90,12 +90,15 @@ function createMcpServerWithTools(
 
   mcp.tool(
     "get_memory_briefing",
-    "Get a condensed snapshot of the user's memory state: identity, totals, top personal + team tags (with counts), tags active in the last 7 days, open threads, and detected tagging conventions. The same briefing is sent in the MCP initialize response — call this tool only if you want a fresh one mid-session.",
+    "Get a condensed snapshot of the user's memory state: identity, totals, top personal + team tags (with counts), tags active in the last 7 days, open threads, and detected tagging conventions. " +
+      "This same briefing is sent at connect time via the MCP initialize response's `instructions` field — if a \"Reflect Memory — session briefing\" section is already visible in your context, you already have it and don't need to call this. " +
+      "**If you do NOT see the tag index / briefing in your context** (older MCP client, stale session, or the instructions got pushed out), **call this tool first before any other memory tool** so you know what exists here and follow the user's tagging conventions. " +
+      "Also call this mid-session if you want a fresh snapshot (e.g. after writing many memories).",
     {
       format: z
         .enum(["json", "markdown"])
-        .default("json")
-        .describe("Response shape: `json` for programmatic use, `markdown` matches the initialize briefing"),
+        .default("markdown")
+        .describe("Response shape: `markdown` matches the initialize briefing (recommended for reading); `json` for programmatic use"),
     },
     { title: "Get Memory Briefing", readOnlyHint: true },
     async ({ format }) => {
