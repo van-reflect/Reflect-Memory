@@ -326,6 +326,144 @@ paths:
                     description: The current version number (versions + 1)
         "404":
           description: Memory not found or not accessible
+  /agent/memories/{id}/children:
+    post:
+      operationId: writeChildMemory
+      x-openai-isConsequential: true
+      summary: Reply to an existing memory (write a child / threaded follow-up)
+      description: >
+        Create a memory as a reply (child) of an existing parent memory. Use this
+        for resolutions, status updates, follow-ups, or any addition that belongs
+        with an existing entry instead of as a new top-level memory. Threads are
+        one level deep — you can reply to a top-level memory but not to a reply.
+
+        Children inherit the parent's team sharing automatically: if the parent is
+        in the team pool, the child shows up there too. No separate share call needed.
+
+        Errors:
+          - 404 if the parent doesn't exist or you don't own it
+          - 400 if the parent is itself a child (one-level enforcement) or is in trash
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The parent memory UUID to reply under
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+                - content
+                - tags
+                - allowed_vendors
+              properties:
+                title:
+                  type: string
+                  maxLength: 500
+                  description: Short title for the reply
+                content:
+                  type: string
+                  maxLength: 100000
+                  description: The reply content
+                tags:
+                  type: array
+                  items: { type: string }
+                  maxItems: 50
+                  description: Tags for the reply
+                allowed_vendors:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                  maxItems: 50
+                  description: Which vendors can see this. Use ['*'] for all.
+                memory_type:
+                  type: string
+                  enum: [semantic, episodic, procedural]
+                  description: Memory type. Defaults to semantic.
+      responses:
+        "201":
+          description: Created child memory
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  title: { type: string }
+                  content: { type: string }
+                  tags: { type: array, items: { type: string } }
+                  parent_memory_id: { type: string, description: The parent's UUID. }
+                  shared_with_team_id:
+                    type: string
+                    nullable: true
+                    description: Inherited from parent.
+                  created_at: { type: string }
+                  updated_at: { type: string }
+        "400":
+          description: Parent is a child (one-level), is trashed, or invalid request
+        "404":
+          description: Parent memory not found or not owned
+  /agent/memories/{id}/thread:
+    get:
+      operationId: readThread
+      x-openai-isConsequential: false
+      summary: Read a memory and all its replies (full thread)
+      description: >
+        Returns a parent memory plus every non-trashed reply (child) in chronological
+        order. Pass either the parent's id or any child's id — the response is always
+        rooted at the parent.
+
+        Use this to see the full discussion / resolution history for a ticket-like
+        memory before deciding whether to reply, update, or write a new top-level entry.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Any memory UUID in the thread (parent or child)
+      responses:
+        "200":
+          description: The thread (parent + children)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  parent:
+                    type: object
+                    description: The thread's root memory (always the top-level parent).
+                    properties:
+                      id: { type: string }
+                      title: { type: string }
+                      content: { type: string }
+                      tags: { type: array, items: { type: string } }
+                      origin: { type: string }
+                      created_at: { type: string }
+                      updated_at: { type: string }
+                      shared_with_team_id: { type: string, nullable: true }
+                      parent_memory_id: { type: string, nullable: true, description: Always null for the root. }
+                  children:
+                    type: array
+                    description: Replies in chronological order (oldest first).
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        title: { type: string }
+                        content: { type: string }
+                        tags: { type: array, items: { type: string } }
+                        origin: { type: string }
+                        created_at: { type: string }
+                        updated_at: { type: string }
+                        parent_memory_id: { type: string, description: The parent's UUID. }
+        "404":
+          description: Memory not found, not owned, or thread root unreachable
   /agent/memories/search:
     post:
       operationId: searchMemories
@@ -776,3 +914,120 @@ paths:
                   vendor:
                     type: string
                     nullable: true
+  /agent/briefing:
+    get:
+      operationId: getMemoryBriefing
+      x-openai-isConsequential: false
+      summary: Condensed snapshot of the user's memory state (call FIRST in a session)
+      description: >
+        Returns a session briefing for the connected user: identity + team membership,
+        totals (personal / shared / team pool), top personal + team tag indexes with
+        counts, tags active in the last 7 days, current open threads, and detected
+        tagging conventions.
+
+        Call this **as the first operation** in a session (or any time you need a
+        fresh snapshot). It tells you what topics exist, what threads are open, and
+        what conventions to follow when writing — so you don't have to discover the
+        memory landscape with multiple read calls.
+
+        Equivalent to the briefing sent on MCP `initialize.instructions` for MCP
+        clients.
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [json, markdown]
+            default: json
+          description: Response shape. JSON for programmatic use; markdown matches the MCP briefing.
+        - name: top_tags
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          description: Max tags per scope (default 30).
+        - name: recency_days
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+          description: Recency window for the "active this week" tag bucket (default 7).
+        - name: active_threads
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 50
+          description: Max open threads to surface (default 5).
+      responses:
+        "200":
+          description: The session briefing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      email: { type: string, nullable: true }
+                      first_name: { type: string, nullable: true }
+                      last_name: { type: string, nullable: true }
+                      role: { type: string, nullable: true }
+                      plan: { type: string, nullable: true }
+                      team_id: { type: string, nullable: true }
+                      team_name: { type: string, nullable: true }
+                      team_role: { type: string, nullable: true }
+                      team_member_count: { type: integer }
+                  totals:
+                    type: object
+                    properties:
+                      personal_memories: { type: integer }
+                      personal_memories_shared: { type: integer }
+                      team_pool_total: { type: integer }
+                  personal_tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tag: { type: string }
+                        count: { type: integer }
+                  team_tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tag: { type: string }
+                        count: { type: integer }
+                  recent_tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tag: { type: string }
+                        count: { type: integer }
+                  active_threads:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        memory_id: { type: string }
+                        title: { type: string }
+                        reply_count: { type: integer }
+                        last_activity_at: { type: string }
+                        shared_with_team: { type: boolean }
+                  detected_conventions:
+                    type: array
+                    items: { type: string }
+                  generated_at: { type: string }
+            text/markdown:
+              schema:
+                type: string
+                description: Markdown rendering of the briefing (when ?format=markdown).
