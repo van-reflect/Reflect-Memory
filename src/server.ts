@@ -3888,6 +3888,90 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
+  // GET /agent/memories/:id/thread -- Thread fetch for agents (mirrors user)
+  // ===========================================================================
+  // Same shape as the user endpoint. Vendor-agnostic: an agent can read any
+  // thread the user owns. Vendor filtering is intentionally NOT applied to
+  // children — a thread is a discussion unit; if the agent can see the
+  // parent, it should see the replies.
+  // ===========================================================================
+
+  server.get(
+    "/agent/memories/:id/thread",
+    {
+      schema: { params: memoryIdParamSchema },
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const memory = readMemoryById(db, request.userId, id);
+      if (!memory) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+      // Vendor allow-list check on the parent — agent shouldn't peek at
+      // memories the user wrote against a different vendor scope.
+      const allowed =
+        memory.allowed_vendors.includes("*") ||
+        (request.vendor && memory.allowed_vendors.includes(request.vendor));
+      if (!allowed) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+      const rootId = memory.parent_memory_id ?? memory.id;
+      const root =
+        rootId === memory.id
+          ? memory
+          : readMemoryById(db, request.userId, rootId);
+      if (!root) {
+        reply.code(404);
+        return { error: "Thread root not found" };
+      }
+      const children = listChildren(db, request.userId, rootId);
+      request.dataAccessed = true;
+      return { parent: root, children };
+    },
+  );
+
+  // ===========================================================================
+  // GET /agent/briefing -- Memory briefing for agents (HTTP path)
+  // ===========================================================================
+  // Mirrors the briefing sent on MCP `initialize.instructions` and the
+  // user-facing GET /briefing. Designed for ChatGPT Custom Actions and any
+  // other OAuth/agent caller that doesn't speak MCP — they need an explicit
+  // endpoint to fetch the briefing on demand.
+  //
+  // Agents typically prefer JSON output (easier for LLMs to parse against
+  // an OpenAPI schema). Markdown available via ?format=markdown.
+  // ===========================================================================
+
+  server.get(
+    "/agent/briefing",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const qs = request.query as Record<string, string | undefined>;
+      const format = qs.format === "markdown" ? "markdown" : "json";
+      const topTagsN = qs.top_tags ? parseInt(qs.top_tags, 10) : undefined;
+      const recencyDays = qs.recency_days ? parseInt(qs.recency_days, 10) : undefined;
+      const activeThreadsN = qs.active_threads
+        ? parseInt(qs.active_threads, 10)
+        : undefined;
+
+      const briefing = buildMemoryBriefing(db, request.userId, {
+        topTagsN,
+        recencyDays,
+        activeThreadsN,
+      });
+
+      if (format === "markdown") {
+        reply.header("Content-Type", "text/markdown; charset=utf-8");
+        return formatBriefingAsMarkdown(briefing);
+      }
+      return briefing;
+    },
+  );
+
+  // ===========================================================================
   // Memory sharing endpoints
   // ===========================================================================
 
