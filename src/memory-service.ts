@@ -805,6 +805,94 @@ export function countTeamMemories(
   return row.cnt;
 }
 
+/**
+ * Full-text-ish search across the Team Shared pool. Case-insensitive LIKE
+ * across title, content, tags (JSON TEXT column, substring match), and
+ * author identity (email, first_name, last_name). Matches listTeamMemories
+ * column + ordering contract so the dashboard can pipe results directly
+ * through the same renderer.
+ *
+ * Trim and reject empty terms at the caller; this function assumes a
+ * non-empty term.
+ */
+export function searchTeamMemories(
+  db: Database.Database,
+  teamId: string,
+  term: string,
+  pagination?: PaginationOptions,
+): TeamMemoryEntry[] {
+  const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
+  const likeTerm = `%${escapeLike(term)}%`;
+  const rows = db
+    .prepare(
+      `SELECT ${COLUMNS_ALIASED}, u.email AS author_email, u.first_name AS author_first_name,
+              u.last_name AS author_last_name, m.shared_at
+       FROM memories m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.shared_with_team_id = ? AND m.deleted_at IS NULL
+         AND (
+              m.title LIKE ? ESCAPE '\\'
+           OR m.content LIKE ? ESCAPE '\\'
+           OR m.tags LIKE ? ESCAPE '\\'
+           OR u.email LIKE ? ESCAPE '\\'
+           OR u.first_name LIKE ? ESCAPE '\\'
+           OR u.last_name LIKE ? ESCAPE '\\'
+         )
+       ORDER BY m.shared_at DESC, m.created_at DESC${pagSql}`,
+    )
+    .all(
+      teamId,
+      likeTerm,
+      likeTerm,
+      likeTerm,
+      likeTerm,
+      likeTerm,
+      likeTerm,
+      ...pagParams,
+    ) as (MemoryRow & {
+      author_email: string;
+      author_first_name: string | null;
+      author_last_name: string | null;
+      shared_at: string | null;
+    })[];
+
+  return rows.map((row) => ({
+    ...rowToMemory(row),
+    author_email: row.author_email,
+    author_first_name: row.author_first_name,
+    author_last_name: row.author_last_name,
+    shared_at: row.shared_at,
+  }));
+}
+
+/** Count matches for the same filter as searchTeamMemories. */
+export function countSearchTeamMemories(
+  db: Database.Database,
+  teamId: string,
+  term: string,
+): number {
+  const likeTerm = `%${escapeLike(term)}%`;
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt
+       FROM memories m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.shared_with_team_id = ? AND m.deleted_at IS NULL
+         AND (
+              m.title LIKE ? ESCAPE '\\'
+           OR m.content LIKE ? ESCAPE '\\'
+           OR m.tags LIKE ? ESCAPE '\\'
+           OR u.email LIKE ? ESCAPE '\\'
+           OR u.first_name LIKE ? ESCAPE '\\'
+           OR u.last_name LIKE ? ESCAPE '\\'
+         )`,
+    )
+    .get(teamId, likeTerm, likeTerm, likeTerm, likeTerm, likeTerm, likeTerm) as {
+      cnt: number;
+    };
+  return row.cnt;
+}
+
 export interface MemoryVersion {
   id: string;
   memory_id: string;
