@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type ServerConfig } from "./server.js";
+import { EventBroker } from "./event-broker.js";
 import type { ModelGatewayConfig } from "./model-gateway.js";
 import type { ProviderConfig } from "./chat-gateway.js";
 import { isBackupConfigured, runBackup } from "./backup.js";
@@ -793,11 +794,14 @@ const mcpPort = (validVendors.length > 0 || optionalEnv("RM_PUBLIC_URL", ""))
 const chatgptClientId = optionalEnv("RM_CHATGPT_CLIENT_ID", "");
 const chatgptClientSecret = optionalEnv("RM_CHATGPT_CLIENT_SECRET", "");
 
+const eventBroker = new EventBroker();
+
 const config: ServerConfig = {
   db,
   apiKey: API_KEY,
   userId,
   ownerUserIds,
+  eventBroker,
   modelGateway,
   systemPrompt,
   startedAt: Date.now(),
@@ -904,6 +908,8 @@ function shutdown(signal: string) {
     process.exit(1);
   }, 10_000);
   forceExit.unref();
+
+  try { eventBroker.shutdown(); } catch {}
 
   server.close().then(() => {
     try { db.pragma("optimize"); } catch {}
