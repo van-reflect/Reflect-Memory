@@ -9,6 +9,9 @@ on:
 
 env:
   NODE_VERSION: "22"
+  # Opt into Node.js 24 runner for JavaScript actions ahead of the June 2026 default.
+  # See: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   typecheck:
