@@ -680,6 +680,41 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(planCheckMigrati
   );
 }
 
+// Migration: add parent_memory_id for threading. One level only (enforced in
+// the app layer). Nullable; existing memories remain top-level.
+const memoryThreadingMigration = "021_memory_threading_parent_id";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(memoryThreadingMigration)) {
+  const hasParentCol = (
+    db
+      .prepare(
+        `SELECT count(*) as count FROM pragma_table_info('memories') WHERE name = 'parent_memory_id'`,
+      )
+      .get() as { count: number }
+  ).count;
+
+  if (hasParentCol === 0) {
+    // Note: ALTER TABLE ADD COLUMN with a REFERENCES clause is legal in SQLite
+    // but only creates the FK metadata; enforcement still respects
+    // PRAGMA foreign_keys. The cascade behavior we want on parent purge is
+    // handled in app code (see memory-service.ts cascade helpers), so we
+    // deliberately do NOT attach ON DELETE CASCADE here — the app code needs
+    // to emit SSE events per child, which a SQL cascade would skip.
+    db.exec(
+      `ALTER TABLE memories ADD COLUMN parent_memory_id TEXT REFERENCES memories(id)`,
+    );
+  }
+
+  // Index to make "list children of parent" queries fast.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_memories_parent_id ON memories(parent_memory_id) WHERE parent_memory_id IS NOT NULL`,
+  );
+
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    memoryThreadingMigration,
+    new Date().toISOString(),
+  );
+}
+
 // Primary owner (RM_OWNER_EMAIL) anchors orphan consolidation and the legacy
 // single-tenant userId semantics. Additional admins come from RM_OWNER_EMAILS
 // (comma-separated). Both envs coexist: the singular is always included in the

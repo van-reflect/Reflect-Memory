@@ -3,7 +3,7 @@
 // No UI. No logging. No default behavior.
 // Every request requires auth and explicit intent.
 
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import proxy from "@fastify/http-proxy";
@@ -73,6 +73,14 @@ import {
   searchTeamMemories,
   countSearchTeamMemories,
   getVersionHistory,
+  createChildMemory,
+  listChildren,
+  cascadeSoftDelete,
+  cascadeRestore,
+  cascadeHardDelete,
+  cascadeShare,
+  cascadeUnshare,
+  ThreadingError,
 } from "./memory-service.js";
 import { buildPrompt, type PromptResult } from "./context-builder.js";
 import {
@@ -1946,7 +1954,16 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
-      emitMemoryEvent("memory.deleted", request.userId, id);
+      const teamScope = memory.shared_with_team_id
+        ? { teamId: memory.shared_with_team_id }
+        : {};
+      emitMemoryEvent("memory.deleted", request.userId, id, teamScope);
+      if (!memory.parent_memory_id) {
+        const cascadedIds = cascadeSoftDelete(db, request.userId, id);
+        for (const childId of cascadedIds) {
+          emitMemoryEvent("memory.deleted", request.userId, childId, teamScope);
+        }
+      }
       reply.code(200);
       return { deleted: true, id, title: memory.title };
     },
@@ -2350,14 +2367,18 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
-      emitMemoryEvent(
-        "memory.deleted",
-        request.userId,
-        id,
-        memory.shared_with_team_id
-          ? { teamId: memory.shared_with_team_id }
-          : {},
-      );
+      const teamScope = memory.shared_with_team_id
+        ? { teamId: memory.shared_with_team_id }
+        : {};
+      emitMemoryEvent("memory.deleted", request.userId, id, teamScope);
+
+      // Thread cascade: only parents have children; a child delete is a no-op.
+      if (!memory.parent_memory_id) {
+        const cascadedIds = cascadeSoftDelete(db, request.userId, id);
+        for (const childId of cascadedIds) {
+          emitMemoryEvent("memory.deleted", request.userId, childId, teamScope);
+        }
+      }
       return memory;
     },
   );
@@ -2381,7 +2402,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found or not in trash" };
       }
-      emitMemoryEvent("memory.restored", request.userId, memory.id);
+      const teamScope = memory.shared_with_team_id
+        ? { teamId: memory.shared_with_team_id }
+        : {};
+      emitMemoryEvent("memory.restored", request.userId, memory.id, teamScope);
+
+      if (!memory.parent_memory_id) {
+        const restoredIds = cascadeRestore(db, request.userId, memory.id);
+        for (const childId of restoredIds) {
+          emitMemoryEvent("memory.restored", request.userId, childId, teamScope);
+        }
+      }
       return memory;
     },
   );
@@ -2400,14 +2431,42 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+      // Snapshot the row before purge so we can emit cascade events against
+      // the right team scope (the row is gone afterward).
+      const snapshot = db
+        .prepare(
+          `SELECT parent_memory_id, shared_with_team_id FROM memories
+           WHERE id = ? AND user_id = ?`,
+        )
+        .get(id, request.userId) as
+        | { parent_memory_id: string | null; shared_with_team_id: string | null }
+        | undefined;
+
+      const cascadedIds =
+        snapshot && snapshot.parent_memory_id === null
+          ? cascadeHardDelete(db, request.userId, id)
+          : [];
+
       const deleted = deleteMemory(db, request.userId, id);
       if (!deleted) {
         reply.code(404);
         return { error: "Memory not found" };
       }
+      const teamScope = snapshot?.shared_with_team_id
+        ? { teamId: snapshot.shared_with_team_id }
+        : {};
       // includeBody:false — the row is gone; we only emit the id so clients
       // can remove it from local state.
-      emitMemoryEvent("memory.purged", request.userId, id, { includeBody: false });
+      emitMemoryEvent("memory.purged", request.userId, id, {
+        ...teamScope,
+        includeBody: false,
+      });
+      for (const childId of cascadedIds) {
+        emitMemoryEvent("memory.purged", request.userId, childId, {
+          ...teamScope,
+          includeBody: false,
+        });
+      }
       reply.code(204);
     },
   );
@@ -3599,6 +3658,188 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   // ===========================================================================
+  // Memory threading endpoints
+  // ===========================================================================
+
+  const childMemoryBodySchema = {
+    type: "object" as const,
+    required: ["title", "content", "tags"],
+    additionalProperties: false,
+    properties: {
+      title: { type: "string" as const, minLength: 1, maxLength: 500 },
+      content: { type: "string" as const, minLength: 1, maxLength: 100_000 },
+      tags: {
+        type: "array" as const,
+        items: { type: "string" as const, minLength: 1, maxLength: 100 },
+        maxItems: 50,
+      },
+      allowed_vendors: {
+        type: "array" as const,
+        items: { type: "string" as const, minLength: 1, maxLength: 50 },
+        minItems: 1,
+        maxItems: 50,
+      },
+      memory_type: {
+        type: "string" as const,
+        enum: ["semantic", "episodic", "procedural"],
+      },
+    },
+  };
+
+  function handleThreadingError(reply: FastifyReply, err: unknown): boolean {
+    if (err instanceof ThreadingError) {
+      const status =
+        err.code === "parent_not_found"
+          ? 404
+          : err.code === "not_owner"
+            ? 403
+            : 400; // parent_deleted, parent_is_child
+      reply.code(status);
+      return true;
+    }
+    return false;
+  }
+
+  server.post(
+    "/memories/:id/children",
+    {
+      schema: {
+        params: memoryIdParamSchema,
+        body: childMemoryBodySchema,
+      },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id: parentId } = request.params as { id: string };
+      const body = request.body as {
+        title: string;
+        content: string;
+        tags: string[];
+        allowed_vendors?: string[];
+        memory_type?: string;
+      };
+
+      const allowedVendors = body.allowed_vendors ?? ["*"];
+      const vendorErr = validateAllowedVendors(allowedVendors, validVendors);
+      if (vendorErr) {
+        reply.code(400);
+        return { error: vendorErr };
+      }
+
+      try {
+        const child = createChildMemory(db, request.userId, parentId, {
+          title: body.title,
+          content: body.content,
+          tags: body.tags,
+          origin: request.authMethod === "dashboard" ? "dashboard" : "api",
+          allowed_vendors: allowedVendors,
+          memory_type: body.memory_type as MemoryType | undefined,
+        });
+        // Child inherits parent's team scope — fan the event to the team
+        // channel too so teammates see the reply appear instantly.
+        emitMemoryEvent(
+          "memory.created",
+          request.userId,
+          child.id,
+          child.shared_with_team_id ? { teamId: child.shared_with_team_id } : {},
+        );
+        reply.code(201);
+        return child;
+      } catch (err) {
+        if (handleThreadingError(reply, err)) {
+          return { error: (err as ThreadingError).message };
+        }
+        throw err;
+      }
+    },
+  );
+
+  server.post(
+    "/agent/memories/:id/children",
+    {
+      schema: {
+        params: memoryIdParamSchema,
+        body: {
+          ...childMemoryBodySchema,
+          required: ["title", "content", "tags", "allowed_vendors"],
+        },
+      },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id: parentId } = request.params as { id: string };
+      const body = request.body as {
+        title: string;
+        content: string;
+        tags: string[];
+        allowed_vendors: string[];
+        memory_type?: string;
+      };
+
+      const vendorErr = validateAllowedVendors(body.allowed_vendors, validVendors);
+      if (vendorErr) {
+        reply.code(400);
+        return { error: vendorErr };
+      }
+
+      try {
+        const origin = request.vendor || "api";
+        const child = createChildMemory(db, request.userId, parentId, {
+          title: body.title,
+          content: body.content,
+          tags: body.tags,
+          origin,
+          allowed_vendors: body.allowed_vendors,
+          memory_type: body.memory_type as MemoryType | undefined,
+        });
+        emitMemoryEvent(
+          "memory.created",
+          request.userId,
+          child.id,
+          child.shared_with_team_id ? { teamId: child.shared_with_team_id } : {},
+        );
+        reply.code(201);
+        return child;
+      } catch (err) {
+        if (handleThreadingError(reply, err)) {
+          return { error: (err as ThreadingError).message };
+        }
+        throw err;
+      }
+    },
+  );
+
+  server.get(
+    "/memories/:id/thread",
+    {
+      schema: { params: memoryIdParamSchema },
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const memory = readMemoryById(db, request.userId, id);
+      if (!memory) {
+        reply.code(404);
+        return { error: "Memory not found" };
+      }
+      // Thread is rooted at the parent. If id IS a child, return the parent's
+      // thread — more useful than an empty list.
+      const rootId = memory.parent_memory_id ?? memory.id;
+      const root =
+        rootId === memory.id
+          ? memory
+          : readMemoryById(db, request.userId, rootId);
+      if (!root) {
+        reply.code(404);
+        return { error: "Thread root not found" };
+      }
+      const children = listChildren(db, request.userId, rootId);
+      request.dataAccessed = true;
+      return { parent: root, children };
+    },
+  );
+
+  // ===========================================================================
   // Memory sharing endpoints
   // ===========================================================================
 
@@ -3615,6 +3856,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       emitMemoryEvent("memory.shared", request.userId, memoryId, {
         teamId: user.team_id,
       });
+
+      // Share cascades to children: any replies under this parent become
+      // visible to the team too.
+      if (!result.parent_memory_id) {
+        const sharedIds = cascadeShare(db, request.userId, memoryId, user.team_id);
+        for (const childId of sharedIds) {
+          emitMemoryEvent("memory.shared", request.userId, childId, {
+            teamId: user.team_id,
+          });
+        }
+      }
       return result;
     },
   );
@@ -3627,8 +3879,10 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       // Capture team id BEFORE unshare so we still know which team channel
       // to notify (the row's shared_with_team_id is cleared in the mutation).
       const priorRow = db
-        .prepare("SELECT shared_with_team_id FROM memories WHERE id = ? AND user_id = ?")
-        .get(memoryId, request.userId) as { shared_with_team_id: string | null } | undefined;
+        .prepare("SELECT shared_with_team_id, parent_memory_id FROM memories WHERE id = ? AND user_id = ?")
+        .get(memoryId, request.userId) as
+        | { shared_with_team_id: string | null; parent_memory_id: string | null }
+        | undefined;
       const priorTeamId = priorRow?.shared_with_team_id ?? null;
 
       const result = unshareMemory(db, memoryId, request.userId);
@@ -3636,6 +3890,15 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       emitMemoryEvent("memory.unshared", request.userId, memoryId, {
         teamId: priorTeamId,
       });
+
+      if (priorRow && priorRow.parent_memory_id === null) {
+        const unsharedIds = cascadeUnshare(db, request.userId, memoryId);
+        for (const childId of unsharedIds) {
+          emitMemoryEvent("memory.unshared", request.userId, childId, {
+            teamId: priorTeamId,
+          });
+        }
+      }
       return result;
     },
   );

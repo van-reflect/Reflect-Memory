@@ -16,6 +16,10 @@ export interface MemoryEntry {
   deleted_at?: string | null;
   shared_with_team_id?: string | null;
   shared_at?: string | null;
+  /** Present when this memory is a reply / child of another. Top-level
+   *  memories have this as null or undefined. Children never have children
+   *  (enforced at write time). */
+  parent_memory_id?: string | null;
 }
 
 export interface CreateMemoryInput {
@@ -71,6 +75,7 @@ interface MemoryRow {
   deleted_at?: string | null;
   shared_with_team_id?: string | null;
   shared_at?: string | null;
+  parent_memory_id?: string | null;
 }
 
 function safeJsonArray(raw: string): string[] {
@@ -96,10 +101,11 @@ function rowToMemory(row: MemoryRow): MemoryEntry {
     deleted_at: row.deleted_at ?? undefined,
     shared_with_team_id: row.shared_with_team_id ?? null,
     shared_at: row.shared_at ?? null,
+    parent_memory_id: row.parent_memory_id ?? null,
   };
 }
 
-const MEMORY_COLUMNS = ["id", "user_id", "title", "content", "tags", "origin", "allowed_vendors", "memory_type", "created_at", "updated_at", "deleted_at", "shared_with_team_id", "shared_at"] as const;
+const MEMORY_COLUMNS = ["id", "user_id", "title", "content", "tags", "origin", "allowed_vendors", "memory_type", "created_at", "updated_at", "deleted_at", "shared_with_team_id", "shared_at", "parent_memory_id"] as const;
 const COLUMNS = MEMORY_COLUMNS.join(", ");
 const COLUMNS_ALIASED = MEMORY_COLUMNS.map(c => `m.${c}`).join(", ");
 
@@ -714,6 +720,282 @@ export function emptyTrash(
     return result.changes;
   });
   return txn();
+}
+
+// ---------------------------------------------------------------------------
+// Threading: parent ↔ children relationships.
+// One level only (enforced in createChildMemory). Children inherit the
+// parent's sharing (applied in createChildMemory + cascade helpers below).
+// Cascade helpers return the affected child IDs so the route layer can
+// emit one SSE event per child (SQL CASCADE would skip the event bus).
+// ---------------------------------------------------------------------------
+
+export class ThreadingError extends Error {
+  constructor(
+    message: string,
+    public code:
+      | "parent_not_found"
+      | "parent_is_child"
+      | "parent_deleted"
+      | "not_owner",
+  ) {
+    super(message);
+    this.name = "ThreadingError";
+  }
+}
+
+/**
+ * Create a memory as a child of an existing parent.
+ *
+ * Validations:
+ *   - Parent must exist and belong to `userId`.
+ *   - Parent must not be soft-deleted.
+ *   - Parent must not itself be a child (single-level threading).
+ *
+ * Behavior:
+ *   - No similar-memory dedup (unlike createMemory). A reply shouldn't
+ *     silently merge with an unrelated top-level memory.
+ *   - Child inherits the parent's `shared_with_team_id` (access
+ *     inheritance — if parent is in the team pool, so is the child).
+ *
+ * Throws ThreadingError on validation failure.
+ */
+export function createChildMemory(
+  db: Database.Database,
+  userId: string,
+  parentId: string,
+  input: CreateMemoryInput,
+): MemoryEntry {
+  const parent = db
+    .prepare(
+      `SELECT id, user_id, parent_memory_id, deleted_at, shared_with_team_id
+       FROM memories WHERE id = ?`,
+    )
+    .get(parentId) as
+    | {
+        id: string;
+        user_id: string;
+        parent_memory_id: string | null;
+        deleted_at: string | null;
+        shared_with_team_id: string | null;
+      }
+    | undefined;
+
+  if (!parent) {
+    throw new ThreadingError("Parent memory not found", "parent_not_found");
+  }
+  if (parent.user_id !== userId) {
+    throw new ThreadingError("Parent memory belongs to another user", "not_owner");
+  }
+  if (parent.deleted_at !== null) {
+    throw new ThreadingError("Cannot reply to a trashed memory", "parent_deleted");
+  }
+  if (parent.parent_memory_id !== null) {
+    throw new ThreadingError(
+      "Threads are one level deep; cannot reply to a child",
+      "parent_is_child",
+    );
+  }
+
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const tagsJson = JSON.stringify(input.tags);
+  const allowedVendorsJson = JSON.stringify(input.allowed_vendors);
+  const memoryType = input.memory_type ?? "semantic";
+
+  db.prepare(
+    `INSERT INTO memories
+      (id, user_id, title, content, tags, origin, allowed_vendors, memory_type,
+       created_at, updated_at, shared_with_team_id, shared_at, parent_memory_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    userId,
+    input.title,
+    input.content,
+    tagsJson,
+    input.origin,
+    allowedVendorsJson,
+    memoryType,
+    now,
+    now,
+    parent.shared_with_team_id,
+    parent.shared_with_team_id ? now : null,
+    parentId,
+  );
+
+  return {
+    id,
+    title: input.title,
+    content: input.content,
+    tags: input.tags,
+    origin: input.origin,
+    allowed_vendors: input.allowed_vendors,
+    memory_type: memoryType,
+    created_at: now,
+    updated_at: now,
+    deleted_at: null,
+    shared_with_team_id: parent.shared_with_team_id,
+    shared_at: parent.shared_with_team_id ? now : null,
+    parent_memory_id: parentId,
+  };
+}
+
+/** List children of a parent memory, oldest-first. Excludes soft-deleted. */
+export function listChildren(
+  db: Database.Database,
+  userId: string,
+  parentId: string,
+): MemoryEntry[] {
+  const rows = db
+    .prepare(
+      `SELECT ${COLUMNS_ALIASED}
+       FROM memories m
+       WHERE m.parent_memory_id = ? AND m.user_id = ? AND m.deleted_at IS NULL
+       ORDER BY m.created_at ASC, m.id ASC`,
+    )
+    .all(parentId, userId) as MemoryRow[];
+  return rows.map(rowToMemory);
+}
+
+/** Internal: all child IDs (including soft-deleted). Used by cascades. */
+function getChildIds(
+  db: Database.Database,
+  parentId: string,
+  opts: { includeDeleted: boolean },
+): string[] {
+  const filter = opts.includeDeleted ? "" : " AND deleted_at IS NULL";
+  const rows = db
+    .prepare(
+      `SELECT id FROM memories WHERE parent_memory_id = ?${filter}`,
+    )
+    .all(parentId) as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Soft-delete cascade: trash the parent's children along with it. Returns
+ * the child IDs that were moved to trash (i.e. weren't already there).
+ * Caller is expected to have already trashed the parent.
+ */
+export function cascadeSoftDelete(
+  db: Database.Database,
+  userId: string,
+  parentId: string,
+): string[] {
+  const now = new Date().toISOString();
+  const childIds = getChildIds(db, parentId, { includeDeleted: false });
+  for (const id of childIds) {
+    db.prepare(
+      `UPDATE memories SET deleted_at = ?, updated_at = ?
+       WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+    ).run(now, now, id, userId);
+  }
+  return childIds;
+}
+
+/**
+ * Restore cascade: un-trash the parent's children. Returns restored child IDs.
+ * Caller is expected to have already restored the parent.
+ */
+export function cascadeRestore(
+  db: Database.Database,
+  userId: string,
+  parentId: string,
+): string[] {
+  const now = new Date().toISOString();
+  // Restore only children that are currently in trash.
+  const childIds = db
+    .prepare(
+      `SELECT id FROM memories
+       WHERE parent_memory_id = ? AND user_id = ? AND deleted_at IS NOT NULL`,
+    )
+    .all(parentId, userId)
+    .map((r) => (r as { id: string }).id);
+
+  for (const id of childIds) {
+    db.prepare(
+      `UPDATE memories SET deleted_at = NULL, updated_at = ?
+       WHERE id = ? AND user_id = ?`,
+    ).run(now, id, userId);
+  }
+  return childIds;
+}
+
+/**
+ * Hard-delete cascade: purge all children of a parent from the DB, including
+ * their version history. Returns purged child IDs. Caller is expected to
+ * purge the parent themselves.
+ */
+export function cascadeHardDelete(
+  db: Database.Database,
+  userId: string,
+  parentId: string,
+): string[] {
+  const childIds = getChildIds(db, parentId, { includeDeleted: true });
+  for (const id of childIds) {
+    db.prepare(`DELETE FROM memory_versions WHERE memory_id = ?`).run(id);
+    db.prepare(`DELETE FROM memories WHERE id = ? AND user_id = ?`).run(id, userId);
+  }
+  return childIds;
+}
+
+/**
+ * Share cascade: copy the parent's team scope down to all (non-deleted)
+ * children. Returns affected child IDs. Caller is expected to have already
+ * shared the parent.
+ */
+export function cascadeShare(
+  db: Database.Database,
+  userId: string,
+  parentId: string,
+  teamId: string,
+): string[] {
+  const now = new Date().toISOString();
+  const childIds = db
+    .prepare(
+      `SELECT id FROM memories
+       WHERE parent_memory_id = ? AND user_id = ?
+         AND deleted_at IS NULL
+         AND (shared_with_team_id IS NULL OR shared_with_team_id != ?)`,
+    )
+    .all(parentId, userId, teamId)
+    .map((r) => (r as { id: string }).id);
+
+  for (const id of childIds) {
+    db.prepare(
+      `UPDATE memories SET shared_with_team_id = ?, shared_at = ?, updated_at = ?
+       WHERE id = ? AND user_id = ?`,
+    ).run(teamId, now, now, id, userId);
+  }
+  return childIds;
+}
+
+/**
+ * Unshare cascade: clear the team scope on all children. Returns child IDs.
+ * Caller is expected to have already unshared the parent.
+ */
+export function cascadeUnshare(
+  db: Database.Database,
+  userId: string,
+  parentId: string,
+): string[] {
+  const now = new Date().toISOString();
+  const childIds = db
+    .prepare(
+      `SELECT id FROM memories
+       WHERE parent_memory_id = ? AND user_id = ? AND shared_with_team_id IS NOT NULL`,
+    )
+    .all(parentId, userId)
+    .map((r) => (r as { id: string }).id);
+
+  for (const id of childIds) {
+    db.prepare(
+      `UPDATE memories SET shared_with_team_id = NULL, shared_at = NULL, updated_at = ?
+       WHERE id = ? AND user_id = ?`,
+    ).run(now, id, userId);
+  }
+  return childIds;
 }
 
 // ---------------------------------------------------------------------------
