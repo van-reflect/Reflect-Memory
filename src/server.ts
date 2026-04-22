@@ -24,6 +24,7 @@ import {
   getTeamMemberCount,
 } from "./user-service.js";
 import type { DeploymentConfig } from "./deployment-config.js";
+import type { EventBroker, EventClient, MemoryEvent, MemoryEventType } from "./event-broker.js";
 import { createSsoVerifier, validateSsoConfig } from "./sso-auth.js";
 import { recordAuditEvent, queryAuditEvents, countAuditEvents, exportAuditEvents } from "./audit-service.js";
 import {
@@ -161,6 +162,8 @@ export interface ServerConfig {
   userId: string;
   /** Full set of admin user IDs (superset of `userId`). Used for /admin/* authorization. */
   ownerUserIds: Set<string>;
+  /** In-memory event broker for SSE realtime updates. */
+  eventBroker: EventBroker;
   modelGateway: ModelGatewayConfig;
   systemPrompt: string;
   startedAt: number;
@@ -416,6 +419,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     apiKey,
     userId,
     ownerUserIds,
+    eventBroker,
     modelGateway,
     systemPrompt,
     startedAt,
@@ -429,6 +433,52 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     deployment,
     testMode,
   } = config;
+
+  // Helper: resolve the team_id for a user (used to scope emit() and subscribe()).
+  function getUserTeamId(uid: string): string | null {
+    const row = db
+      .prepare("SELECT team_id FROM users WHERE id = ?")
+      .get(uid) as { team_id: string | null } | undefined;
+    return row?.team_id ?? null;
+  }
+
+  // Helper: fetch a memory row for inclusion in the event payload.
+  function fetchMemoryForEvent(memoryId: string): unknown | null {
+    try {
+      const row = db
+        .prepare(
+          `SELECT id, user_id, title, content, tags, origin, allowed_vendors,
+                  created_at, updated_at, deleted_at, shared_with_team_id, shared_at
+           FROM memories WHERE id = ?`,
+        )
+        .get(memoryId) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      if (typeof row.tags === "string") row.tags = JSON.parse(row.tags) as string[];
+      if (typeof row.allowed_vendors === "string")
+        row.allowed_vendors = JSON.parse(row.allowed_vendors) as string[];
+      return row;
+    } catch {
+      return null;
+    }
+  }
+
+  // Helper: emit a memory event to the owner's channel (+ team channel if provided).
+  function emitMemoryEvent(
+    type: MemoryEventType,
+    ownerUserId: string,
+    memoryId: string,
+    opts: { teamId?: string | null; includeBody?: boolean } = {},
+  ): void {
+    const event: MemoryEvent = {
+      type,
+      memory_id: memoryId,
+      user_id: ownerUserId,
+      team_id: opts.teamId ?? null,
+      memory: opts.includeBody === false ? undefined : fetchMemoryForEvent(memoryId),
+      emitted_at: new Date().toISOString(),
+    };
+    eventBroker.emit({ userId: ownerUserId, teamId: opts.teamId ?? null }, event);
+  }
 
   const server = Fastify({
     bodyLimit: 262_144,
@@ -1205,6 +1255,112 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   // ===========================================================================
+  // GET /events -- Server-Sent Events stream of memory mutations
+  // ===========================================================================
+  // Auth: user key or dashboard session (NOT agent keys — agents don't need
+  // realtime). Subscribes the caller to their own user channel + their team
+  // channel (if any). Emits a keepalive comment every 15s so proxies don't
+  // close idle connections.
+  //
+  // Client contract:
+  //   event: hello                 { subscribed: {user_id, team_id} }
+  //   event: memory.created        MemoryEvent
+  //   event: memory.updated        MemoryEvent
+  //   event: memory.deleted        MemoryEvent
+  //   event: memory.restored       MemoryEvent
+  //   event: memory.purged         MemoryEvent  (memory:null)
+  //   event: memory.shared         MemoryEvent
+  //   event: memory.unshared       MemoryEvent
+  //
+  // EventSource in the browser auto-reconnects on network errors; no Last-Event-ID
+  // replay is implemented today — clients should treat the stream as best-effort
+  // and reconcile via their periodic fetch fallback.
+  // ===========================================================================
+
+  server.get(
+    "/events",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.role === "agent") {
+        reply.code(403);
+        return { error: "Agent keys cannot subscribe to the event stream" };
+      }
+
+      const teamId = getUserTeamId(request.userId);
+
+      // Take over the raw response. Fastify will not try to finalize after
+      // we return; lifecycle is fully ours until the client disconnects.
+      reply.hijack();
+
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        // Disable proxy buffering so events flush immediately under Caddy/Nginx.
+        "X-Accel-Buffering": "no",
+      });
+
+      function write(eventName: string, data: unknown): boolean {
+        try {
+          reply.raw.write(`event: ${eventName}\n`);
+          reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      // Initial hello so the client can verify auth + scope before trusting
+      // silence as "no events yet."
+      write("hello", {
+        subscribed: { user_id: request.userId, team_id: teamId },
+        emitted_at: new Date().toISOString(),
+      });
+
+      const client: EventClient = {
+        send: (event) => {
+          write(event.type, event);
+        },
+        close: () => {
+          try {
+            reply.raw.end();
+          } catch {
+            // already closed
+          }
+        },
+      };
+
+      const unsubscribe = eventBroker.subscribe(
+        { userId: request.userId, teamId: teamId ?? undefined },
+        client,
+      );
+
+      // Keepalive comment every 15s. SSE comments are lines starting with ":" —
+      // the client ignores them, but they keep proxies from timing out idle
+      // connections.
+      const keepalive = setInterval(() => {
+        try {
+          reply.raw.write(`: keepalive ${Date.now()}\n\n`);
+        } catch {
+          // Connection is gone; cleanup happens in the close handler below.
+        }
+      }, 15_000);
+
+      const cleanup = () => {
+        clearInterval(keepalive);
+        unsubscribe();
+      };
+
+      request.raw.on("close", cleanup);
+      reply.raw.on("close", cleanup);
+      reply.raw.on("error", cleanup);
+
+      // Return nothing: we've hijacked the reply. Fastify skips its
+      // own send/serialize phase.
+    },
+  );
+
+  // ===========================================================================
   // GET /admin/metrics -- Owner-only usage stats
   // ===========================================================================
   // Dashboard auth or API key. Only the owner (userId) can access.
@@ -1529,6 +1685,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       };
 
       const memory = createMemory(db, request.userId, input);
+      emitMemoryEvent("memory.created", request.userId, memory.id);
       reply.code(201);
       return memory;
     },
@@ -1580,6 +1737,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const memory = createMemory(db, request.userId, input);
       if (!testMode && isCiTestMemory(memory)) {
         softDeleteMemory(db, request.userId, memory.id);
+      } else {
+        emitMemoryEvent("memory.created", request.userId, memory.id);
       }
       reply.code(201);
       return memory;
@@ -1746,6 +1905,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
+      emitMemoryEvent("memory.updated", request.userId, memory.id);
       return memory;
     },
   );
@@ -1784,6 +1944,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
+      emitMemoryEvent("memory.deleted", request.userId, id);
       reply.code(200);
       return { deleted: true, id, title: memory.title };
     },
@@ -2022,6 +2183,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
       try {
         shareMemoryToTeam(db, memory_id, request.userId, user.team_id);
+        emitMemoryEvent("memory.shared", request.userId, memory_id, {
+          teamId: user.team_id,
+        });
         return { shared: true, memory_id, team_id: user.team_id };
       } catch (err) {
         const msg = (err as Error).message;
@@ -2158,6 +2322,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
+      emitMemoryEvent("memory.updated", request.userId, memory.id);
       return memory;
     },
   );
@@ -2183,6 +2348,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
+      emitMemoryEvent(
+        "memory.deleted",
+        request.userId,
+        id,
+        memory.shared_with_team_id
+          ? { teamId: memory.shared_with_team_id }
+          : {},
+      );
       return memory;
     },
   );
@@ -2206,6 +2379,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found or not in trash" };
       }
+      emitMemoryEvent("memory.restored", request.userId, memory.id);
       return memory;
     },
   );
@@ -2229,6 +2403,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
+      // includeBody:false — the row is gone; we only emit the id so clients
+      // can remove it from local state.
+      emitMemoryEvent("memory.purged", request.userId, id, { includeBody: false });
       reply.code(204);
     },
   );
@@ -2243,7 +2420,20 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
+      // Capture IDs before purge so we can emit per-memory events (lets
+      // clients remove rows from local state without a full refetch).
+      const trashedIds = (
+        db
+          .prepare(
+            `SELECT id FROM memories WHERE user_id = ? AND deleted_at IS NOT NULL`,
+          )
+          .all(request.userId) as { id: string }[]
+      ).map((r) => r.id);
+
       const count = emptyTrash(db, request.userId);
+      for (const id of trashedIds) {
+        emitMemoryEvent("memory.purged", request.userId, id, { includeBody: false });
+      }
       return { deleted: count };
     },
   );
@@ -3420,6 +3610,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
       const result = shareMemoryToTeam(db, memoryId, request.userId, user.team_id);
       if (!result) return reply.code(404).send({ error: "Memory not found or already shared" });
+      emitMemoryEvent("memory.shared", request.userId, memoryId, {
+        teamId: user.team_id,
+      });
       return result;
     },
   );
@@ -3429,8 +3622,18 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
     async (request, reply) => {
       const { id: memoryId } = request.params as { id: string };
+      // Capture team id BEFORE unshare so we still know which team channel
+      // to notify (the row's shared_with_team_id is cleared in the mutation).
+      const priorRow = db
+        .prepare("SELECT shared_with_team_id FROM memories WHERE id = ? AND user_id = ?")
+        .get(memoryId, request.userId) as { shared_with_team_id: string | null } | undefined;
+      const priorTeamId = priorRow?.shared_with_team_id ?? null;
+
       const result = unshareMemory(db, memoryId, request.userId);
       if (!result) return reply.code(404).send({ error: "Memory not found" });
+      emitMemoryEvent("memory.unshared", request.userId, memoryId, {
+        teamId: priorTeamId,
+      });
       return result;
     },
   );
