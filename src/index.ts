@@ -679,43 +679,61 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(planCheckMigrati
   );
 }
 
-const ownerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
+// Primary owner (RM_OWNER_EMAIL) anchors orphan consolidation and the legacy
+// single-tenant userId semantics. Additional admins come from RM_OWNER_EMAILS
+// (comma-separated). Both envs coexist: the singular is always included in the
+// admin set; the plural widens it. Ordering: primary = singular if set, else
+// first plural entry, else fall back to the existing "first user" behavior.
+const primaryOwnerEmail = optionalEnv("RM_OWNER_EMAIL", "").toLowerCase();
+const extraOwnerEmails = optionalEnv("RM_OWNER_EMAILS", "")
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter((e) => e.length > 0);
 
-let userId: string;
+const ownerEmails: string[] = [];
+if (primaryOwnerEmail) ownerEmails.push(primaryOwnerEmail);
+for (const email of extraOwnerEmails) {
+  if (!ownerEmails.includes(email)) ownerEmails.push(email);
+}
 
-if (ownerEmail) {
-  let ownerRow = db
+const hasUpdatedAt = (db.prepare(
+  `SELECT count(*) as count FROM pragma_table_info('users') WHERE name = 'updated_at'`,
+).get() as { count: number }).count > 0;
+const hasRole = (db.prepare(
+  `SELECT count(*) as count FROM pragma_table_info('users') WHERE name = 'role'`,
+).get() as { count: number }).count > 0;
+
+function ensureAdminUser(email: string): string {
+  let row = db
     .prepare(`SELECT id FROM users WHERE email = ?`)
-    .get(ownerEmail) as { id: string } | undefined;
+    .get(email) as { id: string } | undefined;
 
-  if (!ownerRow) {
+  if (!row) {
     const id = randomUUID();
     const now = new Date().toISOString();
-    const hasUpdatedAt = (db.prepare(
-      `SELECT count(*) as count FROM pragma_table_info('users') WHERE name = 'updated_at'`,
-    ).get() as { count: number }).count > 0;
-
     if (hasUpdatedAt) {
       db.prepare(
         `INSERT INTO users (id, email, role, plan, created_at, updated_at) VALUES (?, ?, 'admin', 'free', ?, ?)`,
-      ).run(id, ownerEmail, now, now);
+      ).run(id, email, now, now);
     } else {
-      db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(id, ownerEmail, now);
+      db.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`).run(id, email, now);
     }
-    ownerRow = { id };
-  } else {
-    // Ensure owner always has admin role
-    const hasRole = (db.prepare(
-      `SELECT count(*) as count FROM pragma_table_info('users') WHERE name = 'role'`,
-    ).get() as { count: number }).count > 0;
-    if (hasRole) {
-      db.prepare(`UPDATE users SET role = 'admin' WHERE id = ? AND role != 'admin'`).run(ownerRow.id);
-    }
+    row = { id };
+  } else if (hasRole) {
+    db.prepare(`UPDATE users SET role = 'admin' WHERE id = ? AND role != 'admin'`).run(row.id);
   }
+  return row.id;
+}
 
-  userId = ownerRow.id;
+let userId: string;
+const ownerUserIds = new Set<string>();
 
-  // One-time migration: absorb orphaned NULL-email users into the owner.
+if (ownerEmails.length > 0) {
+  const resolvedIds = ownerEmails.map(ensureAdminUser);
+  for (const id of resolvedIds) ownerUserIds.add(id);
+  userId = resolvedIds[0]!;
+
+  // One-time migration: absorb orphaned NULL-email users into the primary owner.
   // Only runs once. Legitimate email-bearing users are never touched.
   const migrationName = "001_consolidate_owner_memories";
   const alreadyRan = db
@@ -756,6 +774,7 @@ if (ownerEmail) {
     const now = new Date().toISOString();
     db.prepare(`INSERT INTO users (id, created_at) VALUES (?, ?)`).run(userId, now);
   }
+  ownerUserIds.add(userId);
 }
 
 const chatProviderNames = [
@@ -778,6 +797,7 @@ const config: ServerConfig = {
   db,
   apiKey: API_KEY,
   userId,
+  ownerUserIds,
   modelGateway,
   systemPrompt,
   startedAt: Date.now(),
@@ -803,6 +823,9 @@ server.listen({ port: PORT, host: "0.0.0.0" }, (err, address) => {
   }
   console.log(`Reflect Memory listening on ${address}`);
   console.log(`User ID: ${userId.slice(0, 8)}...`);
+  if (ownerUserIds.size > 1) {
+    console.log(`Admins: ${ownerUserIds.size} (${ownerEmails.join(", ")})`);
+  }
   console.log(`Database: ${DB_PATH}`);
   console.log(`Model: ${modelGateway.provider}/${modelGateway.model}`);
   console.log(`Agent vendors: ${validVendors.length > 0 ? validVendors.join(", ") : "(none configured)"}`);
