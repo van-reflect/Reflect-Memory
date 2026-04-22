@@ -82,6 +82,7 @@ import {
   cascadeUnshare,
   ThreadingError,
 } from "./memory-service.js";
+import { buildMemoryBriefing, formatBriefingAsMarkdown } from "./memory-briefing.js";
 import { buildPrompt, type PromptResult } from "./context-builder.js";
 import {
   callModel,
@@ -1263,6 +1264,53 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       vendor: request.vendor,
     };
   });
+
+  // ===========================================================================
+  // GET /briefing -- Condensed memory snapshot for LLM first-contact context
+  // ===========================================================================
+  // Mirrors the briefing sent in the MCP `initialize.instructions` field.
+  // Useful for the dashboard (future "at a glance" panel) and for integration
+  // tests without going through the MCP transport.
+  //
+  // Auth: user keys + dashboard sessions. Agent keys get 403 — the MCP
+  // initialize already gave them the briefing; a separate HTTP path would
+  // just duplicate it.
+  //
+  // Query params:
+  //   format=json (default) | markdown
+  //   top_tags=30 | recency_days=7 | active_threads=5
+  // ===========================================================================
+
+  server.get(
+    "/briefing",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.role === "agent") {
+        reply.code(403);
+        return { error: "Briefing is delivered to agents via MCP initialize" };
+      }
+
+      const qs = request.query as Record<string, string | undefined>;
+      const format = qs.format === "markdown" ? "markdown" : "json";
+      const topTagsN = qs.top_tags ? parseInt(qs.top_tags, 10) : undefined;
+      const recencyDays = qs.recency_days ? parseInt(qs.recency_days, 10) : undefined;
+      const activeThreadsN = qs.active_threads
+        ? parseInt(qs.active_threads, 10)
+        : undefined;
+
+      const briefing = buildMemoryBriefing(db, request.userId, {
+        topTagsN,
+        recencyDays,
+        activeThreadsN,
+      });
+
+      if (format === "markdown") {
+        reply.header("Content-Type", "text/markdown; charset=utf-8");
+        return formatBriefingAsMarkdown(briefing);
+      }
+      return briefing;
+    },
+  );
 
   // ===========================================================================
   // GET /events -- Server-Sent Events stream of memory mutations

@@ -34,6 +34,7 @@ import {
   ThreadingError,
   type PaginationOptions,
 } from "./memory-service.js";
+import { buildMemoryBriefing, formatBriefingAsMarkdown } from "./memory-briefing.js";
 
 export interface McpServerConfig {
   db: Database.Database;
@@ -51,9 +52,27 @@ function createMcpServerWithTools(
   userId: string,
   vendor: string,
 ): McpServer {
+  // Build the per-user briefing at connect time. Sent back in the MCP
+  // `initialize` response's `instructions` field so the connecting LLM
+  // gets a condensed map of tags, threads, and conventions with zero
+  // tool calls. Kept cheap (a handful of small SQL aggregates) — runs
+  // once per session.
+  let instructions: string | undefined;
+  try {
+    const briefing = buildMemoryBriefing(db, userId);
+    instructions = formatBriefingAsMarkdown(briefing);
+  } catch (err) {
+    // Briefing is a nice-to-have — never block a session on it.
+    console.warn("[mcp-briefing] Failed to build briefing:", err);
+    instructions = undefined;
+  }
+
   const mcp = new McpServer(
     { name: "reflect-memory", version: "1.0.0" },
-    { capabilities: { logging: {}, tools: { listChanged: false } } },
+    {
+      capabilities: { logging: {}, tools: { listChanged: false } },
+      instructions,
+    },
   );
 
   mcp.tool(
@@ -66,6 +85,26 @@ function createMcpServerWithTools(
       return {
         content: [{ type: "text", text: JSON.stringify(memories, null, 2) }],
       };
+    },
+  );
+
+  mcp.tool(
+    "get_memory_briefing",
+    "Get a condensed snapshot of the user's memory state: identity, totals, top personal + team tags (with counts), tags active in the last 7 days, open threads, and detected tagging conventions. The same briefing is sent in the MCP initialize response — call this tool only if you want a fresh one mid-session.",
+    {
+      format: z
+        .enum(["json", "markdown"])
+        .default("json")
+        .describe("Response shape: `json` for programmatic use, `markdown` matches the initialize briefing"),
+    },
+    { title: "Get Memory Briefing", readOnlyHint: true },
+    async ({ format }) => {
+      const briefing = buildMemoryBriefing(db, userId);
+      const text =
+        format === "markdown"
+          ? formatBriefingAsMarkdown(briefing)
+          : JSON.stringify(briefing, null, 2);
+      return { content: [{ type: "text", text }] };
     },
   );
 
