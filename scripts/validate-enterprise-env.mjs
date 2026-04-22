@@ -22,7 +22,6 @@ const required = [
   "RM_API_KEY",
   "RM_DASHBOARD_SERVICE_KEY",
   "RM_DASHBOARD_JWT_SECRET",
-  "RM_OWNER_EMAIL",
 ];
 
 const errors = [];
@@ -30,6 +29,15 @@ for (const key of required) {
   if (!env[key] || env[key].trim().length === 0) {
     errors.push(`Missing required value: ${key}`);
   }
+}
+
+// Owner identity: require at least one of RM_OWNER_EMAIL (singular, primary)
+// or RM_OWNER_EMAILS (plural, comma-separated superset). Enterprise deploys
+// may set either; the app treats both as additive at boot.
+const ownerEmail = (env.RM_OWNER_EMAIL ?? "").trim();
+const ownerEmails = (env.RM_OWNER_EMAILS ?? "").trim();
+if (!ownerEmail && !ownerEmails) {
+  errors.push("Missing required value: RM_OWNER_EMAIL or RM_OWNER_EMAILS (at least one)");
 }
 
 if (env.RM_DEPLOYMENT_MODE !== "self-host" && env.RM_DEPLOYMENT_MODE !== "isolated-hosted") {
