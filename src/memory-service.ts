@@ -285,6 +285,37 @@ export function readMemoryById(
   return rowToMemory(row);
 }
 
+/**
+ * Read a memory the caller can access — either because they own it OR
+ * because it is shared with the team they're on. Returns null if neither
+ * holds (looks like a 404 to the caller, which is intentional — we don't
+ * want to leak existence of memories outside the caller's visibility).
+ *
+ * Used by team-collaborative endpoints (e.g. thread fetch) where a
+ * teammate needs to read a memory another team member owns.
+ */
+export function readMemoryWithTeamAccess(
+  db: Database.Database,
+  userId: string,
+  memoryId: string,
+): MemoryEntry | null {
+  const row = db
+    .prepare(
+      `SELECT ${COLUMNS} FROM memories
+       WHERE id = ?
+         AND (
+           user_id = ?
+           OR (
+             shared_with_team_id IS NOT NULL
+             AND shared_with_team_id = (SELECT team_id FROM users WHERE id = ?)
+           )
+         )`,
+    )
+    .get(memoryId, userId, userId) as MemoryRow | undefined;
+  if (!row) return null;
+  return rowToMemory(row);
+}
+
 export function listMemories(
   db: Database.Database,
   userId: string,
@@ -744,11 +775,29 @@ export class ThreadingError extends Error {
   }
 }
 
+/** Resolve a user's team_id (null if not on a team). Internal helper. */
+function getUserTeamIdInternal(
+  db: Database.Database,
+  userId: string,
+): string | null {
+  const row = db
+    .prepare("SELECT team_id FROM users WHERE id = ?")
+    .get(userId) as { team_id: string | null } | undefined;
+  return row?.team_id ?? null;
+}
+
 /**
  * Create a memory as a child of an existing parent.
  *
- * Validations:
- *   - Parent must exist and belong to `userId`.
+ * Permission model:
+ *   - Caller may reply to their OWN parent memory (always).
+ *   - Caller may reply to a parent that is shared with their team (any team
+ *     member can participate in a shared thread). This was added 2026-04-22
+ *     after Van couldn't reply to a teammate's shared ticket.
+ *   - Caller may NOT reply to someone else's private memory.
+ *
+ * Other validations:
+ *   - Parent must exist.
  *   - Parent must not be soft-deleted.
  *   - Parent must not itself be a child (single-level threading).
  *
@@ -757,6 +806,7 @@ export class ThreadingError extends Error {
  *     silently merge with an unrelated top-level memory.
  *   - Child inherits the parent's `shared_with_team_id` (access
  *     inheritance — if parent is in the team pool, so is the child).
+ *   - Child is owned by the CALLER, not by the parent's owner.
  *
  * Throws ThreadingError on validation failure.
  */
@@ -785,7 +835,18 @@ export function createChildMemory(
     throw new ThreadingError("Parent memory not found", "parent_not_found");
   }
   if (parent.user_id !== userId) {
-    throw new ThreadingError("Parent memory belongs to another user", "not_owner");
+    // Allowed iff parent is shared with a team the caller belongs to.
+    const callerTeamId = getUserTeamIdInternal(db, userId);
+    const sharedWithCallerTeam =
+      parent.shared_with_team_id !== null &&
+      callerTeamId !== null &&
+      parent.shared_with_team_id === callerTeamId;
+    if (!sharedWithCallerTeam) {
+      throw new ThreadingError(
+        "Parent memory belongs to another user and is not shared with your team",
+        "not_owner",
+      );
+    }
   }
   if (parent.deleted_at !== null) {
     throw new ThreadingError("Cannot reply to a trashed memory", "parent_deleted");
@@ -841,41 +902,62 @@ export function createChildMemory(
   };
 }
 
-/** List children of a parent memory, oldest-first. Excludes soft-deleted. */
+/**
+ * List children of a parent memory, oldest-first. Excludes soft-deleted.
+ *
+ * Visibility model:
+ *   - If the caller owns the parent → see ALL children regardless of author.
+ *   - If the parent is shared with the caller's team → see ALL children
+ *     (any team member can read every reply in the thread).
+ *   - Otherwise → empty list.
+ *
+ * The caller is expected to have already verified read access on the parent
+ * (e.g. via readMemoryById or shared_with_team_id check). This function does
+ * its own check too as defense-in-depth.
+ */
 export function listChildren(
   db: Database.Database,
   userId: string,
   parentId: string,
 ): MemoryEntry[] {
+  const parent = db
+    .prepare(
+      `SELECT user_id, shared_with_team_id FROM memories WHERE id = ?`,
+    )
+    .get(parentId) as
+    | { user_id: string; shared_with_team_id: string | null }
+    | undefined;
+  if (!parent) return [];
+
+  let visible = parent.user_id === userId;
+  if (!visible && parent.shared_with_team_id) {
+    const callerTeamId = getUserTeamIdInternal(db, userId);
+    visible =
+      callerTeamId !== null && parent.shared_with_team_id === callerTeamId;
+  }
+  if (!visible) return [];
+
   const rows = db
     .prepare(
       `SELECT ${COLUMNS_ALIASED}
        FROM memories m
-       WHERE m.parent_memory_id = ? AND m.user_id = ? AND m.deleted_at IS NULL
+       WHERE m.parent_memory_id = ? AND m.deleted_at IS NULL
        ORDER BY m.created_at ASC, m.id ASC`,
     )
-    .all(parentId, userId) as MemoryRow[];
+    .all(parentId) as MemoryRow[];
   return rows.map(rowToMemory);
 }
 
-/** Internal: all child IDs (including soft-deleted). Used by cascades. */
-function getChildIds(
-  db: Database.Database,
-  parentId: string,
-  opts: { includeDeleted: boolean },
-): string[] {
-  const filter = opts.includeDeleted ? "" : " AND deleted_at IS NULL";
-  const rows = db
-    .prepare(
-      `SELECT id FROM memories WHERE parent_memory_id = ?${filter}`,
-    )
-    .all(parentId) as { id: string }[];
-  return rows.map((r) => r.id);
-}
-
 /**
- * Soft-delete cascade: trash the parent's children along with it. Returns
- * the child IDs that were moved to trash (i.e. weren't already there).
+ * Soft-delete cascade: trash the parent's children along with it.
+ *
+ * Multi-author scope: only the CALLER's own children are moved to trash.
+ * Teammates' replies on a shared thread stay intact in their own personal
+ * pool — destroying their work just because their thread parent was trashed
+ * would be surprising and they'd have no way to restore it (only the author
+ * of a memory can restore it).
+ *
+ * Returns the IDs of children actually trashed (caller-owned, non-trashed).
  * Caller is expected to have already trashed the parent.
  */
 export function cascadeSoftDelete(
@@ -884,7 +966,14 @@ export function cascadeSoftDelete(
   parentId: string,
 ): string[] {
   const now = new Date().toISOString();
-  const childIds = getChildIds(db, parentId, { includeDeleted: false });
+  const childIds = db
+    .prepare(
+      `SELECT id FROM memories
+       WHERE parent_memory_id = ? AND user_id = ? AND deleted_at IS NULL`,
+    )
+    .all(parentId, userId)
+    .map((r) => (r as { id: string }).id);
+
   for (const id of childIds) {
     db.prepare(
       `UPDATE memories SET deleted_at = ?, updated_at = ?
@@ -895,8 +984,11 @@ export function cascadeSoftDelete(
 }
 
 /**
- * Restore cascade: un-trash the parent's children. Returns restored child IDs.
- * Caller is expected to have already restored the parent.
+ * Restore cascade: un-trash the parent's children. Caller-scoped (only the
+ * caller's own children come back; teammates were never trashed).
+ *
+ * Returns restored child IDs. Caller is expected to have already restored
+ * the parent.
  */
 export function cascadeRestore(
   db: Database.Database,
@@ -904,7 +996,6 @@ export function cascadeRestore(
   parentId: string,
 ): string[] {
   const now = new Date().toISOString();
-  // Restore only children that are currently in trash.
   const childIds = db
     .prepare(
       `SELECT id FROM memories
@@ -923,31 +1014,66 @@ export function cascadeRestore(
 }
 
 /**
- * Hard-delete cascade: purge all children of a parent from the DB, including
- * their version history. Returns purged child IDs. Caller is expected to
- * purge the parent themselves.
+ * Hard-delete cascade: prepare children for the parent's permanent deletion.
+ *
+ *   - The CALLER's own children are purged (rows + version history) — same
+ *     as before.
+ *   - Teammates' children are ORPHANED (parent_memory_id set to NULL) so the
+ *     parent's `DELETE FROM memories` doesn't fail on the FK constraint.
+ *     The teammate's reply is preserved in their personal pool but no longer
+ *     belongs to a thread (the thread no longer exists). Marker: their
+ *     row's `updated_at` advances so SSE consumers see the change.
+ *
+ * Returns:
+ *   { purged: string[], orphaned: string[] }
+ *
+ * Caller is expected to call this BEFORE purging the parent — orphaning
+ * teammates' children must happen inside the same transaction window so
+ * the parent's FK is satisfied at the moment of deletion.
  */
 export function cascadeHardDelete(
   db: Database.Database,
   userId: string,
   parentId: string,
-): string[] {
-  const childIds = getChildIds(db, parentId, { includeDeleted: true });
-  for (const id of childIds) {
-    db.prepare(`DELETE FROM memory_versions WHERE memory_id = ?`).run(id);
-    db.prepare(`DELETE FROM memories WHERE id = ? AND user_id = ?`).run(id, userId);
+): { purged: string[]; orphaned: string[] } {
+  const now = new Date().toISOString();
+  const allChildren = db
+    .prepare(
+      `SELECT id, user_id FROM memories WHERE parent_memory_id = ?`,
+    )
+    .all(parentId) as { id: string; user_id: string }[];
+
+  const purged: string[] = [];
+  const orphaned: string[] = [];
+
+  for (const c of allChildren) {
+    if (c.user_id === userId) {
+      db.prepare(`DELETE FROM memory_versions WHERE memory_id = ?`).run(c.id);
+      db.prepare(`DELETE FROM memories WHERE id = ?`).run(c.id);
+      purged.push(c.id);
+    } else {
+      db.prepare(
+        `UPDATE memories SET parent_memory_id = NULL, updated_at = ? WHERE id = ?`,
+      ).run(now, c.id);
+      orphaned.push(c.id);
+    }
   }
-  return childIds;
+
+  return { purged, orphaned };
 }
 
 /**
- * Share cascade: copy the parent's team scope down to all (non-deleted)
- * children. Returns affected child IDs. Caller is expected to have already
- * shared the parent.
+ * Share cascade: copy the parent's team scope down to ALL children of the
+ * thread, regardless of author. The whole thread's visibility flips together
+ * — if the parent is now in the team pool, every reply must be too, even
+ * teammates' replies (which were already team-shared, since they inherited
+ * sharing on creation; this is a no-op for them in the common path).
+ *
+ * Returns affected child IDs. Caller is expected to have already shared the
+ * parent.
  */
 export function cascadeShare(
   db: Database.Database,
-  userId: string,
   parentId: string,
   teamId: string,
 ): string[] {
@@ -955,45 +1081,48 @@ export function cascadeShare(
   const childIds = db
     .prepare(
       `SELECT id FROM memories
-       WHERE parent_memory_id = ? AND user_id = ?
+       WHERE parent_memory_id = ?
          AND deleted_at IS NULL
          AND (shared_with_team_id IS NULL OR shared_with_team_id != ?)`,
     )
-    .all(parentId, userId, teamId)
+    .all(parentId, teamId)
     .map((r) => (r as { id: string }).id);
 
   for (const id of childIds) {
     db.prepare(
       `UPDATE memories SET shared_with_team_id = ?, shared_at = ?, updated_at = ?
-       WHERE id = ? AND user_id = ?`,
-    ).run(teamId, now, now, id, userId);
+       WHERE id = ?`,
+    ).run(teamId, now, now, id);
   }
   return childIds;
 }
 
 /**
- * Unshare cascade: clear the team scope on all children. Returns child IDs.
- * Caller is expected to have already unshared the parent.
+ * Unshare cascade: clear the team scope on ALL children of the thread,
+ * regardless of author. Whole thread becomes private to each child's owner
+ * (children stay owned by their original authors; only their team visibility
+ * flips off).
+ *
+ * Returns child IDs. Caller is expected to have already unshared the parent.
  */
 export function cascadeUnshare(
   db: Database.Database,
-  userId: string,
   parentId: string,
 ): string[] {
   const now = new Date().toISOString();
   const childIds = db
     .prepare(
       `SELECT id FROM memories
-       WHERE parent_memory_id = ? AND user_id = ? AND shared_with_team_id IS NOT NULL`,
+       WHERE parent_memory_id = ? AND shared_with_team_id IS NOT NULL`,
     )
-    .all(parentId, userId)
+    .all(parentId)
     .map((r) => (r as { id: string }).id);
 
   for (const id of childIds) {
     db.prepare(
       `UPDATE memories SET shared_with_team_id = NULL, shared_at = NULL, updated_at = ?
-       WHERE id = ? AND user_id = ?`,
-    ).run(now, id, userId);
+       WHERE id = ?`,
+    ).run(now, id);
   }
   return childIds;
 }

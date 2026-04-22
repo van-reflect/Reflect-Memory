@@ -52,6 +52,7 @@ import {
 import {
   createMemory,
   readMemoryById,
+  readMemoryWithTeamAccess,
   listMemories,
   listMemorySummaries,
   countMemories,
@@ -2490,10 +2491,13 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         | { parent_memory_id: string | null; shared_with_team_id: string | null }
         | undefined;
 
-      const cascadedIds =
+      // Cascade BEFORE the parent purge: caller's own children get fully
+      // purged, teammates' children get orphaned (parent_memory_id = NULL)
+      // so the FK constraint on the parent's row doesn't fire.
+      const cascade =
         snapshot && snapshot.parent_memory_id === null
           ? cascadeHardDelete(db, request.userId, id)
-          : [];
+          : { purged: [] as string[], orphaned: [] as string[] };
 
       const deleted = deleteMemory(db, request.userId, id);
       if (!deleted) {
@@ -2509,11 +2513,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         ...teamScope,
         includeBody: false,
       });
-      for (const childId of cascadedIds) {
+      for (const childId of cascade.purged) {
         emitMemoryEvent("memory.purged", request.userId, childId, {
           ...teamScope,
           includeBody: false,
         });
+      }
+      // Teammate children are orphaned, not purged. Surface as `memory.updated`
+      // so dashboards repaint them (parent_memory_id changed; the row now
+      // shows up at top level instead of nested).
+      for (const childId of cascade.orphaned) {
+        emitMemoryEvent("memory.updated", request.userId, childId, teamScope);
       }
       reply.code(204);
     },
@@ -3865,7 +3875,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const memory = readMemoryById(db, request.userId, id);
+      // Team-aware read: caller must own the memory OR be on the team it's
+      // shared with. This is what lets Van open a thread Tamer started.
+      const memory = readMemoryWithTeamAccess(db, request.userId, id);
       if (!memory) {
         reply.code(404);
         return { error: "Memory not found" };
@@ -3876,7 +3888,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const root =
         rootId === memory.id
           ? memory
-          : readMemoryById(db, request.userId, rootId);
+          : readMemoryWithTeamAccess(db, request.userId, rootId);
       if (!root) {
         reply.code(404);
         return { error: "Thread root not found" };
@@ -3904,7 +3916,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const memory = readMemoryById(db, request.userId, id);
+      const memory = readMemoryWithTeamAccess(db, request.userId, id);
       if (!memory) {
         reply.code(404);
         return { error: "Memory not found" };
@@ -3922,7 +3934,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const root =
         rootId === memory.id
           ? memory
-          : readMemoryById(db, request.userId, rootId);
+          : readMemoryWithTeamAccess(db, request.userId, rootId);
       if (!root) {
         reply.code(404);
         return { error: "Thread root not found" };
@@ -3990,10 +4002,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       });
 
       // Share cascades to children: any replies under this parent become
-      // visible to the team too.
+      // visible to the team too. Operates on ALL children regardless of
+      // author — the whole thread's visibility flips together.
       if (!result.parent_memory_id) {
-        const sharedIds = cascadeShare(db, request.userId, memoryId, user.team_id);
+        const sharedIds = cascadeShare(db, memoryId, user.team_id);
         for (const childId of sharedIds) {
+          // We use request.userId for the event scope so it lands on the
+          // sharing user's stream too. The team channel is the important one
+          // since teammates receive shared events through it.
           emitMemoryEvent("memory.shared", request.userId, childId, {
             teamId: user.team_id,
           });
@@ -4024,7 +4040,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       });
 
       if (priorRow && priorRow.parent_memory_id === null) {
-        const unsharedIds = cascadeUnshare(db, request.userId, memoryId);
+        const unsharedIds = cascadeUnshare(db, memoryId);
         for (const childId of unsharedIds) {
           emitMemoryEvent("memory.unshared", request.userId, childId, {
             teamId: priorTeamId,
