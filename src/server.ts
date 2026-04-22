@@ -70,6 +70,8 @@ import {
   unshareMemory,
   listTeamMemories,
   countTeamMemories,
+  searchTeamMemories,
+  countSearchTeamMemories,
   getVersionHistory,
 } from "./memory-service.js";
 import { buildPrompt, type PromptResult } from "./context-builder.js";
@@ -3648,11 +3650,18 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return reply.code(403).send({ error: "Not a member of this team" });
       }
 
-      const qs = request.query as { limit?: string; offset?: string };
+      const qs = request.query as { limit?: string; offset?: string; term?: string };
       const pagination: PaginationOptions = {
         limit: qs.limit ? parseInt(qs.limit, 10) : 50,
         offset: qs.offset ? parseInt(qs.offset, 10) : 0,
       };
+
+      const term = qs.term?.trim() ?? "";
+      if (term.length > 0) {
+        const memories = searchTeamMemories(db, teamId, term, pagination);
+        const total = countSearchTeamMemories(db, teamId, term);
+        return { memories, total, term };
+      }
 
       const memories = listTeamMemories(db, teamId, pagination);
       const total = countTeamMemories(db, teamId);
