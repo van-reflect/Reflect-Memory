@@ -109,12 +109,20 @@ CREATE TABLE memories (
     updated_at           TEXT NOT NULL,
     deleted_at           TEXT,
     shared_with_team_id  TEXT REFERENCES teams(id),
-    shared_at            TEXT DEFAULT NULL
+    shared_at            TEXT DEFAULT NULL,
+    -- Threading: a memory with parent_memory_id set is a "reply" to the
+    -- referenced memory. Enforced at the app layer: single level only
+    -- (a memory that is itself a child cannot be made a parent). Children
+    -- inherit the parent's shared_with_team_id and cascade through soft
+    -- delete / restore / permanent delete. No ON DELETE CASCADE in SQL —
+    -- app code cascades so SSE events fire per child.
+    parent_memory_id     TEXT REFERENCES memories(id)
 ) STRICT;
 
 CREATE INDEX idx_memories_user_id ON memories(user_id);
 CREATE INDEX idx_memories_deleted_at ON memories(user_id, deleted_at);
 CREATE INDEX idx_memories_user_created ON memories(user_id, created_at DESC);
+CREATE INDEX idx_memories_parent_id ON memories(parent_memory_id) WHERE parent_memory_id IS NOT NULL;
 
 -- =============================================================================
 -- MEMORY_VERSIONS

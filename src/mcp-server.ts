@@ -29,6 +29,9 @@ import {
   countMemories,
   shareMemoryToTeam,
   listTeamMemories,
+  createChildMemory,
+  listChildren,
+  ThreadingError,
   type PaginationOptions,
 } from "./memory-service.js";
 
@@ -255,6 +258,67 @@ function createMcpServerWithTools(
       }));
 
       return { content: [{ type: "text", text: JSON.stringify({ team_memories: formatted, count: formatted.length, offset, has_more: formatted.length === limit }, null, 2) }] };
+    },
+  );
+
+  mcp.tool(
+    "write_child_memory",
+    "Create a memory as a reply/child of an existing memory. Threads are one level deep — you can reply to a top-level memory, but not to a reply. Children inherit the parent's team sharing automatically: if the parent is in the team pool, the child shows up there too. Use this to add execution notes, status updates, resolutions, or follow-ups to an existing memory without creating a duplicate top-level entry.",
+    {
+      parent_memory_id: z.string().min(1).describe("UUID of the parent memory to reply to"),
+      title: z.string().min(1).max(500).describe("Short title for the reply"),
+      content: z.string().min(1).max(100_000).describe("The reply content"),
+      tags: z.array(z.string().min(1).max(100)).max(50).default([]).describe("Tags for categorization"),
+      allowed_vendors: z.array(z.string().min(1).max(50)).min(1).max(50).default(["*"]).describe("Which vendors can see this. Use ['*'] for all."),
+      memory_type: z.enum(["semantic", "episodic", "procedural"]).default("semantic").describe("Type of memory"),
+    },
+    { title: "Write Child Memory (Reply to Thread)", destructiveHint: true },
+    async ({ parent_memory_id, title, content, tags, allowed_vendors, memory_type }) => {
+      try {
+        const child = createChildMemory(db, userId, parent_memory_id, {
+          title,
+          content,
+          tags,
+          origin: vendor,
+          allowed_vendors,
+          memory_type,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(child, null, 2) }] };
+      } catch (err) {
+        if (err instanceof ThreadingError) {
+          return {
+            content: [{ type: "text", text: `Cannot create child: ${err.message} (${err.code})` }],
+            isError: true,
+          };
+        }
+        throw err;
+      }
+    },
+  );
+
+  mcp.tool(
+    "read_thread",
+    "Get a memory and all its replies in one call. Pass either the parent's id or any child's id — the tool always returns the full thread rooted at the parent.",
+    {
+      memory_id: z.string().min(1).describe("UUID of any memory in the thread (parent or child)"),
+    },
+    { title: "Read Thread", readOnlyHint: true },
+    async ({ memory_id }) => {
+      const memory = readMemoryById(db, userId, memory_id);
+      if (!memory) {
+        return { content: [{ type: "text", text: "Memory not found." }], isError: true };
+      }
+      const rootId = memory.parent_memory_id ?? memory.id;
+      const root = rootId === memory.id ? memory : readMemoryById(db, userId, rootId);
+      if (!root) {
+        return { content: [{ type: "text", text: "Thread root not found." }], isError: true };
+      }
+      const children = listChildren(db, userId, rootId);
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ parent: root, children }, null, 2) },
+        ],
+      };
     },
   );
 
