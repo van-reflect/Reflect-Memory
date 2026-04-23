@@ -389,6 +389,7 @@ describe("formatBriefingAsMarkdown", () => {
       detected_conventions: overrides.detected_conventions ?? [
         "Tickets use priority tags.",
       ],
+      topic_clusters: overrides.topic_clusters ?? [],
       generated_at: "2026-04-22T18:30:00.000Z",
     };
   }
@@ -449,5 +450,45 @@ describe("formatBriefingAsMarkdown", () => {
   it("reminds the reader that get_memory_briefing can refresh mid-session", () => {
     const md = formatBriefingAsMarkdown(makeBriefing());
     expect(md).toMatch(/get_memory_briefing/);
+  });
+
+  it("renders the topic map section when clusters are present", () => {
+    const md = formatBriefingAsMarkdown(
+      makeBriefing({
+        topic_clusters: [
+          {
+            name: "Auth & MCP Engineering",
+            description: "Authentication bugs, MCP server work, and shipped fixes",
+            tags: ["auth", "eng", "mcp", "p1"],
+            member_count: 12,
+            internal_weight: 18,
+            cluster_hash: "abc123",
+            scope: "personal",
+          },
+          {
+            name: "Dashboard UX",
+            description: "Customer-facing dashboard issues and search behaviors",
+            tags: ["dashboard", "search", "ux"],
+            member_count: 6,
+            internal_weight: 7,
+            cluster_hash: "def456",
+            scope: "team",
+          },
+        ],
+      }),
+    );
+    expect(md).toContain("## Topic map");
+    expect(md).toContain("**Auth & MCP Engineering**");
+    expect(md).toContain("Authentication bugs");
+    expect(md).toContain("12 memories");
+    expect(md).toContain("`auth`, `eng`, `mcp`, `p1`");
+    expect(md).toContain("**Dashboard UX**");
+    expect(md).toContain("_team_");
+    expect(md).toContain("_personal_");
+  });
+
+  it("omits the topic map entirely when no clusters", () => {
+    const md = formatBriefingAsMarkdown(makeBriefing({ topic_clusters: [] }));
+    expect(md).not.toContain("## Topic map");
   });
 });

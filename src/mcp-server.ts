@@ -34,7 +34,11 @@ import {
   ThreadingError,
   type PaginationOptions,
 } from "./memory-service.js";
-import { buildMemoryBriefing, formatBriefingAsMarkdown } from "./memory-briefing.js";
+import {
+  buildMemoryBriefingAsync,
+  formatBriefingAsMarkdown,
+} from "./memory-briefing.js";
+import { getGraphAround } from "./memory-graph.js";
 
 export interface McpServerConfig {
   db: Database.Database;
@@ -47,19 +51,23 @@ export interface McpServerConfig {
   dashboardServiceKey?: string;
 }
 
-function createMcpServerWithTools(
+async function createMcpServerWithTools(
   db: Database.Database,
   userId: string,
   vendor: string,
-): McpServer {
+): Promise<McpServer> {
   // Build the per-user briefing at connect time. Sent back in the MCP
   // `initialize` response's `instructions` field so the connecting LLM
-  // gets a condensed map of tags, threads, and conventions with zero
-  // tool calls. Kept cheap (a handful of small SQL aggregates) — runs
-  // once per session.
+  // gets a condensed map of tags, threads, conventions, and named topic
+  // clusters with zero tool calls. enableTopicClusters runs Louvain over
+  // the user's tag co-occurrence and resolves names via cache (24h TTL,
+  // LLM-named on miss). Naming is cached aggressively — typical session
+  // pays no LLM cost.
   let instructions: string | undefined;
   try {
-    const briefing = buildMemoryBriefing(db, userId);
+    const briefing = await buildMemoryBriefingAsync(db, userId, {
+      enableTopicClusters: true,
+    });
     instructions = formatBriefingAsMarkdown(briefing);
   } catch (err) {
     // Briefing is a nice-to-have — never block a session on it.
@@ -102,7 +110,11 @@ function createMcpServerWithTools(
     },
     { title: "Get Memory Briefing", readOnlyHint: true },
     async ({ format }) => {
-      const briefing = buildMemoryBriefing(db, userId);
+      // Mid-session refresh uses the same v2 path as initialize so the
+      // refreshed briefing has the same shape (incl. topic clusters).
+      const briefing = await buildMemoryBriefingAsync(db, userId, {
+        enableTopicClusters: true,
+      });
       const text =
         format === "markdown"
           ? formatBriefingAsMarkdown(briefing)
@@ -201,7 +213,9 @@ function createMcpServerWithTools(
 
   mcp.tool(
     "write_memory",
-    "Create a new memory entry. Returns the created memory with its ID.",
+    "Create a new TOP-LEVEL memory entry. Use this when the content is a fresh idea, decision, or note that doesn't belong inside an existing thread. " +
+      "**Before calling, check the briefing's open threads + topic clusters** — if your content fits inside an existing thread, use `write_child_memory` instead so it threads correctly. " +
+      "**Match the user's existing tag vocabulary** — see the topic map in the briefing for the canonical tag clusters.",
     {
       title: z.string().min(1).max(500).describe("Short title for the memory"),
       content: z.string().min(1).max(100_000).describe("The memory content"),
@@ -359,6 +373,102 @@ function createMcpServerWithTools(
       return {
         content: [
           { type: "text", text: JSON.stringify({ parent: root, children }, null, 2) },
+        ],
+      };
+    },
+  );
+
+  mcp.tool(
+    "get_graph_around",
+    "Returns the local graph around a memory: parent, children, siblings, tag-similar memories (≥ K shared tags), and bidirectional content references. Use to understand how a single memory connects to the rest of the corpus before deciding whether to reply, update, or write fresh.",
+    {
+      memory_id: z.string().min(1).describe("UUID of the center memory"),
+      min_shared_tags: z
+        .number()
+        .min(1)
+        .max(10)
+        .default(2)
+        .describe("Minimum tag overlap to count as similar (default 2)"),
+      top_tag_similar: z
+        .number()
+        .min(1)
+        .max(20)
+        .default(5)
+        .describe("Max tag-similar memories to return (default 5)"),
+    },
+    { title: "Get Graph Around", readOnlyHint: true },
+    async ({ memory_id, min_shared_tags, top_tag_similar }) => {
+      const around = getGraphAround(db, userId, memory_id, {
+        minSharedTags: min_shared_tags,
+        topTagSimilar: top_tag_similar,
+      });
+      if (!around) {
+        return {
+          content: [{ type: "text", text: "Memory not found or not visible to you." }],
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify(around, null, 2) }],
+      };
+    },
+  );
+
+  mcp.tool(
+    "get_topic_cluster",
+    "Look up everything tagged with a topic cluster's tags. Pass a tag (any tag in the cluster) and the tool returns recent memories from that cluster (newest first, capped). Use after the briefing's topic map to drill into a topic before writing about it — confirms what's already there and what tags are canonical.",
+    {
+      tag: z
+        .string()
+        .min(1)
+        .describe("Any tag belonging to the cluster (e.g. `auth`, `dashboard`, `decision`)"),
+      limit: z
+        .number()
+        .min(1)
+        .max(50)
+        .default(10)
+        .describe("Max memories to return (default 10)"),
+    },
+    { title: "Get Topic Cluster", readOnlyHint: true },
+    async ({ tag, limit }) => {
+      // Pull memories the caller can see (own + team-shared) tagged with
+      // this tag, newest first.
+      const teamRow = db
+        .prepare("SELECT team_id FROM users WHERE id = ?")
+        .get(userId) as { team_id: string | null } | undefined;
+      const teamId = teamRow?.team_id ?? "";
+      const rows = db
+        .prepare(
+          `SELECT m.id, m.title, m.tags, m.user_id, m.shared_with_team_id,
+                  m.parent_memory_id, m.created_at, m.updated_at
+           FROM memories m, json_each(m.tags) t
+           WHERE m.deleted_at IS NULL
+             AND t.value = ?
+             AND (m.user_id = ? OR m.shared_with_team_id = COALESCE(?, ''))
+           GROUP BY m.id
+           ORDER BY m.updated_at DESC
+           LIMIT ?`,
+        )
+        .all(tag, userId, teamId, limit) as Array<{
+          id: string;
+          title: string;
+          tags: string;
+          user_id: string;
+          shared_with_team_id: string | null;
+          parent_memory_id: string | null;
+          created_at: string;
+          updated_at: string;
+        }>;
+      const memories = rows.map((r) => ({
+        ...r,
+        tags: JSON.parse(r.tags) as string[],
+      }));
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ tag, count: memories.length, memories }, null, 2),
+          },
         ],
       };
     },
@@ -706,7 +816,7 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
         };
 
         console.log(`[mcp] New session for user=${sessionUserId} vendor=${vendor}`);
-        const mcp = createMcpServerWithTools(db, sessionUserId, vendor);
+        const mcp = await createMcpServerWithTools(db, sessionUserId, vendor);
         await mcp.connect(transport);
         await transport.handleRequest(req, res, req.body);
         return;
