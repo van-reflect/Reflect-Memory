@@ -225,7 +225,7 @@ function createMcpServerWithTools(
 
   mcp.tool(
     "update_memory",
-    "Edit an existing memory by ID. Replaces title, content, and tags. Use this to correct, refine, or append to a memory instead of creating duplicates. Preserves version history.",
+    "Edit an existing memory by ID — REPLACES title, content, and tags wholesale. Use ONLY to correct or refine a memory YOU authored. Do NOT use to add a status update or reply to a memory authored by someone else (or to a thread you're participating in) — that destroys the original author's text. For status updates, follow-ups, or anything additive on a thread (especially a team-shared one), use `write_child_memory` instead — it preserves the prior author's text and keeps the thread structure intact.",
     {
       id: z.string().min(1).describe("The memory UUID to update"),
       title: z.string().min(1).max(500).describe("Updated title"),

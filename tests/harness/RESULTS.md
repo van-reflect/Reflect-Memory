@@ -115,3 +115,15 @@ Overall hard-pass: **60.0%** · rubric: **7.79/10**
 | `multi-author-thread` | 0% | 8.7 | 3.3 | 13.0 | 15735 |
 | `tag-convention-compliance` | 0% | 3.5 | 1.0 | 6.0 | 10939 |
 
+## 2026-04-23T20:48:33.024Z · sha 7565d21 · reps 3 · judge
+
+Overall hard-pass: **73.3%** · rubric: **8.84/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `reply-to-existing-thread` | 67% | 8.9 | 1.3 | 7.0 | 11451 |
+| `create-new-top-level` | 100% | 9.0 | 1.0 | 6.0 | 7759 |
+| `cluster-recall` | 100% | 8.3 | 5.0 | 18.0 | 21451 |
+| `multi-author-thread` | 0% | 8.5 | 3.0 | 12.0 | 13709 |
+| `tag-convention-compliance` | 100% | 9.5 | 1.0 | 6.0 | 8278 |
+
