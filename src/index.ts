@@ -715,6 +715,34 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(memoryThreadingM
   );
 }
 
+// Tag cluster cache: stores the LLM-generated names for tag clusters so we
+// don't pay the naming cost on every briefing build. Keyed on
+// (user_id, scope, cluster_hash); the hash is sha256(sorted_tag_list) so
+// small structural drift in the corpus doesn't invalidate the cache. Stale
+// entries get re-derived after 24h or when the briefing detects N=20 new
+// memories since the last compute. See cluster-naming.ts.
+const tagClusterCacheMigration = "022_tag_cluster_cache";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(tagClusterCacheMigration)) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS tag_cluster_cache (
+      user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      scope          TEXT NOT NULL,
+      cluster_hash   TEXT NOT NULL,
+      name           TEXT NOT NULL,
+      description    TEXT NOT NULL,
+      tags           TEXT NOT NULL CHECK(json_type(tags) = 'array'),
+      member_count   INTEGER NOT NULL,
+      computed_at    TEXT NOT NULL,
+      PRIMARY KEY (user_id, scope, cluster_hash)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS idx_tag_cluster_cache_user_scope ON tag_cluster_cache(user_id, scope);
+  `);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    tagClusterCacheMigration,
+    new Date().toISOString(),
+  );
+}
+
 // Primary owner (RM_OWNER_EMAIL) anchors orphan consolidation and the legacy
 // single-tenant userId semantics. Additional admins come from RM_OWNER_EMAILS
 // (comma-separated). Both envs coexist: the singular is always included in the

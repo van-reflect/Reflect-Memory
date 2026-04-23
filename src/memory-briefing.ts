@@ -3,13 +3,21 @@
 // The MCP `initialize` handshake lets the server hand a free-form `instructions`
 // string to the client. Historically we sent nothing. This module builds a
 // compact "mindmap" of the user's memory state (identity, tag index, recency,
-// open threads, detected conventions) so a connecting LLM can orient itself
-// without burning tool calls.
+// open threads, detected conventions, named topic clusters) so a connecting
+// LLM can orient itself without burning tool calls.
 //
 // Also exposed via an HTTP route and an MCP tool so clients can refresh
 // mid-session.
+//
+// v2 (2026-04-23): added topic_clusters — Louvain over tag co-occurrence,
+// names cached via cluster-naming. Optional to keep backwards compat: gated
+// on opts.enableTopicClusters. When enabled, briefing build becomes async
+// (cluster naming may call the LLM if cache misses).
 
 import type Database from "better-sqlite3";
+import { getTagCooccurrence } from "./memory-graph.js";
+import { clusterTags, type TagCluster } from "./tag-clustering.js";
+import { nameClusters, type NamedCluster } from "./cluster-naming.js";
 
 export interface TagCount {
   tag: string;
@@ -43,6 +51,23 @@ export interface BriefingTotals {
   team_pool_total: number;
 }
 
+export interface TopicCluster {
+  /** LLM-named topic, e.g. "Auth & MCP Engineering". Stable per cluster_hash. */
+  name: string;
+  /** One-liner explaining what the cluster is about. */
+  description: string;
+  /** Member tags, alphabetical. */
+  tags: string[];
+  /** Total memories the cluster spans (sum of per-tag frequencies). */
+  member_count: number;
+  /** Cluster cohesion (sum of intra-cluster cooccurrence weights). */
+  internal_weight: number;
+  /** Stable hash of the sorted tag list — for cache lookups + UI keys. */
+  cluster_hash: string;
+  /** Scope this cluster came from. */
+  scope: "personal" | "team";
+}
+
 export interface MemoryBriefing {
   user: UserSummary;
   totals: BriefingTotals;
@@ -51,6 +76,11 @@ export interface MemoryBriefing {
   recent_tags: TagCount[];
   active_threads: ActiveThread[];
   detected_conventions: string[];
+  /**
+   * v2: named topic clusters. Empty when clustering is disabled or the
+   * corpus is too small to produce meaningful clusters.
+   */
+  topic_clusters: TopicCluster[];
   generated_at: string;
 }
 
@@ -58,11 +88,29 @@ export interface BriefingOptions {
   topTagsN?: number;
   recencyDays?: number;
   activeThreadsN?: number;
+  /**
+   * v2: when true, run Louvain clustering over tag co-occurrence and ask
+   * the LLM to name each cluster. Defaults to false to preserve sync
+   * behavior for callers that haven't migrated. Adds ~50ms cold + LLM
+   * call per missing cluster (cached for 24h thereafter).
+   */
+  enableTopicClusters?: boolean;
+  /**
+   * Min tags per cluster to surface. Default 3. Smaller → noisier; larger
+   * → fewer surfaced topics.
+   */
+  minClusterSize?: number;
+  /**
+   * Anthropic API key for cluster naming. Falls back to ANTHROPIC_API_KEY
+   * env var. Without one, clusters get fallback "tag/tag/tag" names.
+   */
+  anthropicKey?: string;
 }
 
 const DEFAULT_TOP_TAGS = 30;
 const DEFAULT_RECENCY_DAYS = 7;
 const DEFAULT_ACTIVE_THREADS = 5;
+const DEFAULT_MIN_CLUSTER_SIZE = 3;
 
 function daysAgoIso(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -340,13 +388,47 @@ function detectConventions(
 }
 
 /**
- * Compute the full briefing structure. Synchronous; runs several small SQL
- * queries against the same DB handle.
+ * Compute the full briefing structure (legacy sync — no topic clusters).
+ *
+ * For full v2 briefings including LLM-named topic clusters, use
+ * `buildMemoryBriefingAsync(db, userId, { enableTopicClusters: true })`.
+ *
+ * This sync entry-point is preserved for callers that don't want async +
+ * LLM cost. It always returns `topic_clusters: []`.
  */
 export function buildMemoryBriefing(
   db: Database.Database,
   userId: string,
   opts: BriefingOptions = {},
+): MemoryBriefing {
+  return buildMemoryBriefingCore(db, userId, opts, []);
+}
+
+/**
+ * Async briefing build. Identical to the sync version when
+ * opts.enableTopicClusters is false. When enabled, runs Louvain over tag
+ * co-occurrence and asks the LLM (or cache) for cluster names.
+ *
+ * Why async: cluster naming may call Anthropic's API on cache miss. We
+ * never block the briefing on naming — failures fall back to "tag/tag/tag"
+ * names so the rest of the briefing still ships.
+ */
+export async function buildMemoryBriefingAsync(
+  db: Database.Database,
+  userId: string,
+  opts: BriefingOptions = {},
+): Promise<MemoryBriefing> {
+  const topicClusters = opts.enableTopicClusters
+    ? await loadTopicClusters(db, userId, opts)
+    : [];
+  return buildMemoryBriefingCore(db, userId, opts, topicClusters);
+}
+
+function buildMemoryBriefingCore(
+  db: Database.Database,
+  userId: string,
+  opts: BriefingOptions,
+  topicClusters: TopicCluster[],
 ): MemoryBriefing {
   const topTagsN = opts.topTagsN ?? DEFAULT_TOP_TAGS;
   const recencyDays = opts.recencyDays ?? DEFAULT_RECENCY_DAYS;
@@ -376,9 +458,74 @@ export function buildMemoryBriefing(
     recent_tags: recentTags,
     active_threads: activeThreads,
     detected_conventions: detectedConventions,
+    topic_clusters: topicClusters,
     generated_at: new Date().toISOString(),
   };
 }
+
+/**
+ * Run Louvain clustering on tag co-occurrence for both personal and team
+ * scopes, then resolve cluster names via cache + LLM. Failures fall back
+ * to "tag/tag/tag" placeholder names so the briefing always renders.
+ */
+async function loadTopicClusters(
+  db: Database.Database,
+  userId: string,
+  opts: BriefingOptions,
+): Promise<TopicCluster[]> {
+  const minSize = opts.minClusterSize ?? DEFAULT_MIN_CLUSTER_SIZE;
+  const user = loadUserSummary(db, userId);
+
+  const personalCo = getTagCooccurrence(db, { scope: "personal", userId });
+  const personalClusters = clusterTags(personalCo.pairs, personalCo.tagFrequencies, {
+    minClusterSize: minSize,
+  });
+
+  const teamCo = user.team_id
+    ? getTagCooccurrence(db, {
+        scope: "team",
+        userId,
+        teamId: user.team_id,
+      })
+    : { pairs: [], tagFrequencies: new Map<string, number>() };
+  const teamClusters = clusterTags(teamCo.pairs, teamCo.tagFrequencies, {
+    minClusterSize: minSize,
+  });
+
+  const [namedPersonal, namedTeam] = await Promise.all([
+    nameClusters(db, userId, "personal", null, personalClusters, {
+      anthropicKey: opts.anthropicKey,
+    }),
+    nameClusters(db, userId, "team", user.team_id, teamClusters, {
+      anthropicKey: opts.anthropicKey,
+    }),
+  ]);
+
+  const out: TopicCluster[] = [];
+  for (const c of namedPersonal) out.push(toTopicCluster(c, "personal"));
+  for (const c of namedTeam) out.push(toTopicCluster(c, "team"));
+  // Sort by size+cohesion desc so the heaviest clusters render first.
+  out.sort(
+    (a, b) =>
+      b.member_count + b.internal_weight - (a.member_count + a.internal_weight),
+  );
+  return out;
+}
+
+function toTopicCluster(c: NamedCluster, scope: "personal" | "team"): TopicCluster {
+  return {
+    name: c.name,
+    description: c.description,
+    tags: c.tags,
+    member_count: c.size,
+    internal_weight: c.internal_weight,
+    cluster_hash: c.cluster_hash,
+    scope,
+  };
+}
+
+// Re-export for downstream tests that build TagCluster fixtures.
+export type { TagCluster };
 
 function renderTagList(tags: TagCount[]): string {
   if (tags.length === 0) return "_(none)_";
@@ -419,6 +566,28 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
     `**Totals:** ${b.totals.personal_memories} personal memories (${b.totals.personal_memories_shared} shared with team) · ${b.totals.team_pool_total} in team pool`,
   );
   lines.push("");
+
+  // Topic map: render BEFORE the flat tag lists so the LLM sees the
+  // structured clusters first (the map). The flat lists stay as a
+  // fallback / detail view. Each cluster shows its name, description,
+  // member count, and the tag list so the LLM knows what tags to use
+  // when contributing to the cluster.
+  if (b.topic_clusters.length > 0) {
+    lines.push("## Topic map");
+    lines.push(
+      "_Topics are clusters of tags that frequently co-occur in this user's memories. " +
+        "When writing a memory about one of these topics, prefer the cluster's tags " +
+        "to keep the cluster cohesive._",
+    );
+    lines.push("");
+    for (const t of b.topic_clusters) {
+      const scopeBadge = t.scope === "team" ? " · _team_" : " · _personal_";
+      lines.push(
+        `- **${t.name}**${scopeBadge} — ${t.description} (${t.member_count} memories) · tags: ${t.tags.map((tag) => `\`${tag}\``).join(", ")}`,
+      );
+    }
+    lines.push("");
+  }
 
   lines.push("## Personal tags (top)");
   lines.push(renderTagList(b.personal_tags));
