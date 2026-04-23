@@ -111,9 +111,11 @@ function upsertCachedCluster(
  */
 function fallbackName(cluster: TagCluster): { name: string; description: string } {
   const top = cluster.tags.slice(0, 3).join("/");
+  // Description intentionally compact — the briefing renders memory count
+  // separately, so duplicating it here is noise.
   return {
     name: top,
-    description: `Auto-named cluster (${cluster.tags.length} tags, ${cluster.size} memories)`,
+    description: `${cluster.tags.length} co-occurring tags`,
   };
 }
 
@@ -256,8 +258,9 @@ export async function nameClusters(
         };
       }
       if (!anthropic) {
+        // No API key configured — fallback names. Do NOT cache: if the
+        // operator adds a key later we want naming to retry immediately.
         const f = fallbackName(cluster);
-        upsertCachedCluster(db, userId, scopeStr, cluster, f.name, f.description);
         return { ...cluster, ...f, freshly_named: true };
       }
       try {
@@ -266,11 +269,15 @@ export async function nameClusters(
         upsertCachedCluster(db, userId, scopeStr, cluster, nd.name, nd.description);
         return { ...cluster, ...nd, freshly_named: true };
       } catch (err) {
+        // LLM call failed (rate limit, network, parse). Use the fallback
+        // for this build but DO NOT cache it — next session will retry.
+        // Caching a fallback would lock us out for 24h on every cluster
+        // that briefly failed, which is most painful exactly when the
+        // user has many new clusters and we get rate-limited bursting.
         console.warn(
-          `[cluster-naming] LLM naming failed for cluster ${cluster.cluster_hash} (${cluster.tags.length} tags): ${(err as Error).message} — using fallback`,
+          `[cluster-naming] LLM naming failed for cluster ${cluster.cluster_hash} (${cluster.tags.length} tags): ${(err as Error).message} — using fallback (will retry next session)`,
         );
         const f = fallbackName(cluster);
-        upsertCachedCluster(db, userId, scopeStr, cluster, f.name, f.description);
         return { ...cluster, ...f, freshly_named: true };
       }
     }),
