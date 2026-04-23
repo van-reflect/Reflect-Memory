@@ -151,3 +151,35 @@ Overall hard-pass: **86.7%** · rubric: **8.93/10**
 | `multi-author-thread` | 100% | 9.0 | 1.0 | 6.0 | 9596 |
 | `tag-convention-compliance` | 67% | 9.3 | 1.0 | 6.0 | 8940 |
 
+## 2026-04-23T21:28:16.839Z · sha 694685c · reps 3 · judge
+
+Overall hard-pass: **93.3%** · rubric: **8.81/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `reply-to-existing-thread` | 100% | 8.9 | 1.7 | 8.0 | 12403 |
+| `create-new-top-level` | 100% | 9.0 | 1.0 | 6.0 | 9624 |
+| `cluster-recall` | 67% | 7.7 | 6.0 | 20.7 | 21478 |
+| `multi-author-thread` | 100% | 9.0 | 1.0 | 6.0 | 9246 |
+| `tag-convention-compliance` | 100% | 9.5 | 1.0 | 6.0 | 9643 |
+
+## 2026-04-23T21:30:32.139Z · sha 694685c · reps 3 · scenario cluster-recall · judge
+
+Overall hard-pass: **100.0%** · rubric: **8.17/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `cluster-recall` | 100% | 8.2 | 6.3 | 21.7 | 25391 |
+
+## 2026-04-23T21:35:11.125Z · sha 694685c · reps 3 · judge
+
+Overall hard-pass: **93.3%** · rubric: **8.82/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `reply-to-existing-thread` | 67% | 8.4 | 1.3 | 7.0 | 11160 |
+| `create-new-top-level` | 100% | 9.2 | 1.0 | 6.0 | 7667 |
+| `cluster-recall` | 100% | 8.0 | 5.7 | 20.0 | 24889 |
+| `multi-author-thread` | 100% | 9.0 | 1.0 | 6.0 | 9609 |
+| `tag-convention-compliance` | 100% | 9.5 | 1.0 | 6.0 | 10899 |
+

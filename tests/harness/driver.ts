@@ -135,7 +135,11 @@ export async function runScenario(
     { role: "user", content: scenario.prompt },
   ];
 
-  const maxSteps = opts.maxSteps ?? scenario.maxSteps ?? 8;
+  // Default 12 steps. With the v2 graph tools (get_graph_around,
+  // get_topic_cluster, etc.) the model often does richer exploration,
+  // and 8 steps wasn't always enough for it to converge on a final
+  // assistant turn (saw this in cluster-recall scenario at iter 5).
+  const maxSteps = opts.maxSteps ?? scenario.maxSteps ?? 12;
   let stopReason: string | null = null;
   let finalAssistantText = "";
   const t0 = Date.now();
