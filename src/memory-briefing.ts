@@ -417,15 +417,20 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
     lines.push("## Current open threads");
     for (const t of b.active_threads) {
       const shared = t.shared_with_team ? " · shared" : "";
+      // Full memory_id (not slice(0,8)) so an LLM can pass it directly
+      // to write_child_memory without a round-trip to look up the full id.
+      // The 8-char prefix was a humans-readable choice that broke LLM
+      // navigation — see harness baseline 2026-04-23.
       lines.push(
-        `- \`${t.memory_id.slice(0, 8)}\` **${t.title}** — ${t.reply_count} ${
+        `- \`${t.memory_id}\` **${t.title}** — ${t.reply_count} ${
           t.reply_count === 1 ? "reply" : "replies"
         } · last activity ${t.last_activity_at}${shared}`,
       );
     }
     lines.push("");
     lines.push(
-      "Reply to an open thread with `write_child_memory(parent_memory_id=…)` rather than creating a new top-level memory.",
+      "Reply to an open thread with `write_child_memory(parent_memory_id=…)` rather than creating a new top-level memory. " +
+        "The IDs above are full UUIDs — pass them verbatim.",
     );
     lines.push("");
   }
