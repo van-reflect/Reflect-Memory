@@ -285,8 +285,17 @@ function detectConventions(
 
   const conventions: string[] = [];
 
+  // Engineering ticket pattern: when `eng` is a top tag AND there are
+  // multiple priority tags, surface the umbrella convention so the LLM
+  // knows to apply `eng` (not just priority + area). Without this hint
+  // models often file with priority + area but skip `eng`, which then
+  // breaks the briefing's tag-clustering on subsequent sessions.
   const priorityTags = ["p0", "p1", "p2", "p3"].filter(has);
-  if (priorityTags.length >= 2) {
+  if (has("eng") && priorityTags.length >= 2) {
+    conventions.push(
+      `Engineering tickets are tagged \`eng\` + a priority (${priorityTags.join(", ")}) + an area (e.g. \`auth\`, \`dashboard\`, \`billing\`). Always include \`eng\`; it's the umbrella tag for engineering work.`,
+    );
+  } else if (priorityTags.length >= 2) {
     conventions.push(
       `Tickets use priority tags (${priorityTags.join(", ")}). Match this when filing or resolving.`,
     );
@@ -430,7 +439,9 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
     lines.push("");
     lines.push(
       "Reply to an open thread with `write_child_memory(parent_memory_id=…)` rather than creating a new top-level memory. " +
-        "The IDs above are full UUIDs — pass them verbatim.",
+        "The IDs above are full UUIDs — pass them verbatim. " +
+        "**Do NOT use `update_memory` to add a status update to a teammate's thread** — that overwrites their text. " +
+        "Always reply with a child memory; it preserves history and threading.",
     );
     lines.push("");
   }
