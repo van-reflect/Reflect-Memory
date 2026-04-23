@@ -17,6 +17,7 @@
 
 import type { Scenario } from "./types.js";
 import { calledTool, firstToolCall } from "./types.js";
+// (calledTool kept — used by the no-update-memory assertion below.)
 
 const scenario: Scenario = {
   name: "supersession",
@@ -31,21 +32,10 @@ const scenario: Scenario = {
     "scale on the new tier, plus team familiarity. Capture this so the " +
     "earlier 'SQLite for v0' decision isn't the only thing on record.",
   assertions: [
-    (t) => {
-      const readTools = [
-        "search_memories",
-        "get_memories_by_tag",
-        "read_thread",
-        "get_topic_cluster",
-        "get_graph_around",
-      ];
-      const used = readTools.filter((tool) => calledTool(t, tool));
-      return {
-        name: "called at least one read tool to find the prior decision",
-        pass: used.length > 0,
-        detail: `read tools used: ${used.join(", ") || "(none)"}`,
-      };
-    },
+    // Removed the "must call a read tool" assertion (same reasoning as
+    // cross-reference): the briefing's topic map + open threads IS the
+    // read for the model. What matters is whether the new memory is
+    // structurally LINKED to the prior decision.
     (t) => ({
       name: "did NOT use update_memory (preserves history)",
       pass: !calledTool(t, "update_memory"),

@@ -40,11 +40,17 @@ interface CliArgs {
   reps: number;
   scenario?: string;
   judge: boolean;
+  reseed: boolean;
   out: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { reps: 1, judge: false, out: "tests/harness/runs" };
+  const args: CliArgs = {
+    reps: 1,
+    judge: false,
+    reseed: true,
+    out: "tests/harness/runs",
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--reps") {
@@ -53,6 +59,8 @@ function parseArgs(argv: string[]): CliArgs {
       args.scenario = argv[++i];
     } else if (a === "--judge") {
       args.judge = true;
+    } else if (a === "--no-reseed") {
+      args.reseed = false;
     } else if (a === "--out") {
       args.out = argv[++i];
     }
@@ -85,13 +93,37 @@ interface ScenarioAggregate {
   mean_rubric_0_10?: number;
 }
 
+/**
+ * Re-seed harness state between reps so the LLM never sees memories
+ * written by earlier scenario runs. Without this, by the third rep the
+ * corpus is polluted with prior write_memory / write_child_memory output
+ * and the model's "this is already recorded" reasoning becomes correct
+ * for the wrong reasons. We shell out to seed.ts which wipes harness
+ * users' memories + re-applies the fixture corpus.
+ */
+function reseedHarnessCorpus(): void {
+  execSync("npx tsx tests/harness/seed.ts > /dev/null", {
+    encoding: "utf-8",
+    stdio: ["pipe", "ignore", "inherit"],
+  });
+}
+
 async function runOne(
   scenario: Scenario,
   rep: number,
   ctx: ScenarioContext,
   outDir: string,
   enableJudge: boolean,
+  reseed: boolean,
 ): Promise<RepResult> {
+  if (reseed) {
+    reseedHarnessCorpus();
+    // Re-load ctx from the freshly-written .seeded.json — UUIDs change.
+    const seeded = JSON.parse(readFileSync("tests/harness/.seeded.json", "utf-8")) as SeededOutput;
+    ctx.refToId = seeded.ref_to_id;
+    ctx.userIds = seeded.user_ids;
+    ctx.teamId = seeded.team_id;
+  }
   const transcript: CapturedTranscript = await runScenario(scenario, { rep });
 
   const assertions: AssertionResult[] = scenario.assertions.map((fn) => {
@@ -314,7 +346,7 @@ async function main(): Promise<void> {
     const reps: RepResult[] = [];
     for (let r = 0; r < args.reps; r++) {
       process.stdout.write(`[run] ${scenario.name} rep ${r}... `);
-      const res = await runOne(scenario, r, ctx, outDir, args.judge);
+      const res = await runOne(scenario, r, ctx, outDir, args.judge, args.reseed);
       reps.push(res);
       const rubricCol = res.judge
         ? ` · rubric ${res.judge.composite_0_10.toFixed(1)}/10`
