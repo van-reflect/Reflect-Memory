@@ -539,6 +539,15 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       scopesSupported: ["mcp:read", "mcp:write"],
       resourceName: "Reflect Memory MCP",
       serviceDocumentationUrl: new URL("https://reflectmemory.com/docs"),
+      // SDK default for /register is 20/hour which is brittle: when a
+      // Cursor user changes their MCP config or hits a transient auth
+      // failure, the V2 FSM tears down + re-registers with retries that
+      // can burn 20 attempts in a few minutes. Bump to 100/hour — still
+      // generous DOS protection, but accommodates a single user's reconnect
+      // storm without surfacing as opaque "Internal Server Error" to them.
+      clientRegistrationOptions: {
+        rateLimit: { windowMs: 60 * 60 * 1000, max: 100 },
+      },
     }),
   );
 
