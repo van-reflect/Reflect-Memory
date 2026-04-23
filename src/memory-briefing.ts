@@ -578,6 +578,27 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
     lines.push("");
   }
 
+  // Read-before-write guidance — applies to every memory the model
+  // writes. The harness's avoid-duplication / cross-reference /
+  // supersession scenarios all surfaced the same gap: models default to
+  // writing without checking what's already in the corpus.
+  lines.push("## Before you write");
+  lines.push(
+    "- **If the prompt's topic overlaps with anything in the topic map below or the open threads**, " +
+      "use `search_memories` / `get_topic_cluster` / `read_thread` to check what's already recorded BEFORE writing. " +
+      "This prevents duplicates and surfaces context you should reference or reply under.",
+  );
+  lines.push(
+    "- **If the new memory updates, contradicts, or extends an existing memory**, link to it explicitly: " +
+      "either `write_child_memory(parent_memory_id=…)` (best — preserves history) " +
+      "or `write_memory` with the prior memory's full UUID in the content body.",
+  );
+  lines.push(
+    "- **If the new memory is fresh + unrelated**, go ahead with `write_memory` — but match the tag vocabulary " +
+      "from the topic clusters below (don't invent ad-hoc tags).",
+  );
+  lines.push("");
+
   // Topic map: render BEFORE the flat tag lists so the LLM sees the
   // structured clusters first (the map). The flat lists stay as a
   // fallback / detail view. Each cluster shows its name, description,

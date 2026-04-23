@@ -183,3 +183,20 @@ Overall hard-pass: **93.3%** · rubric: **8.82/10**
 | `multi-author-thread` | 100% | 9.0 | 1.0 | 6.0 | 9609 |
 | `tag-convention-compliance` | 100% | 9.5 | 1.0 | 6.0 | 10899 |
 
+## 2026-04-23T21:48:25.424Z · sha b2ff97c · reps 3 · judge
+
+Overall hard-pass: **73.3%** · rubric: **7.72/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `reply-to-existing-thread` | 100% | 9.0 | 1.3 | 7.0 | 11349 |
+| `create-new-top-level` | 100% | 9.0 | 1.0 | 6.0 | 8888 |
+| `cluster-recall` | 100% | 8.2 | 5.0 | 17.3 | 18222 |
+| `multi-author-thread` | 100% | 9.0 | 1.0 | 6.0 | 8921 |
+| `tag-convention-compliance` | 100% | 9.5 | 1.0 | 6.0 | 8007 |
+| `avoid-duplication` | 0% | 1.0 | 1.0 | 6.0 | 10952 |
+| `cross-reference` | 0% | 8.8 | 1.0 | 6.0 | 9648 |
+| `supersession` | 33% | 9.3 | 1.3 | 7.0 | 12614 |
+| `briefing-only-navigation` | 100% | 8.8 | 0.0 | 3.0 | 11138 |
+| `cluster-write` | 100% | 4.5 | 1.0 | 6.0 | 8514 |
+
