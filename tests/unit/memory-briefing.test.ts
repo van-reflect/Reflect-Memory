@@ -427,12 +427,18 @@ describe("formatBriefingAsMarkdown", () => {
     expect(md).not.toContain("## Team tags");
   });
 
-  it("renders active thread block with short id + reply count + last activity", () => {
+  it("renders active thread block with FULL memory id + reply count + last activity", () => {
+    // Full UUID required so an LLM can pass it directly to write_child_memory
+    // without having to look up the full id. Truncated 8-char ids broke the
+    // harness's threading scenarios (see RESULTS.md baseline 2026-04-23).
     const md = formatBriefingAsMarkdown(makeBriefing());
-    expect(md).toContain("`aaaabbbb`");
+    expect(md).toContain("`aaaabbbb-1111-2222-3333-444455556666`");
     expect(md).toContain("2 replies");
     expect(md).toContain("Session summary");
     expect(md).toContain("shared");
+    // The reminder about full UUIDs must be present so the model knows
+    // to pass them verbatim.
+    expect(md).toMatch(/full UUID/i);
   });
 
   it("omits the active threads section entirely when there are none", () => {

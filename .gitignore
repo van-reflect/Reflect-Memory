@@ -18,3 +18,8 @@ rules/
 skills/
 SENIOR-REVIEW-GUIDE.md
 content/
+
+# harness scratch (transcripts, generated configs, env)
+tests/harness/.harness-config.json
+tests/harness/.seeded.json
+tests/harness/runs/
