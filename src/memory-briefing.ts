@@ -353,7 +353,7 @@ function detectConventions(
   const priorityTags = ["p0", "p1", "p2", "p3"].filter(has);
   if (has("eng") && priorityTags.length >= 2) {
     conventions.push(
-      `Engineering tickets are tagged \`eng\` + a priority (${priorityTags.join(", ")}) + an area (e.g. \`auth\`, \`dashboard\`, \`billing\`). Always include \`eng\`; it's the umbrella tag for engineering work.`,
+      `**Engineering work always uses \`eng\` as the umbrella tag** + a priority (${priorityTags.join(", ")}) + an area (e.g. \`auth\`, \`dashboard\`, \`billing\`). Even when a memory falls inside an area-specific topic cluster (Dashboard, Billing, etc.), if it's an engineering ticket / bug / fix / shipped work, ALWAYS add \`eng\` on top of the area tags. The topic clusters reflect what \`s in the corpus, not what should be there — apply \`eng\` rigorously.`,
     );
   } else if (priorityTags.length >= 2) {
     conventions.push(
@@ -567,6 +567,17 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
   );
   lines.push("");
 
+  // Conventions FIRST (before the rest) so behavioral rules don't get lost
+  // at the bottom of a long briefing. Detected from the user's actual tag
+  // patterns; the model should follow these to keep the corpus consistent.
+  if (b.detected_conventions.length > 0) {
+    lines.push("## Conventions to follow");
+    for (const c of b.detected_conventions) {
+      lines.push(`- ${c}`);
+    }
+    lines.push("");
+  }
+
   // Topic map: render BEFORE the flat tag lists so the LLM sees the
   // structured clusters first (the map). The flat lists stay as a
   // fallback / detail view. Each cluster shows its name, description,
@@ -627,13 +638,8 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
     lines.push("");
   }
 
-  if (b.detected_conventions.length > 0) {
-    lines.push("## Detected conventions");
-    for (const c of b.detected_conventions) {
-      lines.push(`- ${c}`);
-    }
-    lines.push("");
-  }
+  // Conventions are now rendered near the top (after the user header)
+  // so they don't get drowned out by the topic map / tag lists below.
 
   lines.push("## Refresh");
   lines.push(
