@@ -230,8 +230,17 @@ function loadRecentTags(
 function loadActiveThreads(
   db: Database.Database,
   userId: string,
+  teamId: string | null,
   limit: number,
 ): ActiveThread[] {
+  // Visibility model: a thread is "active" for the caller if
+  //   (a) the caller owns the parent memory, OR
+  //   (b) the parent memory is shared with the caller's team.
+  // Without (b) a teammate would never see threads other team members
+  // started in their briefing, so they couldn't reply to them. This
+  // matched the single-author threading bug Van hit on 2026-04-22.
+  // COALESCE on teamId so the OR clause doesn't match anything when
+  // the caller has no team.
   const rows = db
     .prepare(
       `SELECT m.id, m.title, m.shared_with_team_id,
@@ -243,13 +252,16 @@ function loadActiveThreads(
                 m.updated_at
               ) AS last_activity_at
        FROM memories m
-       WHERE m.user_id = ?
-         AND m.parent_memory_id IS NULL
+       WHERE m.parent_memory_id IS NULL
          AND m.deleted_at IS NULL
+         AND (
+           m.user_id = ?
+           OR m.shared_with_team_id = COALESCE(?, '')
+         )
        ORDER BY reply_count DESC, last_activity_at DESC
        LIMIT ?`,
     )
-    .all(userId, limit) as {
+    .all(userId, teamId ?? "", limit) as {
       id: string;
       title: string;
       shared_with_team_id: string | null;
@@ -353,7 +365,7 @@ export function buildMemoryBriefing(
     recencyDays,
     topTagsN,
   );
-  const activeThreads = loadActiveThreads(db, userId, activeThreadsN);
+  const activeThreads = loadActiveThreads(db, userId, user.team_id, activeThreadsN);
   const detectedConventions = detectConventions(personalTags, teamTags);
 
   return {
