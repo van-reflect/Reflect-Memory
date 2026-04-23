@@ -200,3 +200,53 @@ Overall hard-pass: **73.3%** · rubric: **7.72/10**
 | `briefing-only-navigation` | 100% | 8.8 | 0.0 | 3.0 | 11138 |
 | `cluster-write` | 100% | 4.5 | 1.0 | 6.0 | 8514 |
 
+## 2026-04-23T22:00:42.275Z · sha 47ad4b6 · reps 3 · judge
+
+Overall hard-pass: **80.0%** · rubric: **8.66/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `reply-to-existing-thread` | 100% | 9.1 | 1.7 | 8.0 | 12464 |
+| `create-new-top-level` | 100% | 8.8 | 1.0 | 6.0 | 8378 |
+| `cluster-recall` | 100% | 8.3 | 6.0 | 20.7 | 25304 |
+| `multi-author-thread` | 100% | 9.0 | 1.0 | 6.0 | 9653 |
+| `tag-convention-compliance` | 100% | 9.5 | 1.0 | 6.0 | 9272 |
+| `avoid-duplication` | 67% | 9.2 | 2.7 | 10.0 | 14084 |
+| `cross-reference` | 0% | 9.3 | 1.0 | 6.0 | 8879 |
+| `supersession` | 33% | 8.0 | 2.3 | 10.0 | 18936 |
+| `briefing-only-navigation` | 100% | 8.8 | 0.0 | 3.0 | 12141 |
+| `cluster-write` | 100% | 6.5 | 1.0 | 6.0 | 8871 |
+
+## 2026-04-23T22:02:24.801Z · sha 47ad4b6 · reps 3 · scenario cross-reference · judge
+
+Overall hard-pass: **66.7%** · rubric: **9.50/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `cross-reference` | 67% | 9.5 | 1.0 | 6.0 | 11108 |
+
+## 2026-04-23T22:03:35.799Z · sha 47ad4b6 · reps 3 · scenario supersession · judge
+
+Overall hard-pass: **0.0%** · rubric: **7.17/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `supersession` | 0% | 7.2 | 2.0 | 8.7 | 17939 |
+
+## 2026-04-23T22:14:11.276Z · sha 47ad4b6 · reps 3 · judge
+
+Overall hard-pass: **96.7%** · rubric: **8.47/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `reply-to-existing-thread` | 100% | 9.3 | 2.0 | 9.0 | 11106 |
+| `create-new-top-level` | 100% | 9.2 | 1.0 | 6.0 | 8621 |
+| `cluster-recall` | 100% | 8.3 | 6.0 | 20.0 | 26535 |
+| `multi-author-thread` | 100% | 9.2 | 1.0 | 6.0 | 9802 |
+| `tag-convention-compliance` | 100% | 9.5 | 1.0 | 6.0 | 9530 |
+| `avoid-duplication` | 67% | 6.5 | 2.0 | 8.7 | 11508 |
+| `cross-reference` | 100% | 10.0 | 1.3 | 7.0 | 11684 |
+| `supersession` | 100% | 9.0 | 2.3 | 10.0 | 19899 |
+| `briefing-only-navigation` | 100% | 9.0 | 0.0 | 3.0 | 13353 |
+| `cluster-write` | 100% | 4.7 | 1.0 | 6.0 | 8600 |
+

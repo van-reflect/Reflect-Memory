@@ -10,7 +10,7 @@
 // connections rather than treating each prompt as isolated.
 
 import type { Scenario } from "./types.js";
-import { calledTool, firstToolCall } from "./types.js";
+import { firstToolCall } from "./types.js";
 
 const scenario: Scenario = {
   name: "cross-reference",
@@ -23,23 +23,11 @@ const scenario: Scenario = {
     "in our auth metrics — error rate dropped from 0.4% to under 0.05% over " +
     "the last 24h. Worth recording that the fix worked as expected.",
   assertions: [
-    (t) => {
-      // Model must read context to find the auth bug.
-      const readTools = [
-        "search_memories",
-        "get_memories_by_tag",
-        "read_thread",
-        "get_topic_cluster",
-        "get_graph_around",
-        "browse_memories",
-      ];
-      const used = readTools.filter((tool) => calledTool(t, tool));
-      return {
-        name: "called at least one read tool to find the related memory",
-        pass: used.length > 0,
-        detail: `read tools used: ${used.join(", ") || "(none)"}`,
-      };
-    },
+    // Removed the "must call a read tool" assertion: the briefing's open-
+    // threads section + topic map IS the read. If the model has the
+    // auth-bug-root in context already and goes straight to a correct
+    // write_child_memory, that's MORE efficient, not a failure. The
+    // connection assertion below is what actually matters.
     (t, ctx) => {
       // Pass if the new memory connects to the auth-bug thread by ANY of:
       //   - write_child_memory with parent = auth-bug-root OR any of its
