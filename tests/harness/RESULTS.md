@@ -103,3 +103,15 @@ Phase A targets in priority order:
 
 Phase A success target: ≥80% hard pass + ≥9.0 rubric across the same 5 scenarios.
 
+## 2026-04-23T20:41:03.376Z · sha 698e0a6 · reps 3 · judge
+
+Overall hard-pass: **60.0%** · rubric: **7.79/10**
+
+| scenario | hard% | rubric/10 | tools | steps | ms |
+|---|---|---|---|---|---|
+| `reply-to-existing-thread` | 100% | 9.1 | 1.0 | 6.0 | 9836 |
+| `create-new-top-level` | 100% | 9.3 | 1.0 | 6.0 | 8458 |
+| `cluster-recall` | 100% | 8.3 | 6.0 | 21.0 | 24069 |
+| `multi-author-thread` | 0% | 8.7 | 3.3 | 13.0 | 15735 |
+| `tag-convention-compliance` | 0% | 3.5 | 1.0 | 6.0 | 10939 |
+
