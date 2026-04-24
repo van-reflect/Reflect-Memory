@@ -34,6 +34,8 @@
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "fastify": "^5",
+    "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
     "jose": "^6.1.3",
     "js-yaml": "^4.1.1",
     "stripe": "^20.4.0",
@@ -41,6 +43,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
     "@types/better-sqlite3": "^7",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22",

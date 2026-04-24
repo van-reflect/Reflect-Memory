@@ -84,6 +84,9 @@ import {
   ThreadingError,
 } from "./memory-service.js";
 import { buildMemoryBriefing, formatBriefingAsMarkdown } from "./memory-briefing.js";
+import { getTagCooccurrence } from "./memory-graph.js";
+import { clusterTags } from "./tag-clustering.js";
+import { nameClusters } from "./cluster-naming.js";
 import { buildPrompt, type PromptResult } from "./context-builder.js";
 import {
   callModel,
@@ -1310,6 +1313,242 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return formatBriefingAsMarkdown(briefing);
       }
       return briefing;
+    },
+  );
+
+  // ===========================================================================
+  // GET /graph -- Memory graph projection for the dashboard visualiser
+  // ===========================================================================
+  // Returns nodes + edges + named clusters for a user's memory landscape.
+  // Designed to feed react-force-graph-2d in the dashboard but also useful
+  // as a programmatic graph API.
+  //
+  // Query params:
+  //   scope=personal|team|both (default both)
+  //   days=N                  filter to memories created in the last N days
+  //                           (default 0 = no filter)
+  //   max_nodes=N             cap (default 500) — graph layouts get unread-
+  //                           able past this; protects the browser
+  //   include_similarity=1|0  include shared-tag edges (default 1)
+  //   sim_min_shared=2        min shared tags for a similarity edge
+  //
+  // Auth: user key or dashboard session, NOT agent keys (graph view is
+  // human-facing only).
+  // ===========================================================================
+
+  server.get(
+    "/graph",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (request.role === "agent") {
+        reply.code(403);
+        return { error: "Graph view is human-facing; agents have get_graph_around" };
+      }
+
+      const qs = request.query as Record<string, string | undefined>;
+      const scope = (qs.scope as "personal" | "team" | "both" | undefined) ?? "both";
+      const days = qs.days ? Math.max(0, parseInt(qs.days, 10)) : 0;
+      // Cap at 2000 to protect the browser; floor at 1 so tiny graphs +
+      // tests can request small sizes. Default 500 is the practical
+      // sweet-spot for force-directed readability.
+      const maxNodes = Math.min(2000, Math.max(1, parseInt(qs.max_nodes ?? "500", 10)));
+      const includeSimilarity = (qs.include_similarity ?? "1") !== "0";
+      const simMinShared = Math.max(2, parseInt(qs.sim_min_shared ?? "2", 10));
+
+      const user = getUserById(db, request.userId);
+      const teamId = user?.team_id ?? null;
+      const sinceClause =
+        days > 0
+          ? `AND m.created_at >= '${new Date(Date.now() - days * 86400_000).toISOString()}'`
+          : "";
+
+      // Visibility scope: personal = own only; team = team-shared only;
+      // both = own + team-shared. Use COALESCE so a no-team caller's
+      // team clause never matches.
+      let scopeWhere: string;
+      const scopeArgs: unknown[] = [];
+      if (scope === "personal") {
+        scopeWhere = `m.user_id = ?`;
+        scopeArgs.push(request.userId);
+      } else if (scope === "team") {
+        if (!teamId) {
+          return { nodes: [], edges: [], clusters: [], scope, days, max_nodes: maxNodes, truncated: false };
+        }
+        scopeWhere = `m.shared_with_team_id = ?`;
+        scopeArgs.push(teamId);
+      } else {
+        scopeWhere = `(m.user_id = ? OR m.shared_with_team_id = COALESCE(?, ''))`;
+        scopeArgs.push(request.userId, teamId ?? "");
+      }
+
+      // Pull memories. Newest first so when we hit max_nodes we keep the
+      // most relevant. Includes thread root + reply count for sizing.
+      const memoryRows = db
+        .prepare(
+          `SELECT m.id, m.title, m.tags, m.user_id, m.shared_with_team_id,
+                  m.parent_memory_id, m.created_at,
+                  (SELECT COUNT(*) FROM memories c
+                   WHERE c.parent_memory_id = m.id AND c.deleted_at IS NULL) AS reply_count
+           FROM memories m
+           WHERE m.deleted_at IS NULL
+             AND ${scopeWhere}
+             ${sinceClause}
+           ORDER BY m.created_at DESC
+           LIMIT ?`,
+        )
+        .all(...scopeArgs, maxNodes + 1) as Array<{
+          id: string;
+          title: string;
+          tags: string;
+          user_id: string;
+          shared_with_team_id: string | null;
+          parent_memory_id: string | null;
+          created_at: string;
+          reply_count: number;
+        }>;
+
+      const truncated = memoryRows.length > maxNodes;
+      const visible = memoryRows.slice(0, maxNodes);
+      const visibleIds = new Set(visible.map((m) => m.id));
+
+      // Topic clusters (combined personal + team for "both" scope; just
+      // the requested scope otherwise). Drives node colors.
+      const personalCluster =
+        scope !== "team"
+          ? clusterTags(
+              ...((): [Array<{ tag_a: string; tag_b: string; count: number }>, Map<string, number>] => {
+                const c = getTagCooccurrence(db, { scope: "personal", userId: request.userId });
+                return [c.pairs, c.tagFrequencies];
+              })(),
+            )
+          : [];
+      const teamCluster =
+        scope !== "personal" && teamId
+          ? clusterTags(
+              ...((): [Array<{ tag_a: string; tag_b: string; count: number }>, Map<string, number>] => {
+                const c = getTagCooccurrence(db, { scope: "team", userId: request.userId, teamId });
+                return [c.pairs, c.tagFrequencies];
+              })(),
+            )
+          : [];
+      const [namedPersonal, namedTeam] = await Promise.all([
+        nameClusters(db, request.userId, "personal", null, personalCluster, {}),
+        nameClusters(db, request.userId, "team", teamId, teamCluster, {}),
+      ]);
+      const allNamed = [...namedPersonal, ...namedTeam];
+
+      // Build a tag → cluster index. A tag may appear in both personal and
+      // team clusters; we prefer team scope (more authoritative for shared
+      // memories) but fall back to personal.
+      const tagToCluster = new Map<string, string>();
+      for (const c of namedPersonal) for (const t of c.tags) tagToCluster.set(t, c.cluster_hash);
+      for (const c of namedTeam) for (const t of c.tags) tagToCluster.set(t, c.cluster_hash);
+
+      // Stable color palette (categorical). Cycle through if more clusters
+      // than colors. Picked to be distinguishable in both light + dark
+      // themes (rendered by the dashboard, not embedded here).
+      const PALETTE = [
+        "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6",
+        "#06b6d4", "#ec4899", "#84cc16", "#f97316", "#14b8a6",
+        "#a855f7", "#22c55e",
+      ];
+      const clustersOut = allNamed
+        .sort((a, b) => b.size + b.internal_weight - (a.size + a.internal_weight))
+        .map((c, i) => ({
+          id: c.cluster_hash,
+          name: c.name,
+          description: c.description,
+          tags: c.tags,
+          member_count: c.size,
+          color: PALETTE[i % PALETTE.length],
+        }));
+      const clusterIdToColor = new Map(clustersOut.map((c) => [c.id, c.color]));
+
+      // Assign each memory a cluster_id from its first tag-cluster hit.
+      // If no cluster matches, mark as "unclustered" (no color).
+      function pickClusterForTags(tags: string[]): string | null {
+        for (const t of tags) {
+          const cid = tagToCluster.get(t);
+          if (cid) return cid;
+        }
+        return null;
+      }
+
+      const nodes = visible.map((m) => {
+        let tags: string[] = [];
+        try {
+          tags = JSON.parse(m.tags) as string[];
+        } catch {
+          tags = [];
+        }
+        const clusterId = pickClusterForTags(tags);
+        return {
+          id: m.id,
+          title: m.title,
+          tags,
+          author_id: m.user_id,
+          shared: m.shared_with_team_id !== null,
+          is_thread_root: m.parent_memory_id === null && m.reply_count > 0,
+          is_thread_child: m.parent_memory_id !== null,
+          reply_count: m.reply_count,
+          created_at: m.created_at,
+          cluster_id: clusterId,
+          color: clusterId ? clusterIdToColor.get(clusterId) ?? "#94a3b8" : "#94a3b8",
+        };
+      });
+
+      // Edges:
+      //   parent_of  — strong, threading
+      //   shared_tag — weak (filtered by sim_min_shared), only when both
+      //                endpoints are visible in this graph snapshot
+      const edges: Array<{
+        source: string;
+        target: string;
+        type: "parent_of" | "shared_tag";
+        weight: number;
+      }> = [];
+      for (const m of visible) {
+        if (m.parent_memory_id && visibleIds.has(m.parent_memory_id)) {
+          edges.push({
+            source: m.parent_memory_id,
+            target: m.id,
+            type: "parent_of",
+            weight: 3,
+          });
+        }
+      }
+      if (includeSimilarity && nodes.length > 1) {
+        // Compute pairwise tag overlap among visible nodes. O(n²) where
+        // n = visible count; capped by maxNodes so worst case 500² = 250k
+        // pair comparisons, each O(t) where t is tag count. Ms-fast at
+        // our scale.
+        const tagSets = nodes.map((n) => new Set(n.tags));
+        for (let i = 0; i < nodes.length; i++) {
+          for (let j = i + 1; j < nodes.length; j++) {
+            let shared = 0;
+            for (const t of tagSets[i]) if (tagSets[j].has(t)) shared++;
+            if (shared >= simMinShared) {
+              edges.push({
+                source: nodes[i].id,
+                target: nodes[j].id,
+                type: "shared_tag",
+                weight: shared,
+              });
+            }
+          }
+        }
+      }
+
+      request.dataAccessed = true;
+      return {
+        nodes,
+        edges,
+        clusters: clustersOut,
+        scope,
+        days,
+        max_nodes: maxNodes,
+        truncated,
+      };
     },
   );
 

@@ -220,6 +220,29 @@ CREATE INDEX idx_early_access_email ON early_access_requests(email);
 CREATE INDEX idx_early_access_status ON early_access_requests(status);
 
 -- =============================================================================
+-- TAG_CLUSTER_CACHE
+-- =============================================================================
+-- Caches LLM-generated names for the Louvain clusters of tag co-occurrence.
+-- Keyed on (user_id, scope, cluster_hash). cluster_hash is a stable digest
+-- of the sorted member-tag list so small drift in the corpus doesn't bust
+-- the cache. Stale rows are recomputed after 24h or after N writes.
+-- =============================================================================
+
+CREATE TABLE tag_cluster_cache (
+    user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    scope          TEXT NOT NULL,
+    cluster_hash   TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    description    TEXT NOT NULL,
+    tags           TEXT NOT NULL CHECK(json_type(tags) = 'array'),
+    member_count   INTEGER NOT NULL,
+    computed_at    TEXT NOT NULL,
+    PRIMARY KEY (user_id, scope, cluster_hash)
+) STRICT;
+
+CREATE INDEX idx_tag_cluster_cache_user_scope ON tag_cluster_cache(user_id, scope);
+
+-- =============================================================================
 -- RESERVED: Phase 3 -- Identity & Governance Primitives
 -- =============================================================================
 -- These columns/tables will be added when multi-user and enterprise features
