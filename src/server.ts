@@ -27,6 +27,7 @@ import type { DeploymentConfig } from "./deployment-config.js";
 import type { EventBroker, EventClient, MemoryEvent, MemoryEventType } from "./event-broker.js";
 import { createSsoVerifier, validateSsoConfig } from "./sso-auth.js";
 import { recordAuditEvent, queryAuditEvents, countAuditEvents, exportAuditEvents } from "./audit-service.js";
+import { buildLogExport, logExportFilename } from "./log-export-service.js";
 import {
   generateApiKey,
   listApiKeys,
@@ -1263,9 +1264,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // ===========================================================================
 
   server.get("/whoami", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (request) => {
+    // Surface deployment context + the log-sharing toggle so the dashboard
+    // can show/hide the "Share logs" entry without an extra round-trip.
+    // log_sharing_enabled is opt-in via env (RM_LOG_SHARING_ENABLED=true);
+    // private-deploy admins flip it on to expose the export UI.
+    const logSharingEnabled =
+      (process.env.RM_LOG_SHARING_ENABLED ?? "").toLowerCase() === "true";
     return {
       role: request.role,
       vendor: request.vendor,
+      deployment_mode: deployment.mode,
+      log_sharing_enabled: logSharingEnabled,
     };
   });
 
@@ -1940,6 +1949,57 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     reply.header("content-disposition", `attachment; filename="audit-${q.since}-${q.until}.json"`);
     return { events, count: events.length, exported_at: new Date().toISOString() };
   });
+
+  // ===========================================================================
+  // GET /admin/log-export -- Self-host log bundle for sharing with vendor
+  // ===========================================================================
+  // Admin-only. Gated on RM_LOG_SHARING_ENABLED — opt-in for private deploys
+  // who want to share usage + audit data with us for support / debugging.
+  // Returns a JSON file the customer reviews before sending.
+  //
+  // Excludes user content (memories) and credentials by design — see
+  // log-export-service.ts for the full exclusion list and rationale.
+  //
+  // Query params:
+  //   from, to (ISO 8601, required)
+  // ===========================================================================
+
+  server.get(
+    "/admin/log-export",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (!ownerUserIds.has(request.userId)) {
+        reply.code(403);
+        return { error: "Admin access required" };
+      }
+      const enabled =
+        (process.env.RM_LOG_SHARING_ENABLED ?? "").toLowerCase() === "true";
+      if (!enabled) {
+        reply.code(404);
+        return {
+          error:
+            "Log sharing is disabled on this instance. Set RM_LOG_SHARING_ENABLED=true to enable.",
+        };
+      }
+      const q = request.query as Record<string, string | undefined>;
+      if (!q.from || !q.to) {
+        reply.code(400);
+        return { error: "from and to query parameters are required (ISO 8601)" };
+      }
+      const tenantId = process.env.RM_TENANT_ID ?? null;
+      const bundle = buildLogExport(db, {
+        from: q.from,
+        to: q.to,
+        deploymentMode: deployment.mode,
+        tenantId,
+      });
+      reply.header(
+        "content-disposition",
+        `attachment; filename="${logExportFilename(tenantId, q.from, q.to)}"`,
+      );
+      return bundle;
+    },
+  );
 
   // ===========================================================================
   // POST /memories -- Create a memory (user path)
