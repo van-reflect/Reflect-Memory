@@ -1264,10 +1264,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // ===========================================================================
 
   server.get("/whoami", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (request) => {
-    // Surface deployment context + the log-sharing toggle so the dashboard
-    // can show/hide the "Share logs" entry without an extra round-trip.
-    // log_sharing_enabled is opt-in via env (RM_LOG_SHARING_ENABLED=true);
-    // private-deploy admins flip it on to expose the export UI.
+    // Surface deployment context + log-sharing toggle so the dashboard
+    // can render admin-gated UI without separate round-trips.
+    //
+    // is_admin reflects backend admin status (RM_OWNER_EMAIL[S]), which
+    // is the actual gate on /admin/* endpoints. The dashboard's role
+    // system (REFLECT_MEMORY_OWNER_EMAIL + ENTERPRISE_CLIENT_EMAILS) is
+    // separate — see /lib/access.ts. Surfacing both lets dashboard UI
+    // gate on whichever check applies to the destination route.
     const logSharingEnabled =
       (process.env.RM_LOG_SHARING_ENABLED ?? "").toLowerCase() === "true";
     return {
@@ -1275,6 +1279,11 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       vendor: request.vendor,
       deployment_mode: deployment.mode,
       log_sharing_enabled: logSharingEnabled,
+      // is_admin gates dashboard UI for human admins. Agent keys
+      // (RM_AGENT_KEY_*) resolve to the owner user too, so we require
+      // role !== "agent" to keep agent contexts from being treated as
+      // admin from the dashboard's perspective.
+      is_admin: ownerUserIds.has(request.userId) && request.role !== "agent",
     };
   });
 
