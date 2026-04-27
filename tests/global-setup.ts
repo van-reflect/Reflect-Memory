@@ -70,6 +70,9 @@ export async function setup(): Promise<void> {
     RM_DASHBOARD_SERVICE_KEY: dashboardServiceKey,
     RM_DASHBOARD_JWT_SECRET: dashboardJwtSecret,
     RM_PUBLIC_URL: `http://127.0.0.1:${port}`,
+    // Always-on in tests so log-export integration tests work; the
+    // "disabled returns 404" path is covered by unit/source assertions.
+    RM_LOG_SHARING_ENABLED: "true",
     RM_DASHBOARD_URL: `http://127.0.0.1:${port + 1}`,
     STRIPE_SECRET_KEY: "sk_test_fake",
     STRIPE_WEBHOOK_SECRET: "whsec_test_fake",
