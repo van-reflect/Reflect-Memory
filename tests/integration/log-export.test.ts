@@ -15,6 +15,7 @@ interface WhoamiResponse {
   vendor: string | null;
   deployment_mode: string;
   log_sharing_enabled: boolean;
+  is_admin: boolean;
 }
 
 interface LogExportBundle {
@@ -39,13 +40,25 @@ interface LogExportBundle {
 // integration tests below run against the enabled state. The disabled
 // path is covered by a source-level assertion (last test in this file).
 
-describe("/whoami exposes deployment + log-sharing flag", () => {
-  it("includes deployment_mode and log_sharing_enabled fields", async () => {
+describe("/whoami exposes deployment + log-sharing flag + admin status", () => {
+  it("includes deployment_mode, log_sharing_enabled, and is_admin fields", async () => {
     const r = await api<WhoamiResponse>("GET", "/whoami");
     expect(r.status).toBe(200);
     expect(typeof r.json.deployment_mode).toBe("string");
     expect(typeof r.json.log_sharing_enabled).toBe("boolean");
     expect(r.json.log_sharing_enabled).toBe(true); // global-setup pinned
+    expect(typeof r.json.is_admin).toBe("boolean");
+    // The default test API key is the owner key — should report is_admin true.
+    expect(r.json.is_admin).toBe(true);
+  });
+
+  it("non-admin keys (agent keys) report is_admin: false", async () => {
+    const { agentKeys } = getTestServer();
+    const r = await api<WhoamiResponse>("GET", "/whoami", {
+      token: agentKeys.cursor,
+    });
+    expect(r.status).toBe(200);
+    expect(r.json.is_admin).toBe(false);
   });
 });
 
