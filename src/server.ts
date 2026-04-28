@@ -39,6 +39,22 @@ import {
 } from "./llm-key-service.js";
 import { tryValidateMasterKey } from "./llm-key-crypto.js";
 import {
+  buildInstallUrl,
+  exchangeOauthCode,
+  getActiveSlackConfig,
+  revokeSlackToken,
+  signOauthState,
+  verifyOauthState,
+} from "./slack-oauth.js";
+import {
+  getActiveWorkspaceForTeam,
+  getActiveWorkspaceForUser,
+  getWorkspaceWithToken,
+  softDeleteWorkspace,
+  upsertSlackWorkspace,
+  type SlackWorkspace,
+} from "./slack-workspace-service.js";
+import {
   generateApiKey,
   listApiKeys,
   revokeApiKey,
@@ -885,6 +901,11 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     }
     // ChatGPT OAuth endpoints are handled by their own routes (no bearer auth)
     if (path === "/chatgpt/authorize" || path === "/chatgpt/token") return;
+
+    // Slack OAuth callback is hit by slack.com via the user's browser; the
+    // signed `state` parameter does the auth (HMAC-derived from the master
+    // key, carries the originating Reflect user_id).
+    if (request.method === "GET" && path === "/slack/oauth/callback") return;
 
     const header = request.headers.authorization;
 
@@ -2149,6 +2170,201 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         requestId: request.id,
       });
       return { deleted: true, provider, last4: summary.last4 };
+    },
+  );
+
+  // ===========================================================================
+  // /slack/* -- Slack OAuth install / callback / status / uninstall
+  // ===========================================================================
+  // Phase 2 of the Slack app (see docs/eng-plan-slack-app-v1.md).
+  //
+  // Install flow (browser):
+  //   dashboard "Connect" button -> dashboard /api/slack/install (Clerk auth)
+  //     -> backend POST /slack/install-url (admin) -> { url, state }
+  //     -> dashboard 302 to slack.com/oauth/v2/authorize?...&state=<state>
+  //     -> user authorises in Slack
+  //     -> Slack redirects browser to /slack/oauth/callback?code=&state=
+  //     -> backend verifies state, exchanges code, persists workspace
+  //     -> backend 302 to dashboard's connections page
+  //
+  // /slack/events does not exist yet; lands in Phase 3.
+  // ===========================================================================
+
+  function workspaceToPublic(ws: SlackWorkspace): Record<string, unknown> {
+    return {
+      id: ws.id,
+      slack_team_id: ws.slackTeamId,
+      slack_team_name: ws.slackTeamName,
+      bot_user_id: ws.botUserId,
+      reflect_team_id: ws.reflectTeamId,
+      reflect_user_id: ws.reflectUserId,
+      installed_by_user_id: ws.installedByUserId,
+      installed_at: ws.installedAt,
+      uninstalled_at: ws.uninstalledAt,
+      created_at: ws.createdAt,
+      updated_at: ws.updatedAt,
+    };
+  }
+
+  function getWorkspaceForCallerScope(uid: string): SlackWorkspace | null {
+    const teamId = getUserTeamId(uid);
+    if (teamId) return getActiveWorkspaceForTeam(db, teamId);
+    return getActiveWorkspaceForUser(db, uid);
+  }
+
+  // POST /slack/install-url
+  // Admin-only. Returns the slack.com authorize URL the dashboard should
+  // redirect the browser to. State is signed and carries the requesting
+  // user's id, so the callback can resolve identity without a session.
+  server.post(
+    "/slack/install-url",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (!ownerUserIds.has(request.userId)) {
+        reply.code(403);
+        return { error: "Admin access required" };
+      }
+      if (!tryValidateMasterKey()) {
+        reply.code(503);
+        return {
+          error:
+            "Encryption not configured (RM_LLM_KEY_ENCRYPTION_KEY). Set it before installing Slack.",
+        };
+      }
+      const cfg = getActiveSlackConfig();
+      if (!cfg) {
+        reply.code(503);
+        return {
+          error:
+            "Slack OAuth is not configured on this instance. Set REFLECT_DEV_SLACK_* (or REFLECT_PROD_SLACK_*) env vars.",
+        };
+      }
+      const state = signOauthState(request.userId);
+      const url = buildInstallUrl(cfg, state);
+      return { url, state, redirect_uri: cfg.redirectUri };
+    },
+  );
+
+  // GET /slack/oauth/callback
+  // No auth header; state HMAC-verifies the originating Reflect user.
+  // Slack's redirect lands here; on success we 302 the browser back to the
+  // dashboard's Slack settings page with installed=1.
+  server.get(
+    "/slack/oauth/callback",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const q = request.query as Record<string, string | undefined>;
+
+      // Where to send the browser at the end of the flow. Configurable so
+      // dev and prod redirect to their own dashboards.
+      const dashboardBase =
+        process.env.RM_DASHBOARD_PUBLIC_URL ??
+        process.env.RM_DASHBOARD_URL ??
+        "https://reflectmemory.com";
+      const successUrl = `${dashboardBase}/dashboard/connections/slack?installed=1`;
+      const errorUrl = (msg: string): string =>
+        `${dashboardBase}/dashboard/connections/slack?error=${encodeURIComponent(msg)}`;
+
+      if (q.error) {
+        request.log.info({ slackError: q.error }, "Slack returned an error to OAuth callback");
+        return reply.redirect(errorUrl(`Slack returned: ${q.error}`));
+      }
+      if (!q.code || !q.state) {
+        return reply.redirect(errorUrl("Missing code or state parameter"));
+      }
+
+      const verified = verifyOauthState(q.state);
+      if (!verified) {
+        return reply.redirect(errorUrl("Invalid or expired install link. Please try again."));
+      }
+
+      const cfg = getActiveSlackConfig();
+      if (!cfg) {
+        return reply.redirect(errorUrl("Slack OAuth is not configured on this instance"));
+      }
+
+      const exchange = await exchangeOauthCode(cfg, q.code);
+      if (!exchange.ok) {
+        request.log.warn({ err: exchange.error }, "Slack OAuth code exchange failed");
+        return reply.redirect(errorUrl(`OAuth exchange failed: ${exchange.error}`));
+      }
+
+      // Bind the workspace to the installer's team if they have one, else solo.
+      const installerTeamId = getUserTeamId(verified.reflectUserId);
+      try {
+        upsertSlackWorkspace(db, {
+          slackTeamId: exchange.slackTeamId,
+          slackTeamName: exchange.slackTeamName,
+          reflectTeamId: installerTeamId,
+          reflectUserId: installerTeamId ? null : verified.reflectUserId,
+          botUserId: exchange.botUserId,
+          botToken: exchange.botToken,
+          installedByUserId: verified.reflectUserId,
+          requestId: request.id,
+        });
+      } catch (err) {
+        request.log.error({ err }, "Failed to persist Slack workspace");
+        return reply.redirect(
+          errorUrl("Could not save the Slack install. The error has been logged."),
+        );
+      }
+
+      return reply.redirect(successUrl);
+    },
+  );
+
+  // GET /slack/status
+  // Admin-only. Returns the active workspace for the caller's scope, or null.
+  // Never returns the bot token.
+  server.get(
+    "/slack/status",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (!ownerUserIds.has(request.userId)) {
+        reply.code(403);
+        return { error: "Admin access required" };
+      }
+      const cfg = getActiveSlackConfig();
+      const workspace = getWorkspaceForCallerScope(request.userId);
+      return {
+        configured: cfg !== null,
+        workspace: workspace ? workspaceToPublic(workspace) : null,
+      };
+    },
+  );
+
+  // DELETE /slack/uninstall
+  // Admin-only. Soft-deletes the workspace bound to the caller's scope and
+  // best-effort revokes the bot token via Slack's auth.revoke endpoint.
+  server.delete(
+    "/slack/uninstall",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (!ownerUserIds.has(request.userId)) {
+        reply.code(403);
+        return { error: "Admin access required" };
+      }
+      const workspace = getWorkspaceForCallerScope(request.userId);
+      if (!workspace) {
+        reply.code(404);
+        return { error: "No active Slack workspace for your account" };
+      }
+
+      // Best-effort token revoke before we soft-delete (need the plaintext
+      // token, which softDelete drops by virtue of clearing nothing — but
+      // we mark the row uninstalled so future getActiveWorkspace... won't
+      // surface it).
+      const withToken = getWorkspaceWithToken(db, workspace.slackTeamId);
+      if (withToken) {
+        await revokeSlackToken(withToken.botToken);
+      }
+
+      softDeleteWorkspace(db, {
+        slackTeamId: workspace.slackTeamId,
+        actorUserId: request.userId,
+        requestId: request.id,
+      });
+      return { uninstalled: true, slack_team_id: workspace.slackTeamId };
     },
   );
 
