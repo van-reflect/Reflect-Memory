@@ -243,6 +243,86 @@ CREATE TABLE tag_cluster_cache (
 CREATE INDEX idx_tag_cluster_cache_user_scope ON tag_cluster_cache(user_id, scope);
 
 -- =============================================================================
+-- LLM PROVIDER KEYS (migration 023)
+-- =============================================================================
+-- One row per (team_id|user_id, provider). Keys encrypted at rest with
+-- AES-256-GCM. Master key from RM_LLM_KEY_ENCRYPTION_KEY env, per-tenant
+-- sub-key derived via HKDF-SHA256 with the team/user ID as salt. last4 stored
+-- cleartext for UI display. See src/llm-key-crypto.ts.
+
+CREATE TABLE llm_keys (
+    id                  TEXT PRIMARY KEY,
+    team_id             TEXT REFERENCES teams(id) ON DELETE CASCADE,
+    user_id             TEXT REFERENCES users(id) ON DELETE CASCADE,
+    provider            TEXT NOT NULL,
+    key_encrypted       BLOB NOT NULL,
+    key_nonce           BLOB NOT NULL,
+    key_last4           TEXT NOT NULL,
+    created_by_user_id  TEXT REFERENCES users(id),
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    CHECK (
+        (team_id IS NOT NULL AND user_id IS NULL) OR
+        (team_id IS NULL AND user_id IS NOT NULL)
+    )
+);
+
+CREATE UNIQUE INDEX idx_llm_keys_team_provider
+    ON llm_keys(team_id, provider) WHERE team_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_llm_keys_user_provider
+    ON llm_keys(user_id, provider) WHERE user_id IS NOT NULL;
+
+-- =============================================================================
+-- SLACK WORKSPACES (migration 024)
+-- =============================================================================
+-- One row per Slack workspace install, mapped 1-to-1 to a Reflect team (or
+-- a solo Reflect user). Bot token encrypted at rest using the same scheme as
+-- llm_keys. Soft-deleted via uninstalled_at; the row is kept for audit
+-- history. See docs/eng-plan-slack-app-v1.md.
+
+CREATE TABLE slack_workspaces (
+    id                    TEXT PRIMARY KEY,
+    slack_team_id         TEXT NOT NULL UNIQUE,
+    slack_team_name       TEXT NOT NULL,
+    reflect_team_id       TEXT REFERENCES teams(id),
+    reflect_user_id       TEXT REFERENCES users(id),
+    bot_user_id           TEXT NOT NULL,
+    bot_token_encrypted   BLOB NOT NULL,
+    bot_token_nonce       BLOB NOT NULL,
+    installed_by_user_id  TEXT REFERENCES users(id),
+    installed_at          TEXT NOT NULL,
+    uninstalled_at        TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    CHECK (
+        (reflect_team_id IS NOT NULL AND reflect_user_id IS NULL) OR
+        (reflect_team_id IS NULL AND reflect_user_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX idx_slack_workspaces_team ON slack_workspaces(reflect_team_id);
+CREATE INDEX idx_slack_workspaces_user ON slack_workspaces(reflect_user_id);
+
+-- =============================================================================
+-- SLACK CONVERSATION STATE (migration 025)
+-- =============================================================================
+-- Per-Slack-thread short-term context so the agent sees the last few turns of
+-- a conversation in a thread without re-fetching from Slack. TTL'd to 24h.
+
+CREATE TABLE slack_conversation_state (
+    id                  TEXT PRIMARY KEY,
+    slack_workspace_id  TEXT NOT NULL REFERENCES slack_workspaces(id) ON DELETE CASCADE,
+    channel_id          TEXT NOT NULL,
+    thread_ts           TEXT NOT NULL,
+    messages_json       TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    UNIQUE(slack_workspace_id, channel_id, thread_ts)
+);
+
+CREATE INDEX idx_slack_convo_expires ON slack_conversation_state(expires_at);
+
+-- =============================================================================
 -- RESERVED: Phase 3 -- Identity & Governance Primitives
 -- =============================================================================
 -- These columns/tables will be added when multi-user and enterprise features
