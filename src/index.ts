@@ -743,6 +743,99 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(tagClusterCacheM
   );
 }
 
+// 023 — LLM provider keys. One row per (team_id|user_id, provider). Encrypted
+// at rest with AES-256-GCM, master key from RM_LLM_KEY_ENCRYPTION_KEY env,
+// per-tenant sub-key derived via HKDF-SHA256 with the team/user ID as salt.
+// last4 stored cleartext for UI display. See src/llm-key-crypto.ts.
+const llmKeysMigration = "023_llm_keys";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(llmKeysMigration)) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS llm_keys (
+      id                  TEXT PRIMARY KEY,
+      team_id             TEXT REFERENCES teams(id) ON DELETE CASCADE,
+      user_id             TEXT REFERENCES users(id) ON DELETE CASCADE,
+      provider            TEXT NOT NULL,
+      key_encrypted       BLOB NOT NULL,
+      key_nonce           BLOB NOT NULL,
+      key_last4           TEXT NOT NULL,
+      created_by_user_id  TEXT REFERENCES users(id),
+      created_at          TEXT NOT NULL,
+      updated_at          TEXT NOT NULL,
+      CHECK (
+        (team_id IS NOT NULL AND user_id IS NULL) OR
+        (team_id IS NULL AND user_id IS NOT NULL)
+      )
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_keys_team_provider
+      ON llm_keys(team_id, provider) WHERE team_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_keys_user_provider
+      ON llm_keys(user_id, provider) WHERE user_id IS NOT NULL;
+  `);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    llmKeysMigration,
+    new Date().toISOString(),
+  );
+}
+
+// 024 — Slack workspace installs. One row per workspace, mapped to exactly
+// one Reflect team (or one solo user). Bot token encrypted at rest using the
+// same scheme as llm_keys. Soft-delete via uninstalled_at; the row is kept
+// for audit history. See docs/eng-plan-slack-app-v1.md.
+const slackWorkspacesMigration = "024_slack_workspaces";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(slackWorkspacesMigration)) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS slack_workspaces (
+      id                    TEXT PRIMARY KEY,
+      slack_team_id         TEXT NOT NULL UNIQUE,
+      slack_team_name       TEXT NOT NULL,
+      reflect_team_id       TEXT REFERENCES teams(id),
+      reflect_user_id       TEXT REFERENCES users(id),
+      bot_user_id           TEXT NOT NULL,
+      bot_token_encrypted   BLOB NOT NULL,
+      bot_token_nonce       BLOB NOT NULL,
+      installed_by_user_id  TEXT REFERENCES users(id),
+      installed_at          TEXT NOT NULL,
+      uninstalled_at        TEXT,
+      created_at            TEXT NOT NULL,
+      updated_at            TEXT NOT NULL,
+      CHECK (
+        (reflect_team_id IS NOT NULL AND reflect_user_id IS NULL) OR
+        (reflect_team_id IS NULL AND reflect_user_id IS NOT NULL)
+      )
+    );
+    CREATE INDEX IF NOT EXISTS idx_slack_workspaces_team ON slack_workspaces(reflect_team_id);
+    CREATE INDEX IF NOT EXISTS idx_slack_workspaces_user ON slack_workspaces(reflect_user_id);
+  `);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    slackWorkspacesMigration,
+    new Date().toISOString(),
+  );
+}
+
+// 025 — Per-Slack-thread short-term context. Lets the agent see the last few
+// turns of a conversation in a thread without re-fetching from Slack. TTL'd
+// to 24h so the table stays small; deeper history comes from memories.
+const slackConvoStateMigration = "025_slack_conversation_state";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(slackConvoStateMigration)) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS slack_conversation_state (
+      id                  TEXT PRIMARY KEY,
+      slack_workspace_id  TEXT NOT NULL REFERENCES slack_workspaces(id) ON DELETE CASCADE,
+      channel_id          TEXT NOT NULL,
+      thread_ts           TEXT NOT NULL,
+      messages_json       TEXT NOT NULL,
+      updated_at          TEXT NOT NULL,
+      expires_at          TEXT NOT NULL,
+      UNIQUE(slack_workspace_id, channel_id, thread_ts)
+    );
+    CREATE INDEX IF NOT EXISTS idx_slack_convo_expires ON slack_conversation_state(expires_at);
+  `);
+  db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+    slackConvoStateMigration,
+    new Date().toISOString(),
+  );
+}
+
 // Primary owner (RM_OWNER_EMAIL) anchors orphan consolidation and the legacy
 // single-tenant userId semantics. Additional admins come from RM_OWNER_EMAILS
 // (comma-separated). Both envs coexist: the singular is always included in the

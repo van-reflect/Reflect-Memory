@@ -29,6 +29,16 @@ import { createSsoVerifier, validateSsoConfig } from "./sso-auth.js";
 import { recordAuditEvent, queryAuditEvents, countAuditEvents, exportAuditEvents } from "./audit-service.js";
 import { buildLogExport, logExportFilename } from "./log-export-service.js";
 import {
+  deleteLlmKey,
+  getLlmKeySummary,
+  isSupportedProvider,
+  listLlmKeys,
+  setLlmKey,
+  SUPPORTED_PROVIDERS,
+  type LlmProvider,
+} from "./llm-key-service.js";
+import { tryValidateMasterKey } from "./llm-key-crypto.js";
+import {
   generateApiKey,
   listApiKeys,
   revokeApiKey,
@@ -2007,6 +2017,138 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         `attachment; filename="${logExportFilename(tenantId, q.from, q.to)}"`,
       );
       return bundle;
+    },
+  );
+
+  // ===========================================================================
+  // /admin/llm-keys -- Customer-supplied LLM provider keys (Anthropic, etc.)
+  // ===========================================================================
+  // Admin-only. Stored encrypted at rest with AES-256-GCM and an HKDF-derived
+  // per-tenant sub-key. Master key in env (RM_LLM_KEY_ENCRYPTION_KEY).
+  // Used by features that need to call an LLM on the customer's behalf, such
+  // as the Slack agent (see docs/eng-plan-slack-app-v1.md).
+  //
+  // Scope is auto-resolved from the calling admin's user record:
+  //   - If the admin belongs to a team -> the team's key.
+  //   - Else (solo) -> the admin's user-level key.
+  //
+  // The plaintext key is never returned by these endpoints; only `last4`.
+  //
+  // GET    /admin/llm-keys              -> list summaries for the resolved scope
+  // PUT    /admin/llm-keys              -> set/rotate; body { provider, key }
+  // DELETE /admin/llm-keys/:provider    -> remove
+  // ===========================================================================
+
+  function resolveLlmKeyScope(uid: string): { teamId: string | null; userId: string | null } {
+    const teamId = getUserTeamId(uid);
+    return teamId
+      ? { teamId, userId: null }
+      : { teamId: null, userId: uid };
+  }
+
+  server.get(
+    "/admin/llm-keys",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (!ownerUserIds.has(request.userId)) {
+        reply.code(403);
+        return { error: "Admin access required" };
+      }
+      const scope = resolveLlmKeyScope(request.userId);
+      const keys = listLlmKeys(db, scope);
+      return {
+        scope: { team_id: scope.teamId, user_id: scope.userId },
+        supported_providers: SUPPORTED_PROVIDERS,
+        keys: keys.map((k) => ({
+          provider: k.provider,
+          last4: k.last4,
+          created_at: k.createdAt,
+          updated_at: k.updatedAt,
+          created_by_user_id: k.createdByUserId,
+        })),
+      };
+    },
+  );
+
+  server.put(
+    "/admin/llm-keys",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (!ownerUserIds.has(request.userId)) {
+        reply.code(403);
+        return { error: "Admin access required" };
+      }
+      const body = request.body as { provider?: unknown; key?: unknown };
+      const providerRaw = typeof body?.provider === "string" ? body.provider.trim() : "";
+      const keyRaw = typeof body?.key === "string" ? body.key.trim() : "";
+      if (!providerRaw || !keyRaw) {
+        reply.code(400);
+        return { error: "provider and key are required" };
+      }
+      if (!isSupportedProvider(providerRaw)) {
+        reply.code(400);
+        return {
+          error: `Unsupported provider "${providerRaw}". Supported: ${SUPPORTED_PROVIDERS.join(", ")}`,
+        };
+      }
+      if (!tryValidateMasterKey()) {
+        reply.code(503);
+        return {
+          error:
+            "LLM key encryption is not configured on this instance. Set RM_LLM_KEY_ENCRYPTION_KEY (64 hex chars) and restart.",
+        };
+      }
+      const scope = resolveLlmKeyScope(request.userId);
+      try {
+        const summary = setLlmKey(db, {
+          scope,
+          provider: providerRaw as LlmProvider,
+          plaintext: keyRaw,
+          createdByUserId: request.userId,
+          requestId: request.id,
+        });
+        return {
+          provider: summary.provider,
+          last4: summary.last4,
+          created_at: summary.createdAt,
+          updated_at: summary.updatedAt,
+        };
+      } catch (err) {
+        request.log.error({ err }, "Failed to set LLM key");
+        reply.code(500);
+        return { error: "Failed to store LLM key" };
+      }
+    },
+  );
+
+  server.delete(
+    "/admin/llm-keys/:provider",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      if (!ownerUserIds.has(request.userId)) {
+        reply.code(403);
+        return { error: "Admin access required" };
+      }
+      const { provider } = request.params as { provider: string };
+      if (!isSupportedProvider(provider)) {
+        reply.code(400);
+        return {
+          error: `Unsupported provider "${provider}". Supported: ${SUPPORTED_PROVIDERS.join(", ")}`,
+        };
+      }
+      const scope = resolveLlmKeyScope(request.userId);
+      const summary = getLlmKeySummary(db, scope, provider as LlmProvider);
+      if (!summary) {
+        reply.code(404);
+        return { error: "Key not found" };
+      }
+      deleteLlmKey(db, {
+        scope,
+        provider: provider as LlmProvider,
+        actorUserId: request.userId,
+        requestId: request.id,
+      });
+      return { deleted: true, provider, last4: summary.last4 };
     },
   );
 
