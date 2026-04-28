@@ -20,7 +20,10 @@ import type Database from "better-sqlite3";
 import { buildAgentTools } from "./slack-agent-tools.js";
 import type { StoredMessage } from "./slack-conversation-service.js";
 
-const DEFAULT_MODEL = "claude-sonnet-4-7";
+// Latest Sonnet alias as of 2026-04. Override via RM_SLACK_AGENT_MODEL.
+// (There's no claude-sonnet-4-7 yet — only Opus jumped to 4-7. Verified
+//  via Anthropic /v1/models on 2026-04-28.)
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 const DEFAULT_MAX_TOKENS = 2048;
 const MAX_AGENT_STEPS = 6;
 
