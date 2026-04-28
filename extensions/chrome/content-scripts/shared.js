@@ -413,7 +413,6 @@ const NOISE_PATTERNS = [
   /^enter to select/i,
   /^esc to /i,
   /^(starred|connected tools|admin|api keys|usage|billing|trash|memories)$/i,
-  /^(myaispeed|ai speed index)$/i,
   /^reflect memory$/i,
   /^sign out$/i,
   /^(copy|edit|delete|retry|more)$/i,
