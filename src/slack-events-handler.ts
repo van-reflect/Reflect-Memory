@@ -13,7 +13,14 @@
 import type Database from "better-sqlite3";
 
 import { recordAuditEvent } from "./audit-service.js";
+import { getLlmKeyPlaintext } from "./llm-key-service.js";
+import { runSlackAgentTurn } from "./slack-agent.js";
 import { slackChatPostMessage, slackPostEphemeral } from "./slack-api.js";
+import {
+  getConversation,
+  pruneExpiredConversations,
+  saveConversation,
+} from "./slack-conversation-service.js";
 import { resolveSlackUserToReflectUser } from "./slack-identity.js";
 import {
   getWorkspaceWithToken,
@@ -174,20 +181,73 @@ async function handleUserMessage(
     return;
   }
 
-  // Phase 3a: canned reply confirming identity resolution. Phase 3b will
-  // replace this with the Anthropic agent loop calling memory tools.
-  const where = msg.isDirectMessage ? "in DMs" : "in this channel";
-  const text = buildPhase3aReply({
-    realName: resolution.realName,
-    email: resolution.email,
-    where,
-  });
+  // Resolve which scope the LLM key lives under: prefer the workspace's
+  // bound team key (if any), else the workspace's solo user key.
+  const llmKeyScope = workspace.reflectTeamId
+    ? { teamId: workspace.reflectTeamId, userId: null }
+    : { teamId: null, userId: workspace.reflectUserId ?? resolution.reflectUserId };
+  const apiKey = (() => {
+    try {
+      return getLlmKeyPlaintext(db, llmKeyScope, "anthropic");
+    } catch (err) {
+      console.error("[slack-events] failed to load LLM key", err);
+      return null;
+    }
+  })();
 
-  const post = await slackChatPostMessage(workspace.botToken, {
-    channel: msg.channel,
-    text,
-    threadTs: msg.threadTs ?? msg.ts,
-  });
+  if (!apiKey) {
+    await postReply(workspace, msg,
+      "_Reflect Memory needs an Anthropic API key before I can answer. " +
+      "Open the dashboard at *Connections \u2192 Slack* and paste a key in the *LLM provider key* section, then try again._",
+    );
+    recordAuditEvent(db, {
+      userId: resolution.reflectUserId,
+      eventType: "slack.message.handled",
+      metadata: {
+        slack_team_id: slackTeamId,
+        slack_user_id: msg.slackUserId,
+        slack_channel: msg.channel,
+        slack_event_type: msg.eventType,
+        outcome: "no_llm_key",
+      },
+    });
+    return;
+  }
+
+  // Identify the conversation thread for state. App mentions in a channel
+  // attach to the thread the mention is in (or start one at this message);
+  // DMs use the message ts as the thread root.
+  const threadTs = msg.threadTs ?? msg.ts;
+  const history = getConversation(db, workspace.id, msg.channel, threadTs);
+
+  let replyText: string;
+  let toolCallCount = 0;
+  let steps = 0;
+  let stopReason = "unknown";
+  try {
+    const result = await runSlackAgentTurn({
+      apiKey,
+      db,
+      reflectUserId: resolution.reflectUserId,
+      isDirectMessage: msg.isDirectMessage,
+      email: resolution.email,
+      realName: resolution.realName,
+      newUserMessage: msg.text,
+      history,
+    });
+    replyText = result.replyText;
+    toolCallCount = result.toolCallCount;
+    steps = result.steps;
+    stopReason = result.stopReason;
+    saveConversation(db, workspace.id, msg.channel, threadTs, result.updatedHistory);
+    pruneExpiredConversations(db);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[slack-events] agent turn failed", err);
+    replyText = `_Sorry — something broke on my end (${errMsg.slice(0, 200)}). The error has been logged._`;
+  }
+
+  const post = await postReply(workspace, msg, replyText);
 
   recordAuditEvent(db, {
     userId: resolution.reflectUserId,
@@ -199,26 +259,28 @@ async function handleUserMessage(
       slack_event_type: msg.eventType,
       reply_ok: post.ok,
       reply_error: post.ok ? null : post.error,
+      tool_calls: toolCallCount,
+      agent_steps: steps,
+      stop_reason: stopReason,
     },
   });
 
   if (!post.ok) {
-    console.warn(
-      `[slack-events] failed to post reply: ${post.error}`,
-    );
+    console.warn(`[slack-events] failed to post reply: ${post.error}`);
   }
 }
 
-function buildPhase3aReply(args: {
-  realName: string | null;
-  email: string;
-  where: string;
-}): string {
-  const greeting = args.realName ? `Hi ${args.realName}` : "Hi";
-  return [
-    `${greeting} — I see you (\`${args.email}\`) and I'm here ${args.where}.`,
-    `My brain isn't wired up yet — that's the next deploy. Once it lands, I'll be able to read and search your Reflect memories from here.`,
-  ].join("\n\n");
+async function postReply(
+  workspace: SlackWorkspaceWithToken,
+  msg: IncomingMessage,
+  text: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const result = await slackChatPostMessage(workspace.botToken, {
+    channel: msg.channel,
+    text,
+    threadTs: msg.threadTs ?? msg.ts,
+  });
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
 }
 
 async function postRefusal(
