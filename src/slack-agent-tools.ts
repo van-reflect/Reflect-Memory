@@ -18,10 +18,17 @@
 import type Database from "better-sqlite3";
 
 import {
+  createMemory,
+  createChildMemory,
   listMemories,
+  readMemoryById,
   readMemoryWithTeamAccess,
   listTeamMemories,
   listChildren,
+  shareMemoryToTeam,
+  softDeleteMemory,
+  unshareMemory,
+  updateMemory,
   type MemoryEntry,
 } from "./memory-service.js";
 import { getGraphAround } from "./memory-graph.js";
@@ -176,6 +183,95 @@ export function buildAgentTools(ctx: AgentToolContext): AgentTools {
         required: ["memory_id"],
       },
     },
+    {
+      name: "write_memory",
+      description:
+        "Create a new memory. Personal by default. Set share_with_team=true ONLY if the user explicitly asks to share it with the team (\"write a team note...\", \"share this with the team\", etc.) — otherwise default to false. Pass tags as a flat string array. Returns the new memory id.",
+      input_schema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Short title (1-500 chars)" },
+          content: { type: "string", description: "The memory content" },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Tag list. Follow the user's existing tagging conventions (call get_memory_briefing first if unsure).",
+          },
+          share_with_team: {
+            type: "boolean",
+            description: "If true, share with the user's team after creation. Default false.",
+          },
+        },
+        required: ["title", "content", "tags"],
+      },
+    },
+    {
+      name: "write_child_memory",
+      description:
+        "Create a reply (child) memory under an existing parent memory. Threads are one level deep — you can reply to a top-level memory but not to a reply. Children inherit team sharing from the parent automatically. Use for status updates, resolutions, follow-ups on a thread.",
+      input_schema: {
+        type: "object",
+        properties: {
+          parent_id: { type: "string", description: "UUID of the parent memory to reply to" },
+          title: { type: "string", description: "Short title for the reply" },
+          content: { type: "string", description: "The reply content" },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Tag list",
+          },
+        },
+        required: ["parent_id", "title", "content", "tags"],
+      },
+    },
+    {
+      name: "update_memory",
+      description:
+        "Edit one of the user's existing memories — REPLACES title, content, and tags wholesale. Use ONLY for memories the user authored. NEVER use to add a status update on a teammate's memory or on a thread someone else is participating in — that destroys their text. For follow-ups, use write_child_memory instead. Pass the COMPLETE new title/content/tags (not a diff).",
+      input_schema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "UUID of the memory to update" },
+          title: { type: "string", description: "New full title" },
+          content: { type: "string", description: "New full content" },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "New full tag list (replaces existing)",
+          },
+        },
+        required: ["id", "title", "content", "tags"],
+      },
+    },
+    {
+      name: "share_memory",
+      description:
+        "Share or unshare one of the user's personal memories with their team. Set share=true to share, share=false to unshare (the personal copy is preserved either way). User must be on a team.",
+      input_schema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "UUID of the user's memory" },
+          share: { type: "boolean", description: "true to share with team, false to unshare" },
+        },
+        required: ["id", "share"],
+      },
+    },
+    {
+      name: "delete_memory",
+      description:
+        "Soft-delete one of the user's memories (movable to Trash; restorable from the dashboard). DESTRUCTIVE — REQUIRES TWO-STEP CONFIRMATION:\n  1. First call: pass confirm=false. The tool will return a preview of the memory's title/tags. SHOW THIS PREVIEW TO THE USER and ask them to reply 'yes' to confirm.\n  2. Only after the user has explicitly confirmed in this conversation, call again with confirm=true to actually delete.\nNever set confirm=true on the first call. Never delete without showing the preview first.",
+      input_schema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "UUID of the memory to delete" },
+          confirm: {
+            type: "boolean",
+            description: "false (default) returns a preview; true actually deletes. Only set true after explicit user confirmation in chat.",
+          },
+        },
+        required: ["id"],
+      },
+    },
   ];
 
   async function execute(name: string, input: Record<string, unknown>): Promise<string> {
@@ -284,6 +380,143 @@ export function buildAgentTools(ctx: AgentToolContext): AgentTools {
           });
           if (!graph) return JSON.stringify({ error: "Memory not found" });
           return JSON.stringify(graph);
+        }
+        case "write_memory": {
+          const title = String(input.title ?? "").trim();
+          const content = String(input.content ?? "").trim();
+          const tags = Array.isArray(input.tags)
+            ? (input.tags as unknown[]).map((t) => String(t).trim()).filter(Boolean)
+            : [];
+          if (!title || !content) {
+            return JSON.stringify({ error: "title and content are required" });
+          }
+          const created = createMemory(db, reflectUserId, {
+            title,
+            content,
+            tags,
+            allowed_vendors: ["*"],
+            memory_type: "semantic",
+            origin: "slack",
+          });
+          let shared: string | null = null;
+          if (input.share_with_team === true) {
+            const teamRow = db
+              .prepare(`SELECT team_id FROM users WHERE id = ?`)
+              .get(reflectUserId) as { team_id: string | null } | undefined;
+            if (teamRow?.team_id) {
+              const sharedMemory = shareMemoryToTeam(db, created.id, reflectUserId, teamRow.team_id);
+              if (sharedMemory) shared = teamRow.team_id;
+            }
+          }
+          return JSON.stringify({
+            ok: true,
+            memory: trimMemoryForLlm(created),
+            shared_with_team_id: shared,
+          });
+        }
+        case "write_child_memory": {
+          const parentId = String(input.parent_id ?? "").trim();
+          const title = String(input.title ?? "").trim();
+          const content = String(input.content ?? "").trim();
+          const tags = Array.isArray(input.tags)
+            ? (input.tags as unknown[]).map((t) => String(t).trim()).filter(Boolean)
+            : [];
+          if (!parentId || !title || !content) {
+            return JSON.stringify({ error: "parent_id, title, and content are required" });
+          }
+          try {
+            const child = createChildMemory(db, reflectUserId, parentId, {
+              title,
+              content,
+              tags,
+              allowed_vendors: ["*"],
+              memory_type: "semantic",
+              origin: "slack",
+            });
+            return JSON.stringify({ ok: true, memory: trimMemoryForLlm(child) });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return JSON.stringify({ error: `Could not write child: ${msg}` });
+          }
+        }
+        case "update_memory": {
+          const id = String(input.id ?? "").trim();
+          const title = String(input.title ?? "").trim();
+          const content = String(input.content ?? "").trim();
+          const tags = Array.isArray(input.tags)
+            ? (input.tags as unknown[]).map((t) => String(t).trim()).filter(Boolean)
+            : [];
+          if (!id || !title || !content) {
+            return JSON.stringify({ error: "id, title, and content are required" });
+          }
+          // Must own it (memory-service checks; we double-check for a clean error message).
+          const existing = readMemoryById(db, reflectUserId, id);
+          if (!existing) {
+            return JSON.stringify({
+              error: "Memory not found, or you don't own it. Use write_child_memory to reply on a teammate's memory instead.",
+            });
+          }
+          const updated = updateMemory(db, reflectUserId, id, {
+            title,
+            content,
+            tags,
+            allowed_vendors: existing.allowed_vendors,
+          });
+          if (!updated) return JSON.stringify({ error: "Update failed" });
+          return JSON.stringify({ ok: true, memory: trimMemoryForLlm(updated) });
+        }
+        case "share_memory": {
+          const id = String(input.id ?? "").trim();
+          const share = input.share === true;
+          if (!id) return JSON.stringify({ error: "id is required" });
+          const existing = readMemoryById(db, reflectUserId, id);
+          if (!existing) {
+            return JSON.stringify({ error: "Memory not found or you don't own it" });
+          }
+          if (share) {
+            const teamRow = db
+              .prepare(`SELECT team_id FROM users WHERE id = ?`)
+              .get(reflectUserId) as { team_id: string | null } | undefined;
+            if (!teamRow?.team_id) {
+              return JSON.stringify({ error: "You are not on a team — nothing to share with" });
+            }
+            const sharedMemory = shareMemoryToTeam(db, id, reflectUserId, teamRow.team_id);
+            if (!sharedMemory) return JSON.stringify({ error: "Share failed" });
+            return JSON.stringify({ ok: true, shared: true, memory: trimMemoryForLlm(sharedMemory) });
+          }
+          const unsharedMemory = unshareMemory(db, id, reflectUserId);
+          if (!unsharedMemory) return JSON.stringify({ error: "Unshare failed" });
+          return JSON.stringify({ ok: true, shared: false, memory: trimMemoryForLlm(unsharedMemory) });
+        }
+        case "delete_memory": {
+          const id = String(input.id ?? "").trim();
+          const confirm = input.confirm === true;
+          if (!id) return JSON.stringify({ error: "id is required" });
+          const existing = readMemoryById(db, reflectUserId, id);
+          if (!existing) {
+            return JSON.stringify({ error: "Memory not found or you don't own it" });
+          }
+          if (!confirm) {
+            return JSON.stringify({
+              ok: true,
+              preview: {
+                id: existing.id,
+                title: existing.title,
+                tags: existing.tags,
+                content_preview: existing.content.slice(0, 200),
+              },
+              instruction:
+                "DESTRUCTIVE: show this preview to the user and ask them to reply 'yes' to delete. Only call delete_memory again with confirm=true after they have explicitly confirmed.",
+            });
+          }
+          const deleted = softDeleteMemory(db, reflectUserId, id);
+          if (!deleted) return JSON.stringify({ error: "Delete failed" });
+          return JSON.stringify({
+            ok: true,
+            deleted: true,
+            id,
+            note: "Soft-deleted (moved to Trash). Restorable from the dashboard.",
+          });
         }
         default:
           return JSON.stringify({ error: `Unknown tool: ${name}` });

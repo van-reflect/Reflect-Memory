@@ -13,7 +13,7 @@ import { getTestServer } from "../helpers";
 import { _resetMasterKeyCacheForTests } from "../../src/llm-key-crypto";
 import { buildAgentTools } from "../../src/slack-agent-tools";
 import { runSlackAgentTurn } from "../../src/slack-agent";
-import { createMemory } from "../../src/memory-service";
+import { createMemory, readMemoryById } from "../../src/memory-service";
 
 process.env.RM_LLM_KEY_ENCRYPTION_KEY = getTestServer().llmKeyMasterKey;
 _resetMasterKeyCacheForTests();
@@ -173,6 +173,172 @@ describe("buildAgentTools.execute (unit, real DB)", () => {
     const out = await tools.execute("definitely_not_a_tool", {});
     db.close();
     expect(JSON.parse(out)).toEqual({ error: "Unknown tool: definitely_not_a_tool" });
+  });
+
+  // -------------------------------------------------------------------------
+  // Write tools
+  // -------------------------------------------------------------------------
+
+  it("write_memory creates a personal memory by default (not shared)", async () => {
+    const db = openDb();
+    const tools = buildAgentTools({ db, reflectUserId: userId });
+    const out = await tools.execute("write_memory", {
+      title: `Slack write test ${randomUUID()}`,
+      content: `Test content ${randomUUID()}`,
+      tags: ["test", "slack-write-test"],
+    });
+    db.close();
+    const parsed = JSON.parse(out) as {
+      ok: boolean;
+      memory: { id: string; shared_with_team_id: string | null };
+      shared_with_team_id: string | null;
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.memory.id).toBeTruthy();
+    expect(parsed.shared_with_team_id).toBeNull();
+    expect(parsed.memory.shared_with_team_id).toBeNull();
+  });
+
+  it("write_memory rejects empty title or content", async () => {
+    const db = openDb();
+    const tools = buildAgentTools({ db, reflectUserId: userId });
+    const out = await tools.execute("write_memory", { title: "", content: "ok", tags: [] });
+    db.close();
+    expect(JSON.parse(out)).toEqual({ error: "title and content are required" });
+  });
+
+  it("write_child_memory creates a child under a parent", async () => {
+    const db = openDb();
+    const tools = buildAgentTools({ db, reflectUserId: userId });
+    const out = await tools.execute("write_child_memory", {
+      parent_id: seededIds[0],
+      title: `Child reply ${randomUUID()}`,
+      content: `Child content ${randomUUID()}`,
+      tags: ["test", "reply"],
+    });
+    db.close();
+    const parsed = JSON.parse(out) as {
+      ok: boolean;
+      memory: { id: string; parent_memory_id: string | null };
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.memory.parent_memory_id).toBe(seededIds[0]);
+  });
+
+  it("update_memory replaces title + content + tags wholesale", async () => {
+    const db = openDb();
+    // First create something we can mutate.
+    const created = await buildAgentTools({ db, reflectUserId: userId }).execute(
+      "write_memory",
+      {
+        title: `To update ${randomUUID()}`,
+        content: `Original content ${randomUUID()}`,
+        tags: ["test", "to-update"],
+      },
+    );
+    const createdId = (JSON.parse(created) as { memory: { id: string } }).memory.id;
+
+    const tools = buildAgentTools({ db, reflectUserId: userId });
+    const out = await tools.execute("update_memory", {
+      id: createdId,
+      title: "Updated title",
+      content: "Updated content body",
+      tags: ["test", "updated"],
+    });
+    db.close();
+    const parsed = JSON.parse(out) as {
+      ok: boolean;
+      memory: { title: string; content: string; tags: string[] };
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.memory.title).toBe("Updated title");
+    expect(parsed.memory.content).toBe("Updated content body");
+    expect(parsed.memory.tags).toContain("updated");
+  });
+
+  it("update_memory refuses to update a memory the user doesn't own", async () => {
+    const db = openDb();
+    const tools = buildAgentTools({ db, reflectUserId: userId });
+    const out = await tools.execute("update_memory", {
+      id: randomUUID(),
+      title: "x",
+      content: "x",
+      tags: [],
+    });
+    db.close();
+    expect(JSON.parse(out)).toMatchObject({ error: expect.stringMatching(/not found/i) });
+  });
+
+  it("share_memory returns 'not on team' when the user is solo", async () => {
+    const db = openDb();
+    // Owner test user has no team.
+    const created = await buildAgentTools({ db, reflectUserId: userId }).execute(
+      "write_memory",
+      {
+        title: `To share ${randomUUID()}`,
+        content: `Share me ${randomUUID()}`,
+        tags: ["test", "to-share"],
+      },
+    );
+    const createdId = (JSON.parse(created) as { memory: { id: string } }).memory.id;
+
+    const tools = buildAgentTools({ db, reflectUserId: userId });
+    const out = await tools.execute("share_memory", { id: createdId, share: true });
+    db.close();
+    expect(JSON.parse(out)).toMatchObject({ error: expect.stringMatching(/not on a team/i) });
+  });
+
+  it("delete_memory returns a preview when confirm=false (does NOT delete)", async () => {
+    const db = openDb();
+    const created = await buildAgentTools({ db, reflectUserId: userId }).execute(
+      "write_memory",
+      {
+        title: `To preview-delete ${randomUUID()}`,
+        content: `Some body ${randomUUID()}`,
+        tags: ["test", "to-delete"],
+      },
+    );
+    const createdId = (JSON.parse(created) as { memory: { id: string } }).memory.id;
+
+    const tools = buildAgentTools({ db, reflectUserId: userId });
+    const previewOut = await tools.execute("delete_memory", { id: createdId, confirm: false });
+    const preview = JSON.parse(previewOut) as {
+      ok: boolean;
+      preview: { id: string; title: string };
+      instruction: string;
+    };
+    expect(preview.ok).toBe(true);
+    expect(preview.preview.id).toBe(createdId);
+    expect(preview.instruction).toMatch(/destructive/i);
+
+    // Memory still exists and is not soft-deleted.
+    const stillThere = readMemoryById(db, userId, createdId);
+    expect(stillThere?.deleted_at).toBeFalsy();
+    db.close();
+  });
+
+  it("delete_memory with confirm=true actually soft-deletes", async () => {
+    const db = openDb();
+    const created = await buildAgentTools({ db, reflectUserId: userId }).execute(
+      "write_memory",
+      {
+        title: `To really delete ${randomUUID()}`,
+        content: `Some body ${randomUUID()}`,
+        tags: ["test", "to-delete"],
+      },
+    );
+    const createdId = (JSON.parse(created) as { memory: { id: string } }).memory.id;
+
+    const tools = buildAgentTools({ db, reflectUserId: userId });
+    const out = await tools.execute("delete_memory", { id: createdId, confirm: true });
+    const parsed = JSON.parse(out) as { ok: boolean; deleted: boolean; id: string };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.deleted).toBe(true);
+
+    // Memory is soft-deleted (readMemoryById still returns the row, deleted_at set).
+    const post = readMemoryById(db, userId, createdId);
+    expect(post?.deleted_at).toBeTruthy();
+    db.close();
   });
 });
 
