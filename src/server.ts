@@ -45,7 +45,12 @@ import {
   revokeSlackToken,
   signOauthState,
   verifyOauthState,
+  verifySlackSignature,
 } from "./slack-oauth.js";
+import {
+  processSlackEvent,
+  type SlackEventEnvelope,
+} from "./slack-events-handler.js";
 import {
   getActiveWorkspaceForTeam,
   getActiveWorkspaceForUser,
@@ -533,7 +538,13 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   });
 
   server.addHook("preParsing", async (request, _reply, payload) => {
-    if (!request.url?.startsWith("/webhooks/")) return payload;
+    // Captures the raw body for routes that need to verify a request signature
+    // against the bytes (HMAC). Stripe webhooks and Slack events both need it.
+    const url = request.url ?? "";
+    const needsRawBody =
+      url.startsWith("/webhooks/") ||
+      url.startsWith("/slack/events");
+    if (!needsRawBody) return payload;
     const chunks: Buffer[] = [];
     for await (const chunk of payload) {
       chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
@@ -906,6 +917,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     // signed `state` parameter does the auth (HMAC-derived from the master
     // key, carries the originating Reflect user_id).
     if (request.method === "GET" && path === "/slack/oauth/callback") return;
+
+    // Slack events webhook is hit by slack.com via Server-to-Server. Auth is
+    // the X-Slack-Signature header verified against the workspace's signing
+    // secret (HMAC-SHA256 over the raw body + timestamp). Verified inside
+    // the route handler.
+    if (request.method === "POST" && path === "/slack/events") return;
 
     const header = request.headers.authorization;
 
@@ -2365,6 +2382,69 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         requestId: request.id,
       });
       return { uninstalled: true, slack_team_id: workspace.slackTeamId };
+    },
+  );
+
+  // POST /slack/events
+  // Public route — verified via X-Slack-Signature header against the active
+  // Slack config's signing secret. Slack imposes a 3s ack deadline; we reply
+  // 200 immediately and run the agent work as a fire-and-forget Promise.
+  // url_verification gets a synchronous {challenge} response.
+  server.post(
+    "/slack/events",
+    {
+      config: { rateLimit: { max: 600, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const cfg = getActiveSlackConfig();
+      if (!cfg) {
+        reply.code(503);
+        return { error: "Slack OAuth is not configured on this instance" };
+      }
+      const rawBody =
+        (request as unknown as { rawBody?: string }).rawBody ??
+        (typeof request.body === "string"
+          ? request.body
+          : JSON.stringify(request.body ?? {}));
+      const ts = request.headers["x-slack-request-timestamp"];
+      const sig = request.headers["x-slack-signature"];
+      if (typeof ts !== "string" || typeof sig !== "string") {
+        reply.code(401);
+        return { error: "Missing Slack signature headers" };
+      }
+      const valid = verifySlackSignature({
+        signingSecret: cfg.signingSecret,
+        timestamp: ts,
+        signature: sig,
+        rawBody,
+      });
+      if (!valid) {
+        reply.code(401);
+        return { error: "Invalid Slack signature" };
+      }
+
+      let envelope: SlackEventEnvelope;
+      try {
+        envelope =
+          typeof request.body === "object" && request.body !== null
+            ? (request.body as SlackEventEnvelope)
+            : (JSON.parse(rawBody) as SlackEventEnvelope);
+      } catch {
+        reply.code(400);
+        return { error: "Invalid JSON" };
+      }
+
+      const result = processSlackEvent(db, envelope, {
+        onAsyncError: (err) =>
+          request.log.error({ err }, "[slack-events] async handler error"),
+      });
+
+      if (result.kind === "url_verification") {
+        return { challenge: result.challenge };
+      }
+      // event_callback ack or ignored: respond 200 with a tiny body Slack
+      // discards. Don't return the body's identifying details.
+      return { ok: true };
     },
   );
 
