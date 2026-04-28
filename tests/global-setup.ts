@@ -53,6 +53,11 @@ export async function setup(): Promise<void> {
   const agentClaude = randomHex(32);
   const dashboardServiceKey = randomHex(32);
   const dashboardJwtSecret = randomHex(32);
+  // Shared with in-process tests via .test-server.json so they can encrypt /
+  // decrypt blobs created by the test server (e.g. directly upserting a
+  // slack_workspaces row in a test, then having the server's uninstall
+  // route decrypt the bot token).
+  const llmKeyMasterKey = randomHex(32);
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -73,6 +78,18 @@ export async function setup(): Promise<void> {
     // Always-on in tests so log-export integration tests work; the
     // "disabled returns 404" path is covered by unit/source assertions.
     RM_LOG_SHARING_ENABLED: "true",
+    // 32-byte hex master key for AES-256-GCM LLM key encryption.
+    // Random per test-server boot so a leaked test fixture can't decrypt
+    // anything in another env.
+    RM_LLM_KEY_ENCRYPTION_KEY: llmKeyMasterKey,
+    // Stub Slack OAuth config so /slack/install-url returns a 200 (the
+    // integration tests check the URL shape, not actual install). Real
+    // exchange against slack.com is exercised during manual smoke.
+    REFLECT_DEV_SLACK_CLIENT_ID: "1234567890.0987654321",
+    REFLECT_DEV_SLACK_CLIENT_SECRET: "test-client-secret",
+    REFLECT_DEV_SLACK_SIGNING_SECRET: "test-signing-secret",
+    REFLECT_DEV_SLACK_REDIRECT_URI: `http://127.0.0.1:${port}/slack/oauth/callback`,
+    RM_DASHBOARD_PUBLIC_URL: `http://127.0.0.1:${port + 1}`,
     RM_DASHBOARD_URL: `http://127.0.0.1:${port + 1}`,
     STRIPE_SECRET_KEY: "sk_test_fake",
     STRIPE_WEBHOOK_SECRET: "whsec_test_fake",
@@ -115,6 +132,7 @@ export async function setup(): Promise<void> {
     },
     dashboardServiceKey,
     dashboardJwtSecret,
+    llmKeyMasterKey,
     ownerEmail: "owner@test.local",
     tmpDir,
     dbPath,

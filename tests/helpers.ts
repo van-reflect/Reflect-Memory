@@ -15,6 +15,10 @@ interface TestServerConfig {
   };
   dashboardServiceKey: string;
   dashboardJwtSecret: string;
+  /** Same value the test server received in RM_LLM_KEY_ENCRYPTION_KEY.
+   *  Pin it in your test process before any encryption call so blobs
+   *  written by either side are decryptable by the other. */
+  llmKeyMasterKey: string;
   ownerEmail: string;
   tmpDir: string;
   dbPath: string;
