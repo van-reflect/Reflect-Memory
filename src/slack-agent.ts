@@ -25,7 +25,10 @@ import type { StoredMessage } from "./slack-conversation-service.js";
 //  via Anthropic /v1/models on 2026-04-28.)
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 const DEFAULT_MAX_TOKENS = 2048;
-const MAX_AGENT_STEPS = 6;
+// Generous enough for "list everything tagged X then read the top 3" but
+// finite. If we still haven't reached end_turn after this many tool-use
+// rounds, we force a no-more-tools synthesis turn (see below).
+const MAX_AGENT_STEPS = 10;
 
 export interface AgentRunOptions {
   apiKey: string;
@@ -184,11 +187,80 @@ export async function runSlackAgentTurn(
     });
   }
 
-  const replyText = resp.content
+  let replyText = resp.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
     .map((b) => b.text)
     .join("\n\n")
     .trim();
+
+  // If we exited the loop while the model still wanted to use tools (i.e.
+  // we hit MAX_AGENT_STEPS) OR the model produced no text for some other
+  // reason, force one final synthesis turn with tools disabled. The model
+  // has to write a final answer using what it already has.
+  let synthesised = false;
+  const needsSynthesis =
+    replyText.length === 0 || resp.stop_reason === "tool_use";
+  if (needsSynthesis) {
+    // Append the model's last (tool-use-only) turn so the synthesis call
+    // has the full context, then push our nudge.
+    if (resp.stop_reason === "tool_use") {
+      messages.push({ role: "assistant", content: resp.content });
+      // Append synthetic tool_results for any tools the model called in
+      // its last turn — Anthropic requires every tool_use to be paired
+      // with a tool_result before the next user turn. We send a stub
+      // saying "tool budget exhausted" so the model doesn't try again.
+      const lastToolUses = resp.content.filter(
+        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+      );
+      if (lastToolUses.length > 0) {
+        messages.push({
+          role: "user",
+          content: lastToolUses.map((b) => ({
+            type: "tool_result" as const,
+            tool_use_id: b.id,
+            content:
+              "Tool budget exhausted for this turn. Synthesise a final answer from the tool results you already have.",
+          })),
+        });
+      }
+    }
+    messages.push({
+      role: "user",
+      content:
+        "Tool budget exhausted. Write a final answer for the user now using only what you've already learned. Do not call any more tools — answer in plain text. If you don't have enough info, say so honestly and tell them what you'd need to look up next.",
+    });
+    try {
+      const synth = await anthropic.messages.create({
+        model,
+        max_tokens: DEFAULT_MAX_TOKENS,
+        system,
+        // tool_choice: none forces the model to emit text only — no tool_use.
+        tool_choice: { type: "none" },
+        tools: tools.definitions.map((d) => ({
+          name: d.name,
+          description: d.description,
+          input_schema: d.input_schema,
+        })),
+        messages,
+      });
+      const synthText = synth.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("\n\n")
+        .trim();
+      if (synthText.length > 0) {
+        replyText = synthText;
+        synthesised = true;
+      }
+    } catch (err) {
+      // If the synthesis call itself fails, fall through to the generic
+      // "couldn't produce a reply" message below.
+      console.warn(
+        "[slack-agent] forced-synthesis turn failed",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 
   const finalText =
     replyText.length > 0
@@ -206,6 +278,6 @@ export async function runSlackAgentTurn(
     updatedHistory,
     toolCallCount,
     steps,
-    stopReason: resp.stop_reason ?? "unknown",
+    stopReason: synthesised ? "synthesised_after_max_steps" : (resp.stop_reason ?? "unknown"),
   };
 }
