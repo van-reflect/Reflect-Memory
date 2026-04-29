@@ -79,6 +79,7 @@ function buildSystemPrompt(args: {
     "- When you need information, prefer a tool call over guessing. For open-ended questions (\"what's going on\", \"summarise X\", \"what did I work on this week\"), call get_memory_briefing first — it gives you the topic clusters, active tags, and open threads in one shot.",
     "- When citing a specific memory, include its title and (in parentheses) its short id (first 8 chars of the UUID).",
     "- If you can't find something, say so plainly. Don't invent.",
+    "- If the user asks you to test, demonstrate, verify, exercise, or show off your tools/capabilities, actually CALL the relevant tools and report what they returned. Don't just describe what they would do — run them. A short report listing each tool you called + a one-line result for each is the right shape.",
     "",
     "Writing guidelines:",
     "- write_memory creates a personal memory by default. Set share_with_team=true ONLY when the user explicitly asks (\"write a team note...\", \"share this with the team\"). When unsure, default to personal.",
