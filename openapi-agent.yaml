@@ -80,6 +80,16 @@ paths:
                     - procedural
                   default: semantic
                   description: "Memory classification. semantic = facts/knowledge, episodic = events/decisions, procedural = workflows/patterns"
+                share_with_team:
+                  type: boolean
+                  default: false
+                  description: >
+                    If true, immediately share the new memory with the user's team
+                    (one-call equivalent of writeMemory + shareMemory). Default false —
+                    personal-by-default. ONLY set true when the user EXPLICITLY asks to
+                    share with the team ("save this for the team", "share with the team",
+                    "team note", "add to team shared"). If the user isn't on a team, the
+                    flag is silently ignored and the memory stays personal.
       responses:
         "201":
           description: Memory created

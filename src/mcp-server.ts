@@ -215,17 +215,24 @@ async function createMcpServerWithTools(
     "write_memory",
     "Create a new TOP-LEVEL memory entry. Use this when the content is a fresh idea, decision, or note that doesn't belong inside an existing thread. " +
       "**Before calling, check the briefing's open threads + topic clusters** — if your content fits inside an existing thread, use `write_child_memory` instead so it threads correctly. " +
-      "**Match the user's existing tag vocabulary** — see the topic map in the briefing for the canonical tag clusters.",
+      "**Match the user's existing tag vocabulary** — see the topic map in the briefing for the canonical tag clusters. " +
+      "**Set `share_with_team=true` ONLY when the user explicitly asks to share** (\"save this for the team\", \"team note\", \"share with the team\", \"add to team shared\"). Otherwise leave it false — personal-by-default. If the user isn't on a team, the flag is silently ignored and the memory stays personal.",
     {
       title: z.string().min(1).max(500).describe("Short title for the memory"),
       content: z.string().min(1).max(100_000).describe("The memory content"),
       tags: z.array(z.string().min(1).max(100)).max(50).default([]).describe("Tags for categorization"),
       allowed_vendors: z.array(z.string().min(1).max(50)).min(1).max(50).default(["*"]).describe("Which vendors can see this. Use ['*'] for all."),
       memory_type: z.enum(["semantic", "episodic", "procedural"]).default("semantic").describe("Type of memory: semantic (facts/knowledge), episodic (events/decisions), procedural (workflows/patterns)"),
+      share_with_team: z
+        .boolean()
+        .default(false)
+        .describe(
+          "If true, immediately share the new memory with the user's team (one-call equivalent of write_memory + share_memory). Default false. ONLY set true when the user explicitly asks to share with the team.",
+        ),
     },
     { title: "Create Memory", destructiveHint: true },
-    async ({ title, content, tags, allowed_vendors, memory_type }) => {
-      const memory = createMemory(db, userId, {
+    async ({ title, content, tags, allowed_vendors, memory_type, share_with_team }) => {
+      const created = createMemory(db, userId, {
         title,
         content,
         tags,
@@ -233,6 +240,14 @@ async function createMcpServerWithTools(
         allowed_vendors,
         memory_type,
       });
+      let memory = created;
+      if (share_with_team) {
+        const user = getUserById(db, userId);
+        if (user?.team_id) {
+          const shared = shareMemoryToTeam(db, created.id, userId, user.team_id);
+          if (shared) memory = shared;
+        }
+      }
       return { content: [{ type: "text", text: JSON.stringify(memory, null, 2) }] };
     },
   );
