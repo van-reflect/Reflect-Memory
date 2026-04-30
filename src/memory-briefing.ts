@@ -597,6 +597,15 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
     "- **If the new memory is fresh + unrelated**, go ahead with `write_memory` — but match the tag vocabulary " +
       "from the topic clusters below (don't invent ad-hoc tags).",
   );
+  if (b.user.team_id) {
+    lines.push(
+      "- **Personal vs team:** `write_memory` is personal-by-default. " +
+        "If the user explicitly says \"save this for the team\", \"share with the team\", \"team note\", or similar, " +
+        "set `share_with_team=true` on the same call (one tool call instead of two). " +
+        "Otherwise leave it false — the user can always share later via the dashboard or `share_memory`. " +
+        "When in doubt, default to personal.",
+    );
+  }
   lines.push("");
 
   // Topic map: render BEFORE the flat tag lists so the LLM sees the

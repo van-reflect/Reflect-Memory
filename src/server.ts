@@ -274,6 +274,7 @@ const memoryBodySchema = {
       enum: ["semantic", "episodic", "procedural"],
       default: "semantic",
     },
+    share_with_team: { type: "boolean" as const, default: false },
   },
 };
 
@@ -301,6 +302,7 @@ const agentMemoryBodySchema = {
       enum: ["semantic", "episodic", "procedural"],
       default: "semantic",
     },
+    share_with_team: { type: "boolean" as const, default: false },
   },
 };
 
@@ -2470,6 +2472,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         tags: string[];
         allowed_vendors?: string[];
         memory_type?: string;
+        share_with_team?: boolean;
       };
 
       const allowedVendors = body.allowed_vendors ?? ["*"];
@@ -2489,8 +2492,21 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         memory_type: body.memory_type as MemoryType | undefined,
       };
 
-      const memory = createMemory(db, request.userId, input);
-      emitMemoryEvent("memory.created", request.userId, memory.id);
+      const created = createMemory(db, request.userId, input);
+      emitMemoryEvent("memory.created", request.userId, created.id);
+      let memory = created;
+      if (body.share_with_team === true) {
+        const user = getUserById(db, request.userId);
+        if (user?.team_id) {
+          const shared = shareMemoryToTeam(db, created.id, request.userId, user.team_id);
+          if (shared) {
+            memory = shared;
+            emitMemoryEvent("memory.shared", request.userId, created.id, {
+              teamId: user.team_id,
+            });
+          }
+        }
+      }
       reply.code(201);
       return memory;
     },
@@ -2520,6 +2536,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         allowed_vendors: string[];
         origin?: string;
         memory_type?: string;
+        share_with_team?: boolean;
       };
 
       const vendorErr = validateAllowedVendors(body.allowed_vendors, validVendors);
@@ -2539,11 +2556,26 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         memory_type: body.memory_type as MemoryType | undefined,
       };
 
-      const memory = createMemory(db, request.userId, input);
-      if (!testMode && isCiTestMemory(memory)) {
-        softDeleteMemory(db, request.userId, memory.id);
-      } else {
-        emitMemoryEvent("memory.created", request.userId, memory.id);
+      const created = createMemory(db, request.userId, input);
+      if (!testMode && isCiTestMemory(created)) {
+        softDeleteMemory(db, request.userId, created.id);
+        reply.code(201);
+        return created;
+      }
+
+      emitMemoryEvent("memory.created", request.userId, created.id);
+      let memory = created;
+      if (body.share_with_team === true) {
+        const user = getUserById(db, request.userId);
+        if (user?.team_id) {
+          const shared = shareMemoryToTeam(db, created.id, request.userId, user.team_id);
+          if (shared) {
+            memory = shared;
+            emitMemoryEvent("memory.shared", request.userId, created.id, {
+              teamId: user.team_id,
+            });
+          }
+        }
       }
       reply.code(201);
       return memory;
