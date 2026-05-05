@@ -166,16 +166,16 @@ describe("checkQuota", () => {
 
   it("team plan aggregates memory_count across all team members", () => {
     // Need a teams row first (FK).
-    const teamId = randomUUID();
+    const orgId = randomUUID();
     const now = new Date().toISOString();
     h.db.prepare(
-      `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at)
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
        VALUES (?, 'team-x', ?, 'team', ?, ?)`,
-    ).run(teamId, userId, now, now);
+    ).run(orgId, userId, now, now);
 
-    h.db.prepare(`UPDATE users SET plan = 'team', team_id = ? WHERE id = ?`)
-      .run(teamId, userId);
-    const peer = seedUser(h.db, { plan: "team", teamId });
+    h.db.prepare(`UPDATE users SET plan = 'team', org_id = ? WHERE id = ?`)
+      .run(orgId, userId);
+    const peer = seedUser(h.db, { plan: "team", orgId });
 
     seedMemory(userId);
     seedMemory(userId);

@@ -3,7 +3,7 @@
 // Covers:
 //   - Create child under a parent
 //   - One-level enforcement (can't reply to a child)
-//   - Access inheritance (child inherits parent's shared_with_team_id)
+//   - Access inheritance (child inherits parent's shared_with_org_id)
 //   - Cascades: soft delete, restore, permanent delete, share, unshare
 //   - GET /memories/:id/thread (returns root + children, even from child id)
 //   - Error codes: 404 for missing parent, 400 for deleted / is-child,
@@ -25,7 +25,7 @@ interface MemoryResponse {
   content: string;
   tags: string[];
   parent_memory_id?: string | null;
-  shared_with_team_id?: string | null;
+  shared_with_org_id?: string | null;
   shared_at?: string | null;
   deleted_at?: string | null;
 }
@@ -35,7 +35,7 @@ interface ThreadResponse {
   children: MemoryResponse[];
 }
 
-let teamId: string;
+let orgId: string;
 let ownerUserId: string;
 const trackedMemoryIds: string[] = [];
 
@@ -77,15 +77,15 @@ beforeAll(() => {
       .get(ownerEmail) as { id: string } | undefined;
     ownerUserId = row!.id;
 
-    teamId = randomUUID();
+    orgId = randomUUID();
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at)
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
        VALUES (?, ?, ?, 'team', ?, ?)`,
-    ).run(teamId, "Threading-Test-Team", ownerUserId, now, now);
+    ).run(orgId, "Threading-Test-Team", ownerUserId, now, now);
     db.prepare(
-      `UPDATE users SET team_id = ?, team_role = 'owner' WHERE id = ?`,
-    ).run(teamId, ownerUserId);
+      `UPDATE users SET org_id = ?, org_role = 'owner' WHERE id = ?`,
+    ).run(orgId, ownerUserId);
   } finally {
     db.close();
   }
@@ -104,10 +104,10 @@ afterAll(() => {
         ...trackedMemoryIds,
       );
     }
-    db.prepare(`UPDATE users SET team_id = NULL, team_role = NULL WHERE id = ?`).run(
+    db.prepare(`UPDATE users SET org_id = NULL, org_role = NULL WHERE id = ?`).run(
       ownerUserId,
     );
-    db.prepare(`DELETE FROM teams WHERE id = ?`).run(teamId);
+    db.prepare(`DELETE FROM orgs WHERE id = ?`).run(orgId);
   } finally {
     db.close();
   }
@@ -156,7 +156,7 @@ describe("Access inheritance: children follow parent's sharing", () => {
 
     const c = await createChild(parent.id, "shared-by-inheritance");
     expect(c.status).toBe(201);
-    expect(c.json.shared_with_team_id).toBe(teamId);
+    expect(c.json.shared_with_org_id).toBe(orgId);
     expect(c.json.shared_at).toBeTruthy();
   });
 
@@ -164,8 +164,8 @@ describe("Access inheritance: children follow parent's sharing", () => {
     const parent = await createParent(`t-share-cascade-${Date.now()}`);
     const c1 = await createChild(parent.id, "pre-share-1");
     const c2 = await createChild(parent.id, "pre-share-2");
-    expect(c1.json.shared_with_team_id).toBeFalsy();
-    expect(c2.json.shared_with_team_id).toBeFalsy();
+    expect(c1.json.shared_with_org_id).toBeFalsy();
+    expect(c2.json.shared_with_org_id).toBeFalsy();
 
     const shareRes = await api("POST", `/memories/${parent.id}/share`);
     expect(shareRes.status).toBe(200);
@@ -173,9 +173,9 @@ describe("Access inheritance: children follow parent's sharing", () => {
     // Pull the thread and check each child is now shared.
     const thread = await api<ThreadResponse>("GET", `/memories/${parent.id}/thread`);
     expect(thread.status).toBe(200);
-    expect(thread.json.parent.shared_with_team_id).toBe(teamId);
+    expect(thread.json.parent.shared_with_org_id).toBe(orgId);
     for (const child of thread.json.children) {
-      expect(child.shared_with_team_id).toBe(teamId);
+      expect(child.shared_with_org_id).toBe(orgId);
     }
   });
 
@@ -183,15 +183,15 @@ describe("Access inheritance: children follow parent's sharing", () => {
     const parent = await createParent(`t-unshare-cascade-${Date.now()}`);
     await api("POST", `/memories/${parent.id}/share`);
     const c = await createChild(parent.id, "child-under-shared");
-    expect(c.json.shared_with_team_id).toBe(teamId);
+    expect(c.json.shared_with_org_id).toBe(orgId);
 
     const unshareRes = await api("POST", `/memories/${parent.id}/unshare`);
     expect(unshareRes.status).toBe(200);
 
     const thread = await api<ThreadResponse>("GET", `/memories/${parent.id}/thread`);
-    expect(thread.json.parent.shared_with_team_id).toBeNull();
+    expect(thread.json.parent.shared_with_org_id).toBeNull();
     for (const child of thread.json.children) {
-      expect(child.shared_with_team_id).toBeNull();
+      expect(child.shared_with_org_id).toBeNull();
     }
   });
 });

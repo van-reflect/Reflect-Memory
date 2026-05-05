@@ -20,7 +20,7 @@ import type { FixtureAuthor } from "./fixtures/types.js";
 
 interface HarnessConfig {
   run_id: string;
-  team_id: string;
+  org_id: string;
   mcp_url: string;
   users: {
     tamer: { id: string; api_key: string };

@@ -13,8 +13,8 @@ export interface UserRow {
   role: string;
   plan: string;
   stripe_customer_id: string | null;
-  team_id: string | null;
-  team_role: string | null;
+  org_id: string | null;
+  org_role: string | null;
   first_name: string | null;
   last_name: string | null;
 }
@@ -65,7 +65,7 @@ export function findOrCreateUserByEmail(
   return id;
 }
 
-const USER_COLS = "id, email, clerk_id, role, plan, stripe_customer_id, team_id, team_role, first_name, last_name";
+const USER_COLS = "id, email, clerk_id, role, plan, stripe_customer_id, org_id, org_role, first_name, last_name";
 
 export function getUserByEmail(
   db: Database.Database,
@@ -110,15 +110,15 @@ export function updateUserName(
   );
 }
 
-export function addUserToTeam(
+export function addUserToOrg(
   db: Database.Database,
   userId: string,
-  teamId: string,
+  orgId: string,
   role: "owner" | "member",
 ): void {
   db.prepare(
-    `UPDATE users SET team_id = ?, team_role = ?, plan = 'team', updated_at = ? WHERE id = ?`,
-  ).run(teamId, role, new Date().toISOString(), userId);
+    `UPDATE users SET org_id = ?, org_role = ?, plan = 'team', updated_at = ? WHERE id = ?`,
+  ).run(orgId, role, new Date().toISOString(), userId);
 }
 
 export function removeUserFromTeam(
@@ -126,7 +126,7 @@ export function removeUserFromTeam(
   userId: string,
 ): void {
   db.prepare(
-    `UPDATE users SET team_id = NULL, team_role = NULL, plan = 'free', updated_at = ? WHERE id = ?`,
+    `UPDATE users SET org_id = NULL, org_role = NULL, plan = 'free', updated_at = ? WHERE id = ?`,
   ).run(new Date().toISOString(), userId);
 }
 
@@ -135,28 +135,28 @@ export interface TeamMember {
   email: string;
   first_name: string | null;
   last_name: string | null;
-  team_role: string;
+  org_role: string;
   created_at: string;
 }
 
 export function getTeamMembers(
   db: Database.Database,
-  teamId: string,
+  orgId: string,
 ): TeamMember[] {
   return db
     .prepare(
-      `SELECT id, email, first_name, last_name, team_role, created_at
-       FROM users WHERE team_id = ? ORDER BY team_role ASC, created_at ASC`,
+      `SELECT id, email, first_name, last_name, org_role, created_at
+       FROM users WHERE org_id = ? ORDER BY org_role ASC, created_at ASC`,
     )
-    .all(teamId) as TeamMember[];
+    .all(orgId) as TeamMember[];
 }
 
-export function getTeamMemberCount(
+export function getOrgMemberCount(
   db: Database.Database,
-  teamId: string,
+  orgId: string,
 ): number {
   const row = db
-    .prepare(`SELECT COUNT(*) as cnt FROM users WHERE team_id = ?`)
-    .get(teamId) as { cnt: number };
+    .prepare(`SELECT COUNT(*) as cnt FROM users WHERE org_id = ?`)
+    .get(orgId) as { cnt: number };
   return row.cnt;
 }

@@ -123,7 +123,7 @@ export function buildLogExport(
       ? []
       : (db
           .prepare(
-            `SELECT id, email, role, plan, team_id, team_role, created_at,
+            `SELECT id, email, role, plan, org_id, org_role, created_at,
                     updated_at
              FROM users
              WHERE id IN (${[...referenced].map(() => "?").join(",")})
@@ -134,7 +134,7 @@ export function buildLogExport(
   // teams — only teams referenced by the included users.
   const teamIds = new Set<string>();
   for (const u of users) {
-    const t = u.team_id;
+    const t = u.org_id;
     if (typeof t === "string") teamIds.add(t);
   }
   const teams: Record<string, unknown>[] =
@@ -143,7 +143,7 @@ export function buildLogExport(
       : (db
           .prepare(
             `SELECT id, name, owner_id, plan, created_at, updated_at
-             FROM teams
+             FROM orgs
              WHERE id IN (${[...teamIds].map(() => "?").join(",")})`,
           )
           .all(...teamIds) as Record<string, unknown>[]);

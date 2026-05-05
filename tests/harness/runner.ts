@@ -31,7 +31,7 @@ import type {
 interface SeededOutput {
   run_id: string;
   api_base: string;
-  team_id: string;
+  org_id: string;
   user_ids: { tamer: string; van: string };
   ref_to_id: Record<string, string>;
 }
@@ -122,7 +122,7 @@ async function runOne(
     const seeded = JSON.parse(readFileSync("tests/harness/.seeded.json", "utf-8")) as SeededOutput;
     ctx.refToId = seeded.ref_to_id;
     ctx.userIds = seeded.user_ids;
-    ctx.teamId = seeded.team_id;
+    ctx.orgId = seeded.org_id;
   }
   const transcript: CapturedTranscript = await runScenario(scenario, { rep });
 
@@ -318,7 +318,7 @@ async function main(): Promise<void> {
   const ctx: ScenarioContext = {
     refToId: seeded.ref_to_id,
     userIds: seeded.user_ids,
-    teamId: seeded.team_id,
+    orgId: seeded.org_id,
   };
 
   // Each runner invocation gets a fresh timestamp-suffixed subdir under

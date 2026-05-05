@@ -1,5 +1,5 @@
 // Memory graph helpers: pure SQL projections over the edges that already
-// exist in the schema (parent_memory_id, shared_with_team_id, tags JSON
+// exist in the schema (parent_memory_id, shared_with_org_id, tags JSON
 // array, content references). No new tables — the graph is "implicit"
 // in the existing data; these functions just expose it as graph shapes.
 //
@@ -17,7 +17,7 @@ export interface GraphMemory {
   title: string;
   tags: string[];
   user_id: string;
-  shared_with_team_id: string | null;
+  shared_with_org_id: string | null;
   parent_memory_id: string | null;
   created_at: string;
   /** Why we surfaced this memory in the response. */
@@ -53,7 +53,7 @@ export interface TagCooccurrenceOptions {
   /** Per-user pool ('personal') or team-shared pool ('team'). */
   scope: "personal" | "team";
   userId: string;
-  teamId?: string | null;
+  orgId?: string | null;
   /** Drop pairs with count below this threshold. Default 1. */
   minCount?: number;
   /** Drop tags appearing on fewer memories than this. Default 1. */
@@ -67,7 +67,7 @@ interface MemoryRow {
   title: string;
   tags: string;
   user_id: string;
-  shared_with_team_id: string | null;
+  shared_with_org_id: string | null;
   parent_memory_id: string | null;
   created_at: string;
 }
@@ -84,7 +84,7 @@ function rowToGraphMemory(row: MemoryRow, relation: GraphRelation): GraphMemory 
     title: row.title,
     tags,
     user_id: row.user_id,
-    shared_with_team_id: row.shared_with_team_id,
+    shared_with_org_id: row.shared_with_org_id,
     parent_memory_id: row.parent_memory_id,
     created_at: row.created_at,
     relation,
@@ -95,27 +95,27 @@ function rowToGraphMemory(row: MemoryRow, relation: GraphRelation): GraphMemory 
 // when joined with json_each (which itself exposes `id`/`key`/`value`).
 const COLS =
   "m.id AS id, m.title AS title, m.tags AS tags, m.user_id AS user_id, " +
-  "m.shared_with_team_id AS shared_with_team_id, " +
+  "m.shared_with_org_id AS shared_with_org_id, " +
   "m.parent_memory_id AS parent_memory_id, m.created_at AS created_at";
 
 /**
- * Resolve the calling user's team_id (or null). Internal — many graph
+ * Resolve the calling user's org_id (or null). Internal — many graph
  * queries need to honour team-shared visibility.
  */
 function getUserTeamId(db: Database.Database, userId: string): string | null {
   const row = db
-    .prepare("SELECT team_id FROM users WHERE id = ?")
-    .get(userId) as { team_id: string | null } | undefined;
-  return row?.team_id ?? null;
+    .prepare("SELECT org_id FROM users WHERE id = ?")
+    .get(userId) as { org_id: string | null } | undefined;
+  return row?.org_id ?? null;
 }
 
 /**
  * SQL fragment that constrains a memories query to the rows the caller
  * can read (own + team-shared). Use as `WHERE m.deleted_at IS NULL AND ${visibilitySql("m")}`
- * with the bound params [userId, teamId ?? ''].
+ * with the bound params [userId, orgId ?? ''].
  */
 function visibilitySql(alias: string): string {
-  return `(${alias}.user_id = ? OR ${alias}.shared_with_team_id = COALESCE(?, ''))`;
+  return `(${alias}.user_id = ? OR ${alias}.shared_with_org_id = COALESCE(?, ''))`;
 }
 
 // ---------------------------------------------------------------- backlinks
@@ -138,8 +138,8 @@ export function getBacklinks(
   userId: string,
   memoryId: string,
 ): GraphMemory[] {
-  const teamId = getUserTeamId(db, userId);
-  const teamArg = teamId ?? "";
+  const orgId = getUserTeamId(db, userId);
+  const teamArg = orgId ?? "";
   const seen = new Map<string, GraphMemory>();
 
   // Children via parent_memory_id (strongest signal).
@@ -216,8 +216,8 @@ export function getGraphAround(
 ): GraphAround | null {
   const minSharedTags = opts.minSharedTags ?? 2;
   const topTagSimilar = opts.topTagSimilar ?? 5;
-  const teamId = getUserTeamId(db, userId);
-  const teamArg = teamId ?? "";
+  const orgId = getUserTeamId(db, userId);
+  const teamArg = orgId ?? "";
 
   const centerRow = db
     .prepare(
@@ -354,12 +354,12 @@ export function getTagCooccurrence(
     scopeClause = `m.user_id = ?`;
     scopeArgs = [opts.userId];
   } else {
-    if (!opts.teamId) {
+    if (!opts.orgId) {
       // No team → empty result for team scope.
       return { pairs: [], tagFrequencies: new Map() };
     }
-    scopeClause = `m.shared_with_team_id = ?`;
-    scopeArgs = [opts.teamId];
+    scopeClause = `m.shared_with_org_id = ?`;
+    scopeArgs = [opts.orgId];
   }
 
   // Per-tag frequency (how many memories carry each tag in scope).

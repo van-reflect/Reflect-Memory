@@ -39,9 +39,9 @@ export interface UserSummary {
   last_name: string | null;
   role: string | null;
   plan: string | null;
-  team_id: string | null;
+  org_id: string | null;
   team_name: string | null;
-  team_role: string | null;
+  org_role: string | null;
   team_member_count: number;
 }
 
@@ -119,7 +119,7 @@ function daysAgoIso(days: number): string {
 function loadUserSummary(db: Database.Database, userId: string): UserSummary {
   const user = db
     .prepare(
-      `SELECT id, email, first_name, last_name, role, plan, team_id, team_role
+      `SELECT id, email, first_name, last_name, role, plan, org_id, org_role
        FROM users WHERE id = ?`,
     )
     .get(userId) as
@@ -130,8 +130,8 @@ function loadUserSummary(db: Database.Database, userId: string): UserSummary {
         last_name: string | null;
         role: string | null;
         plan: string | null;
-        team_id: string | null;
-        team_role: string | null;
+        org_id: string | null;
+        org_role: string | null;
       }
     | undefined;
 
@@ -143,22 +143,22 @@ function loadUserSummary(db: Database.Database, userId: string): UserSummary {
       last_name: null,
       role: null,
       plan: null,
-      team_id: null,
+      org_id: null,
       team_name: null,
-      team_role: null,
+      org_role: null,
       team_member_count: 0,
     };
   }
 
-  let teamName: string | null = null;
+  let orgName: string | null = null;
   let teamMemberCount = 0;
-  if (user.team_id) {
+  if (user.org_id) {
     const team = db
-      .prepare(`SELECT name FROM teams WHERE id = ?`)
-      .get(user.team_id) as { name: string } | undefined;
-    teamName = team?.name ?? null;
+      .prepare(`SELECT name FROM orgs WHERE id = ?`)
+      .get(user.org_id) as { name: string } | undefined;
+    orgName = team?.name ?? null;
     teamMemberCount = (
-      db.prepare(`SELECT COUNT(*) AS n FROM users WHERE team_id = ?`).get(user.team_id) as {
+      db.prepare(`SELECT COUNT(*) AS n FROM users WHERE org_id = ?`).get(user.org_id) as {
         n: number;
       }
     ).n;
@@ -171,9 +171,9 @@ function loadUserSummary(db: Database.Database, userId: string): UserSummary {
     last_name: user.last_name,
     role: user.role,
     plan: user.plan,
-    team_id: user.team_id,
-    team_name: teamName,
-    team_role: user.team_role,
+    org_id: user.org_id,
+    team_name: orgName,
+    org_role: user.org_role,
     team_member_count: teamMemberCount,
   };
 }
@@ -181,7 +181,7 @@ function loadUserSummary(db: Database.Database, userId: string): UserSummary {
 function loadTotals(
   db: Database.Database,
   userId: string,
-  teamId: string | null,
+  orgId: string | null,
 ): BriefingTotals {
   const personal = (
     db
@@ -192,19 +192,19 @@ function loadTotals(
     db
       .prepare(
         `SELECT COUNT(*) AS n FROM memories
-         WHERE user_id = ? AND deleted_at IS NULL AND shared_with_team_id IS NOT NULL`,
+         WHERE user_id = ? AND deleted_at IS NULL AND shared_with_org_id IS NOT NULL`,
       )
       .get(userId) as { n: number }
   ).n;
   let teamPoolTotal = 0;
-  if (teamId) {
+  if (orgId) {
     teamPoolTotal = (
       db
         .prepare(
           `SELECT COUNT(*) AS n FROM memories
-           WHERE shared_with_team_id = ? AND deleted_at IS NULL`,
+           WHERE shared_with_org_id = ? AND deleted_at IS NULL`,
         )
-        .get(teamId) as { n: number }
+        .get(orgId) as { n: number }
     ).n;
   }
   return {
@@ -234,51 +234,51 @@ function loadPersonalTags(
 
 function loadTeamTags(
   db: Database.Database,
-  teamId: string,
+  orgId: string,
   limit: number,
 ): TagCount[] {
   const rows = db
     .prepare(
       `SELECT t.value AS tag, COUNT(*) AS n
        FROM memories m, json_each(m.tags) t
-       WHERE m.shared_with_team_id = ? AND m.deleted_at IS NULL
+       WHERE m.shared_with_org_id = ? AND m.deleted_at IS NULL
        GROUP BY t.value
        ORDER BY n DESC, t.value ASC
        LIMIT ?`,
     )
-    .all(teamId, limit) as { tag: string; n: number }[];
+    .all(orgId, limit) as { tag: string; n: number }[];
   return rows.map((r) => ({ tag: r.tag, count: r.n }));
 }
 
 function loadRecentTags(
   db: Database.Database,
   userId: string,
-  teamId: string | null,
+  orgId: string | null,
   days: number,
   limit: number,
 ): TagCount[] {
   const since = daysAgoIso(days);
   // Union of user's own + team-visible memories in window. COALESCE handles
-  // teamId = null (SQLite won't match NULL = anything).
+  // orgId = null (SQLite won't match NULL = anything).
   const rows = db
     .prepare(
       `SELECT t.value AS tag, COUNT(DISTINCT m.id) AS n
        FROM memories m, json_each(m.tags) t
        WHERE m.deleted_at IS NULL
          AND m.created_at >= ?
-         AND (m.user_id = ? OR m.shared_with_team_id = COALESCE(?, ''))
+         AND (m.user_id = ? OR m.shared_with_org_id = COALESCE(?, ''))
        GROUP BY t.value
        ORDER BY n DESC, t.value ASC
        LIMIT ?`,
     )
-    .all(since, userId, teamId ?? "", limit) as { tag: string; n: number }[];
+    .all(since, userId, orgId ?? "", limit) as { tag: string; n: number }[];
   return rows.map((r) => ({ tag: r.tag, count: r.n }));
 }
 
 function loadActiveThreads(
   db: Database.Database,
   userId: string,
-  teamId: string | null,
+  orgId: string | null,
   limit: number,
 ): ActiveThread[] {
   // Visibility model: a thread is "active" for the caller if
@@ -287,11 +287,11 @@ function loadActiveThreads(
   // Without (b) a teammate would never see threads other team members
   // started in their briefing, so they couldn't reply to them. This
   // matched the single-author threading bug Van hit on 2026-04-22.
-  // COALESCE on teamId so the OR clause doesn't match anything when
+  // COALESCE on orgId so the OR clause doesn't match anything when
   // the caller has no team.
   const rows = db
     .prepare(
-      `SELECT m.id, m.title, m.shared_with_team_id,
+      `SELECT m.id, m.title, m.shared_with_org_id,
               (SELECT COUNT(*) FROM memories c
                WHERE c.parent_memory_id = m.id AND c.deleted_at IS NULL) AS reply_count,
               COALESCE(
@@ -304,15 +304,15 @@ function loadActiveThreads(
          AND m.deleted_at IS NULL
          AND (
            m.user_id = ?
-           OR m.shared_with_team_id = COALESCE(?, '')
+           OR m.shared_with_org_id = COALESCE(?, '')
          )
        ORDER BY reply_count DESC, last_activity_at DESC
        LIMIT ?`,
     )
-    .all(userId, teamId ?? "", limit) as {
+    .all(userId, orgId ?? "", limit) as {
       id: string;
       title: string;
-      shared_with_team_id: string | null;
+      shared_with_org_id: string | null;
       reply_count: number;
       last_activity_at: string;
     }[];
@@ -323,7 +323,7 @@ function loadActiveThreads(
       title: r.title,
       reply_count: r.reply_count,
       last_activity_at: r.last_activity_at,
-      shared_with_team: r.shared_with_team_id !== null,
+      shared_with_team: r.shared_with_org_id !== null,
     }));
 }
 
@@ -435,19 +435,19 @@ function buildMemoryBriefingCore(
   const activeThreadsN = opts.activeThreadsN ?? DEFAULT_ACTIVE_THREADS;
 
   const user = loadUserSummary(db, userId);
-  const totals = loadTotals(db, userId, user.team_id);
+  const totals = loadTotals(db, userId, user.org_id);
   const personalTags = loadPersonalTags(db, userId, topTagsN);
-  const teamTags = user.team_id
-    ? loadTeamTags(db, user.team_id, topTagsN)
+  const teamTags = user.org_id
+    ? loadTeamTags(db, user.org_id, topTagsN)
     : [];
   const recentTags = loadRecentTags(
     db,
     userId,
-    user.team_id,
+    user.org_id,
     recencyDays,
     topTagsN,
   );
-  const activeThreads = loadActiveThreads(db, userId, user.team_id, activeThreadsN);
+  const activeThreads = loadActiveThreads(db, userId, user.org_id, activeThreadsN);
   const detectedConventions = detectConventions(personalTags, teamTags);
 
   return {
@@ -481,11 +481,11 @@ async function loadTopicClusters(
     minClusterSize: minSize,
   });
 
-  const teamCo = user.team_id
+  const teamCo = user.org_id
     ? getTagCooccurrence(db, {
         scope: "team",
         userId,
-        teamId: user.team_id,
+        orgId: user.org_id,
       })
     : { pairs: [], tagFrequencies: new Map<string, number>() };
   const teamClusters = clusterTags(teamCo.pairs, teamCo.tagFrequencies, {
@@ -496,7 +496,7 @@ async function loadTopicClusters(
     nameClusters(db, userId, "personal", null, personalClusters, {
       anthropicKey: opts.anthropicKey,
     }),
-    nameClusters(db, userId, "team", user.team_id, teamClusters, {
+    nameClusters(db, userId, "team", user.org_id, teamClusters, {
       anthropicKey: opts.anthropicKey,
     }),
   ]);
@@ -540,7 +540,7 @@ function formatUserLine(user: UserSummary): string {
   const teamPart = user.team_name
     ? ` · team **${user.team_name}** (${user.team_member_count} ${
         user.team_member_count === 1 ? "member" : "members"
-      }, role: ${user.team_role ?? "member"})`
+      }, role: ${user.org_role ?? "member"})`
     : "";
   const rolePart = user.role && user.role !== "user" ? ` · role: ${user.role}` : "";
   return `**${displayName}**${user.email ? ` (${user.email})` : ""}${teamPart}${rolePart}`;
@@ -597,7 +597,7 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
     "- **If the new memory is fresh + unrelated**, go ahead with `write_memory` — but match the tag vocabulary " +
       "from the topic clusters below (don't invent ad-hoc tags).",
   );
-  if (b.user.team_id) {
+  if (b.user.org_id) {
     lines.push(
       "- **Personal vs team:** `write_memory` is personal-by-default. " +
         "If the user explicitly says \"save this for the team\", \"share with the team\", \"team note\", or similar, " +
@@ -634,7 +634,7 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
   lines.push(renderTagList(b.personal_tags));
   lines.push("");
 
-  if (b.user.team_id) {
+  if (b.user.org_id) {
     lines.push("## Team tags (top)");
     lines.push(renderTagList(b.team_tags));
     lines.push("");

@@ -175,18 +175,18 @@ export function decryptString(
 // ---------------------------------------------------------------------------
 
 export interface KeyScope {
-  /** Exactly one of teamId or userId must be set (matches the llm_keys CHECK constraint). */
-  teamId?: string | null;
+  /** Exactly one of orgId or userId must be set (matches the llm_keys CHECK constraint). */
+  orgId?: string | null;
   userId?: string | null;
 }
 
 function llmKeySalt(scope: KeyScope): string {
-  if (scope.teamId && scope.userId) {
-    throw new Error("KeyScope must have exactly one of teamId or userId, not both");
+  if (scope.orgId && scope.userId) {
+    throw new Error("KeyScope must have exactly one of orgId or userId, not both");
   }
-  if (scope.teamId) return `team:${scope.teamId}`;
+  if (scope.orgId) return `team:${scope.orgId}`;
   if (scope.userId) return `user:${scope.userId}`;
-  throw new Error("KeyScope must have one of teamId or userId");
+  throw new Error("KeyScope must have one of orgId or userId");
 }
 
 export interface EncryptedKey extends EncryptedBlob {

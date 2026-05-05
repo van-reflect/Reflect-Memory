@@ -8,6 +8,14 @@
 --   - JSON TEXT columns become JSONB (enables GIN indexing)
 --   - Add FTS via tsvector on memories(title, content)
 --   - Partition usage_events by month
+--
+-- Two-level org/teams hierarchy (since migration 026, 2026-05-05):
+--   * `orgs` (renamed from `teams` pre-026) — top-level containers per company.
+--   * `teams` (new since 026) — sub-units within an org. Initially empty for
+--     every org; org admins create teams as they want them.
+--   * Memories can be shared at org scope (shared_with_org_id) OR team scope
+--     (shared_with_team_id), mutually exclusive (enforced at the app layer).
+--   * See docs/eng-plan-orgs-and-teams-v1.md for the full model.
 
 PRAGMA foreign_keys = ON;
 
@@ -16,6 +24,9 @@ PRAGMA foreign_keys = ON;
 -- =============================================================================
 -- Identity for memory ownership and billing.
 -- clerk_id + stripe_customer_id populated when those services are integrated.
+-- Two-level membership: org_id (which org the user belongs to) + team_id
+-- (which sub-team within that org, optional). org_role applies at the org
+-- level; per-team admin is not in v1 (org admins manage all team aspects).
 -- =============================================================================
 
 CREATE TABLE users (
@@ -27,9 +38,10 @@ CREATE TABLE users (
     stripe_customer_id  TEXT UNIQUE,                  -- Stripe customer ID (NULL until subscribed)
     plan                TEXT NOT NULL DEFAULT 'free'
                         CHECK(plan IN ('free', 'builder', 'pro', 'team', 'admin')),
-    team_id             TEXT REFERENCES teams(id),
-    team_role           TEXT DEFAULT NULL
-                        CHECK(team_role IN ('owner', 'member')),
+    org_id              TEXT REFERENCES orgs(id),
+    org_role            TEXT DEFAULT NULL
+                        CHECK(org_role IS NULL OR org_role IN ('owner', 'admin', 'member')),
+    team_id             TEXT REFERENCES teams(id),    -- sub-team within the org; NULLable
     first_name          TEXT DEFAULT NULL,
     last_name           TEXT DEFAULT NULL,
     created_at          TEXT NOT NULL,
@@ -61,12 +73,14 @@ CREATE INDEX idx_api_keys_user_id ON api_keys(user_id);
 CREATE INDEX idx_api_keys_key_hash ON api_keys(key_hash) WHERE revoked_at IS NULL;
 
 -- =============================================================================
--- TEAMS
+-- ORGS
 -- =============================================================================
--- Team tier: shared namespace for collaborative AI memory.
+-- Top-level container. Each company has one org. The org owns N teams (the
+-- new sub-unit primitive, see below) plus N members. Was named `teams` before
+-- migration 026 (2026-05-05).
 -- =============================================================================
 
-CREATE TABLE teams (
+CREATE TABLE orgs (
     id          TEXT NOT NULL PRIMARY KEY,
     name        TEXT NOT NULL,
     owner_id    TEXT NOT NULL REFERENCES users(id),
@@ -75,22 +89,55 @@ CREATE TABLE teams (
     updated_at  TEXT NOT NULL
 ) STRICT;
 
-CREATE TABLE team_invites (
+-- =============================================================================
+-- TEAMS
+-- =============================================================================
+-- Sub-unit within an org. Created by an org admin to group members
+-- (Engineering, Sales, etc.). Each team has its own shared memory pool,
+-- separate from the org-wide pool.
+-- =============================================================================
+
+CREATE TABLE teams (
     id          TEXT NOT NULL PRIMARY KEY,
-    team_id     TEXT NOT NULL REFERENCES teams(id),
-    email       TEXT,
-    token       TEXT NOT NULL UNIQUE,
-    invited_by  TEXT NOT NULL REFERENCES users(id),
-    status      TEXT NOT NULL DEFAULT 'pending'
-                CHECK(status IN ('pending', 'accepted', 'expired')),
+    org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    expires_at  TEXT NOT NULL
+    updated_at  TEXT NOT NULL,
+    UNIQUE (org_id, name)
+) STRICT;
+
+CREATE INDEX idx_teams_org_id ON teams(org_id);
+
+-- =============================================================================
+-- ORG_INVITES
+-- =============================================================================
+-- Email invite flow for joining an org. Optional `target_team_id` lets an
+-- admin pre-assign the invitee to a team that's accepted with the same flow.
+-- Was `team_invites` before migration 026.
+-- =============================================================================
+
+CREATE TABLE org_invites (
+    id              TEXT NOT NULL PRIMARY KEY,
+    org_id          TEXT NOT NULL REFERENCES orgs(id),
+    email           TEXT,
+    token           TEXT NOT NULL UNIQUE,
+    invited_by      TEXT NOT NULL REFERENCES users(id),
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending', 'accepted', 'expired')),
+    target_team_id  TEXT REFERENCES teams(id),       -- optional pre-assignment
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL
 ) STRICT;
 
 -- =============================================================================
 -- MEMORIES
 -- =============================================================================
 -- Single source of truth for all user-authored memory entries.
+-- Memories can be:
+--   - Personal: shared_with_org_id IS NULL AND shared_with_team_id IS NULL
+--   - Org-shared: shared_with_org_id is set (visible to all org members)
+--   - Team-shared: shared_with_team_id is set (visible to all team members)
+-- The two share columns are mutually exclusive (enforced at the app layer).
 -- =============================================================================
 
 CREATE TABLE memories (
@@ -108,14 +155,16 @@ CREATE TABLE memories (
     created_at           TEXT NOT NULL,
     updated_at           TEXT NOT NULL,
     deleted_at           TEXT,
+    shared_with_org_id   TEXT REFERENCES orgs(id),
     shared_with_team_id  TEXT REFERENCES teams(id),
     shared_at            TEXT DEFAULT NULL,
     -- Threading: a memory with parent_memory_id set is a "reply" to the
     -- referenced memory. Enforced at the app layer: single level only
     -- (a memory that is itself a child cannot be made a parent). Children
-    -- inherit the parent's shared_with_team_id and cascade through soft
-    -- delete / restore / permanent delete. No ON DELETE CASCADE in SQL —
-    -- app code cascades so SSE events fire per child.
+    -- inherit the parent's shared_with_org_id / shared_with_team_id and
+    -- cascade through soft delete / restore / permanent delete. No
+    -- ON DELETE CASCADE in SQL — app code cascades so SSE events fire per
+    -- child.
     parent_memory_id     TEXT REFERENCES memories(id)
 ) STRICT;
 
@@ -243,16 +292,16 @@ CREATE TABLE tag_cluster_cache (
 CREATE INDEX idx_tag_cluster_cache_user_scope ON tag_cluster_cache(user_id, scope);
 
 -- =============================================================================
--- LLM PROVIDER KEYS (migration 023)
+-- LLM PROVIDER KEYS
 -- =============================================================================
--- One row per (team_id|user_id, provider). Keys encrypted at rest with
+-- One row per (org_id|user_id, provider). Keys encrypted at rest with
 -- AES-256-GCM. Master key from RM_LLM_KEY_ENCRYPTION_KEY env, per-tenant
--- sub-key derived via HKDF-SHA256 with the team/user ID as salt. last4 stored
+-- sub-key derived via HKDF-SHA256 with the org/user ID as salt. last4 stored
 -- cleartext for UI display. See src/llm-key-crypto.ts.
 
 CREATE TABLE llm_keys (
     id                  TEXT PRIMARY KEY,
-    team_id             TEXT REFERENCES teams(id) ON DELETE CASCADE,
+    org_id              TEXT REFERENCES orgs(id) ON DELETE CASCADE,
     user_id             TEXT REFERENCES users(id) ON DELETE CASCADE,
     provider            TEXT NOT NULL,
     key_encrypted       BLOB NOT NULL,
@@ -262,29 +311,30 @@ CREATE TABLE llm_keys (
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
     CHECK (
-        (team_id IS NOT NULL AND user_id IS NULL) OR
-        (team_id IS NULL AND user_id IS NOT NULL)
+        (org_id IS NOT NULL AND user_id IS NULL) OR
+        (org_id IS NULL AND user_id IS NOT NULL)
     )
 );
 
-CREATE UNIQUE INDEX idx_llm_keys_team_provider
-    ON llm_keys(team_id, provider) WHERE team_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_llm_keys_org_provider
+    ON llm_keys(org_id, provider) WHERE org_id IS NOT NULL;
 CREATE UNIQUE INDEX idx_llm_keys_user_provider
     ON llm_keys(user_id, provider) WHERE user_id IS NOT NULL;
 
 -- =============================================================================
--- SLACK WORKSPACES (migration 024)
+-- SLACK WORKSPACES
 -- =============================================================================
--- One row per Slack workspace install, mapped 1-to-1 to a Reflect team (or
+-- One row per Slack workspace install, mapped 1-to-1 to a Reflect org (or
 -- a solo Reflect user). Bot token encrypted at rest using the same scheme as
 -- llm_keys. Soft-deleted via uninstalled_at; the row is kept for audit
--- history. See docs/eng-plan-slack-app-v1.md.
+-- history. slack_team_id is Slack's own workspace ID (from their API);
+-- reflect_org_id is OUR org ID. See docs/eng-plan-slack-app-v1.md.
 
 CREATE TABLE slack_workspaces (
     id                    TEXT PRIMARY KEY,
-    slack_team_id         TEXT NOT NULL UNIQUE,
+    slack_team_id         TEXT NOT NULL UNIQUE,           -- Slack's workspace ID (T... prefix)
     slack_team_name       TEXT NOT NULL,
-    reflect_team_id       TEXT REFERENCES teams(id),
+    reflect_org_id        TEXT REFERENCES orgs(id),
     reflect_user_id       TEXT REFERENCES users(id),
     bot_user_id           TEXT NOT NULL,
     bot_token_encrypted   BLOB NOT NULL,
@@ -295,16 +345,16 @@ CREATE TABLE slack_workspaces (
     created_at            TEXT NOT NULL,
     updated_at            TEXT NOT NULL,
     CHECK (
-        (reflect_team_id IS NOT NULL AND reflect_user_id IS NULL) OR
-        (reflect_team_id IS NULL AND reflect_user_id IS NOT NULL)
+        (reflect_org_id IS NOT NULL AND reflect_user_id IS NULL) OR
+        (reflect_org_id IS NULL AND reflect_user_id IS NOT NULL)
     )
 );
 
-CREATE INDEX idx_slack_workspaces_team ON slack_workspaces(reflect_team_id);
+CREATE INDEX idx_slack_workspaces_org ON slack_workspaces(reflect_org_id);
 CREATE INDEX idx_slack_workspaces_user ON slack_workspaces(reflect_user_id);
 
 -- =============================================================================
--- SLACK CONVERSATION STATE (migration 025)
+-- SLACK CONVERSATION STATE
 -- =============================================================================
 -- Per-Slack-thread short-term context so the agent sees the last few turns of
 -- a conversation in a thread without re-fetching from Slack. TTL'd to 24h.
@@ -339,4 +389,3 @@ CREATE INDEX idx_slack_convo_expires ON slack_conversation_state(expires_at);
 --   delegations     -- principal-to-actor delegation relationships
 --   visibility_rules -- multi-dimensional governance (principal, actor, vendor, operation, temporal scopes)
 -- =============================================================================
-

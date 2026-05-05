@@ -27,8 +27,8 @@ import {
   updateMemory,
   softDeleteMemory,
   countMemories,
-  shareMemoryToTeam,
-  listTeamMemories,
+  shareMemoryToOrg,
+  listOrgMemories,
   createChildMemory,
   listChildren,
   ThreadingError,
@@ -243,8 +243,8 @@ async function createMcpServerWithTools(
       let memory = created;
       if (share_with_team) {
         const user = getUserById(db, userId);
-        if (user?.team_id) {
-          const shared = shareMemoryToTeam(db, created.id, userId, user.team_id);
+        if (user?.org_id) {
+          const shared = shareMemoryToOrg(db, created.id, userId, user.org_id);
           if (shared) memory = shared;
         }
       }
@@ -307,11 +307,11 @@ async function createMcpServerWithTools(
     { title: "Read Team Memories", readOnlyHint: true },
     async ({ limit, offset }) => {
       const user = getUserById(db, userId);
-      if (!user?.team_id) {
+      if (!user?.org_id) {
         return { content: [{ type: "text", text: "You are not part of a team. Team memories are only available to team members." }], isError: true };
       }
 
-      const memories = listTeamMemories(db, user.team_id, { limit, offset });
+      const memories = listOrgMemories(db, user.org_id, { limit, offset });
       if (memories.length === 0) {
         return { content: [{ type: "text", text: "No shared team memories yet. Use share_memory to share a personal memory with your team." }] };
       }
@@ -449,27 +449,27 @@ async function createMcpServerWithTools(
       // Pull memories the caller can see (own + team-shared) tagged with
       // this tag, newest first.
       const teamRow = db
-        .prepare("SELECT team_id FROM users WHERE id = ?")
-        .get(userId) as { team_id: string | null } | undefined;
-      const teamId = teamRow?.team_id ?? "";
+        .prepare("SELECT org_id FROM users WHERE id = ?")
+        .get(userId) as { org_id: string | null } | undefined;
+      const orgId = teamRow?.org_id ?? "";
       const rows = db
         .prepare(
-          `SELECT m.id, m.title, m.tags, m.user_id, m.shared_with_team_id,
+          `SELECT m.id, m.title, m.tags, m.user_id, m.shared_with_org_id,
                   m.parent_memory_id, m.created_at, m.updated_at
            FROM memories m, json_each(m.tags) t
            WHERE m.deleted_at IS NULL
              AND t.value = ?
-             AND (m.user_id = ? OR m.shared_with_team_id = COALESCE(?, ''))
+             AND (m.user_id = ? OR m.shared_with_org_id = COALESCE(?, ''))
            GROUP BY m.id
            ORDER BY m.updated_at DESC
            LIMIT ?`,
         )
-        .all(tag, userId, teamId, limit) as Array<{
+        .all(tag, userId, orgId, limit) as Array<{
           id: string;
           title: string;
           tags: string;
           user_id: string;
-          shared_with_team_id: string | null;
+          shared_with_org_id: string | null;
           parent_memory_id: string | null;
           created_at: string;
           updated_at: string;
@@ -498,11 +498,11 @@ async function createMcpServerWithTools(
     { title: "Share Memory with Team", destructiveHint: true },
     async ({ memory_id }) => {
       const user = getUserById(db, userId);
-      if (!user?.team_id) {
+      if (!user?.org_id) {
         return { content: [{ type: "text", text: "You are not part of a team. Team sharing is only available to team members." }], isError: true };
       }
 
-      const updated = shareMemoryToTeam(db, memory_id, userId, user.team_id);
+      const updated = shareMemoryToOrg(db, memory_id, userId, user.org_id);
       if (!updated) {
         return { content: [{ type: "text", text: "Memory not found or you don't own it." }], isError: true };
       }
