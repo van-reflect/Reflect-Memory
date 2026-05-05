@@ -563,7 +563,7 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
   lines.push("");
   lines.push(`**User:** ${formatUserLine(b.user)}`);
   lines.push(
-    `**Totals:** ${b.totals.personal_memories} personal memories (${b.totals.personal_memories_shared} shared with team) · ${b.totals.team_pool_total} in team pool`,
+    `**Totals:** ${b.totals.personal_memories} personal memories (${b.totals.personal_memories_shared} shared with org) · ${b.totals.team_pool_total} in org pool`,
   );
   lines.push("");
 
@@ -599,10 +599,15 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
   );
   if (b.user.org_id) {
     lines.push(
-      "- **Personal vs team:** `write_memory` is personal-by-default. " +
-        "If the user explicitly says \"save this for the team\", \"share with the team\", \"team note\", or similar, " +
-        "set `share_with_team=true` on the same call (one tool call instead of two). " +
-        "Otherwise leave it false — the user can always share later via the dashboard or `share_memory`. " +
+      "- **Visibility (org vs team vs personal):** `write_memory` is personal-by-default. " +
+        "Two share scopes available via the `share_scope` parameter: " +
+        "`'org'` (visible to the whole organization — what callers used to call \"team-shared\") " +
+        "or `'team'` (visible only to the user's sub-team within the org; requires team membership). " +
+        "Set a scope ONLY when the user explicitly asks to share " +
+        "(\"save this for the team\", \"share with the org\", \"team note\", \"add to org shared\", etc.). " +
+        "Otherwise leave it unset — the user can always share later via the dashboard or `share_memory`. " +
+        "Use `read_org_memories` for the broad pool (org-wide), `read_team_memories` for the sub-team pool. " +
+        "Legacy: the older boolean `share_with_team=true` still works as an alias for `share_scope='org'`. " +
         "When in doubt, default to personal.",
     );
   }
