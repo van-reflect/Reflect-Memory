@@ -911,7 +911,15 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(slackConvoStateM
 const orgsAndTeamsMigration = "026_orgs_and_teams_v1";
 if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(orgsAndTeamsMigration)) {
   console.log("[migration:026] BEGIN orgs+teams migration");
-  runMigrationWithHooks(db, orgsAndTeamsMigration, () => {
+  // PRAGMA foreign_keys must be toggled OUTSIDE of any transaction (it's a
+  // no-op while a tx is open). Mirrors the migration 020 pattern. Without
+  // this, ALTER TABLE RENAME of `teams` → `orgs` fails inside the tx with
+  // SQLITE_CONSTRAINT_TRIGGER on dev/prod DBs that have rows in users /
+  // memories / team_invites / slack_workspaces / llm_keys referencing
+  // `teams(id)` — the deferred FK check at commit time blows up even
+  // though the rename auto-cascades the references in the schema.
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.transaction(() => {
     console.log("[migration:026] step 1: rename teams -> orgs");
     // Step 1: rename teams → orgs. SQLite (3.25+) auto-updates the foreign-
     // key references in other tables (users.team_id, memories.shared_with_team_id,
@@ -938,11 +946,9 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(orgsAndTeamsMigr
 
     // Step 3: rebuild users to widen the org_role CHECK constraint AND
     // rename team_id → org_id, team_role → org_role, AND add the new
-    // team_id (FK to the new teams table). Mirrors the migration 020
-    // pattern: PRAGMA off → CREATE users_new → INSERT SELECT → DROP →
-    // RENAME → recreate indexes → PRAGMA on.
-    db.exec("PRAGMA foreign_keys = OFF");
-    db.transaction(() => {
+    // team_id (FK to the new teams table). FKs are already disabled
+    // (toggled outside the outer tx, see top of this migration block).
+    {
       db.exec(`
         CREATE TABLE users_new (
           id                  TEXT NOT NULL PRIMARY KEY,
@@ -984,8 +990,7 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(orgsAndTeamsMigr
       db.exec(`ALTER TABLE users_new RENAME TO users`);
       db.exec(`CREATE INDEX idx_users_email ON users(email)`);
       db.exec(`CREATE INDEX idx_users_clerk_id ON users(clerk_id)`);
-    })();
-    db.exec("PRAGMA foreign_keys = ON");
+    }
 
     // Step 4: memories — rename shared_with_team_id → shared_with_org_id
     // (FK target was already auto-updated to orgs by step 1). Then add
@@ -1008,7 +1013,19 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(orgsAndTeamsMigr
     db.exec(`ALTER TABLE llm_keys RENAME COLUMN team_id TO org_id`);
     db.exec(`DROP INDEX IF EXISTS idx_llm_keys_team_provider`);
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_keys_org_provider ON llm_keys(org_id, provider) WHERE org_id IS NOT NULL`);
-  });
+
+    // Mark the migration as applied. Done inside the same tx so a
+    // partial-failure leaves _migrations clean and the next boot re-tries
+    // from the top.
+    db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+      orgsAndTeamsMigration,
+      new Date().toISOString(),
+    );
+  })();
+  // Re-enable FKs before any subsequent code runs. Done after the tx
+  // commits so that the FKs are validated lazily on subsequent statements
+  // (the migration has left the schema FK-consistent).
+  db.exec("PRAGMA foreign_keys = ON");
   console.log("[migration] Created orgs/teams hierarchy. Existing teams are now orgs; teams table is empty until admins create teams.");
 }
 
