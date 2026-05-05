@@ -136,7 +136,7 @@ describe("buildAgentTools.execute (unit, real DB)", () => {
   it("read_team_memories returns the 'no team' note when user is solo", async () => {
     const db = openDb();
     const tools = buildAgentTools({ db, reflectUserId: userId });
-    // The owner test user has no team_id by default.
+    // The owner test user has no org_id by default.
     const out = await tools.execute("read_team_memories", {});
     db.close();
     const parsed = JSON.parse(out) as { count: number; note?: string };
@@ -190,13 +190,13 @@ describe("buildAgentTools.execute (unit, real DB)", () => {
     db.close();
     const parsed = JSON.parse(out) as {
       ok: boolean;
-      memory: { id: string; shared_with_team_id: string | null };
-      shared_with_team_id: string | null;
+      memory: { id: string; shared_with_org_id: string | null };
+      shared_with_org_id: string | null;
     };
     expect(parsed.ok).toBe(true);
     expect(parsed.memory.id).toBeTruthy();
-    expect(parsed.shared_with_team_id).toBeNull();
-    expect(parsed.memory.shared_with_team_id).toBeNull();
+    expect(parsed.shared_with_org_id).toBeNull();
+    expect(parsed.memory.shared_with_org_id).toBeNull();
   });
 
   it("write_memory rejects empty title or content", async () => {

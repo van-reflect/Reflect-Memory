@@ -37,7 +37,7 @@ export interface LlmKeySummary {
 
 interface LlmKeyRow {
   id: string;
-  team_id: string | null;
+  org_id: string | null;
   user_id: string | null;
   provider: string;
   key_encrypted: Buffer;
@@ -62,13 +62,13 @@ function rowToSummary(row: LlmKeyRow): LlmKeySummary {
 }
 
 function whereClauseForScope(scope: KeyScope): { sql: string; params: unknown[] } {
-  if (scope.teamId && !scope.userId) {
-    return { sql: "team_id = ? AND user_id IS NULL", params: [scope.teamId] };
+  if (scope.orgId && !scope.userId) {
+    return { sql: "org_id = ? AND user_id IS NULL", params: [scope.orgId] };
   }
-  if (scope.userId && !scope.teamId) {
-    return { sql: "user_id = ? AND team_id IS NULL", params: [scope.userId] };
+  if (scope.userId && !scope.orgId) {
+    return { sql: "user_id = ? AND org_id IS NULL", params: [scope.userId] };
   }
-  throw new Error("KeyScope must have exactly one of teamId or userId");
+  throw new Error("KeyScope must have exactly one of orgId or userId");
 }
 
 /**
@@ -174,7 +174,7 @@ export function setLlmKey(
       requestId: options.requestId ?? null,
       metadata: {
         provider: options.provider,
-        scope_team_id: options.scope.teamId ?? null,
+        scope_org_id: options.scope.orgId ?? null,
         scope_user_id: options.scope.userId ?? null,
         last4: encrypted.last4,
       },
@@ -182,12 +182,12 @@ export function setLlmKey(
   } else {
     db.prepare(
       `INSERT INTO llm_keys (
-        id, team_id, user_id, provider, key_encrypted, key_nonce, key_last4,
+        id, org_id, user_id, provider, key_encrypted, key_nonce, key_last4,
         created_by_user_id, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       randomUUID(),
-      options.scope.teamId ?? null,
+      options.scope.orgId ?? null,
       options.scope.userId ?? null,
       options.provider,
       encrypted.ciphertext,
@@ -203,7 +203,7 @@ export function setLlmKey(
       requestId: options.requestId ?? null,
       metadata: {
         provider: options.provider,
-        scope_team_id: options.scope.teamId ?? null,
+        scope_org_id: options.scope.orgId ?? null,
         scope_user_id: options.scope.userId ?? null,
         last4: encrypted.last4,
       },
@@ -248,7 +248,7 @@ export function deleteLlmKey(
     requestId: options.requestId ?? null,
     metadata: {
       provider: options.provider,
-      scope_team_id: options.scope.teamId ?? null,
+      scope_org_id: options.scope.orgId ?? null,
       scope_user_id: options.scope.userId ?? null,
       last4: existing.key_last4,
     },

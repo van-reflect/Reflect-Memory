@@ -1,10 +1,10 @@
 // In-memory, single-process event broker for Server-Sent Events.
 //
 // Design:
-//   - One channel per user_id plus one per team_id.
-//   - Publishers call emit({ userId?, teamId? }, event). Any subscriber who
+//   - One channel per user_id plus one per org_id.
+//   - Publishers call emit({ userId?, orgId? }, event). Any subscriber who
 //     matches either scope receives it. A subscriber subscribes to exactly one
-//     userId and at most one teamId (their own).
+//     userId and at most one orgId (their own).
 //   - Delivery is fire-and-forget, best-effort, within-process only. We don't
 //     persist events or attempt delivery across restarts. Dashboards fall back
 //     to periodic polling if the stream drops.
@@ -30,7 +30,9 @@ export interface MemoryEvent {
   memory_id: string;
   /** Owner of the memory. */
   user_id: string;
-  /** Team this event is relevant to (only set for share/unshare). */
+  /** Org this event is relevant to (set for org-scoped share/unshare). */
+  org_id?: string | null;
+  /** Sub-team this event is relevant to (set for team-scoped share/unshare). */
   team_id?: string | null;
   /** Freshly-fetched memory row if still retrievable; null when hard-deleted. */
   memory?: unknown;
@@ -47,12 +49,12 @@ export interface EventClient {
 
 export interface SubscribeScope {
   userId: string;
-  teamId?: string | null;
+  orgId?: string | null;
 }
 
 export interface EmitScope {
   userId: string;
-  teamId?: string | null;
+  orgId?: string | null;
 }
 
 export class EventBroker {
@@ -75,10 +77,10 @@ export class EventBroker {
     this.userChannels.set(scope.userId, userSet);
 
     let teamSet: Set<EventClient> | null = null;
-    if (scope.teamId) {
-      teamSet = this.teamChannels.get(scope.teamId) ?? new Set<EventClient>();
+    if (scope.orgId) {
+      teamSet = this.teamChannels.get(scope.orgId) ?? new Set<EventClient>();
       teamSet.add(client);
-      this.teamChannels.set(scope.teamId, teamSet);
+      this.teamChannels.set(scope.orgId, teamSet);
     }
 
     let unsubscribed = false;
@@ -87,9 +89,9 @@ export class EventBroker {
       unsubscribed = true;
       userSet.delete(client);
       if (userSet.size === 0) this.userChannels.delete(scope.userId);
-      if (teamSet && scope.teamId) {
+      if (teamSet && scope.orgId) {
         teamSet.delete(client);
-        if (teamSet.size === 0) this.teamChannels.delete(scope.teamId);
+        if (teamSet.size === 0) this.teamChannels.delete(scope.orgId);
       }
     };
   }
@@ -104,8 +106,8 @@ export class EventBroker {
     const recipients = new Set<EventClient>();
     const userSet = this.userChannels.get(scope.userId);
     if (userSet) for (const c of userSet) recipients.add(c);
-    if (scope.teamId) {
-      const teamSet = this.teamChannels.get(scope.teamId);
+    if (scope.orgId) {
+      const teamSet = this.teamChannels.get(scope.orgId);
       if (teamSet) for (const c of teamSet) recipients.add(c);
     }
 

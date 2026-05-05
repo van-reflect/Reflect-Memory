@@ -34,7 +34,7 @@ function seedMemory(opts: SeedMemoryOpts): string {
   t.db.prepare(
     `INSERT INTO memories
        (id, user_id, title, content, tags, origin, allowed_vendors, memory_type,
-        created_at, updated_at, shared_with_team_id, shared_at, parent_memory_id)
+        created_at, updated_at, shared_with_org_id, shared_at, parent_memory_id)
      VALUES (?, ?, ?, ?, ?, 'user', '["*"]', 'semantic', ?, ?, ?, ?, ?)`,
   ).run(
     id,
@@ -52,19 +52,19 @@ function seedMemory(opts: SeedMemoryOpts): string {
 }
 
 function seedTeam(): string {
-  const teamId = randomUUID();
+  const orgId = randomUUID();
   // Need an owner user to satisfy teams.owner_id FK; create then assign.
   const owner = seedUser(t.db);
   const now = new Date().toISOString();
   t.db.prepare(
-    `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at)
+    `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
      VALUES (?, ?, ?, 'team', ?, ?)`,
-  ).run(teamId, `team-${teamId.slice(0, 6)}`, owner.id, now, now);
-  t.db.prepare(`UPDATE users SET team_id = ?, team_role = 'owner' WHERE id = ?`).run(
-    teamId,
+  ).run(orgId, `team-${orgId.slice(0, 6)}`, owner.id, now, now);
+  t.db.prepare(`UPDATE users SET org_id = ?, org_role = 'owner' WHERE id = ?`).run(
+    orgId,
     owner.id,
   );
-  return teamId;
+  return orgId;
 }
 
 describe("getBacklinks", () => {
@@ -99,17 +99,17 @@ describe("getBacklinks", () => {
   });
 
   it("respects team-shared visibility (sees teammate's references)", () => {
-    const teamId = seedTeam();
-    const tamer = seedUser(t.db, { teamId });
-    const van = seedUser(t.db, { teamId });
-    t.db.prepare(`UPDATE users SET team_role = 'owner' WHERE id = ?`).run(tamer.id);
-    t.db.prepare(`UPDATE users SET team_role = 'member' WHERE id = ?`).run(van.id);
+    const orgId = seedTeam();
+    const tamer = seedUser(t.db, { orgId });
+    const van = seedUser(t.db, { orgId });
+    t.db.prepare(`UPDATE users SET org_role = 'owner' WHERE id = ?`).run(tamer.id);
+    t.db.prepare(`UPDATE users SET org_role = 'member' WHERE id = ?`).run(van.id);
 
-    const tamerMem = seedMemory({ userId: tamer.id, sharedWithTeamId: teamId });
+    const tamerMem = seedMemory({ userId: tamer.id, sharedWithTeamId: orgId });
     const vanRef = seedMemory({
       userId: van.id,
       content: `Tracking against ${tamerMem}`,
-      sharedWithTeamId: teamId,
+      sharedWithTeamId: orgId,
     });
 
     // Tamer's perspective should include Van's reference.
@@ -224,15 +224,15 @@ describe("getTagCooccurrence", () => {
   });
 
   it("scope=team returns only team-shared cooccurrences", () => {
-    const teamId = seedTeam();
-    const owner = seedUser(t.db, { teamId });
-    seedMemory({ userId: owner.id, tags: ["x", "y"], sharedWithTeamId: teamId });
+    const orgId = seedTeam();
+    const owner = seedUser(t.db, { orgId });
+    seedMemory({ userId: owner.id, tags: ["x", "y"], sharedWithTeamId: orgId });
     seedMemory({ userId: owner.id, tags: ["y", "z"] }); // not shared
 
     const { pairs } = getTagCooccurrence(t.db, {
       scope: "team",
       userId: owner.id,
-      teamId,
+      orgId,
     });
     // Only the (x,y) pair (the shared one) should appear.
     expect(pairs.length).toBe(1);

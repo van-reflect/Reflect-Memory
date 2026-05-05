@@ -28,7 +28,7 @@ const RUNBOOKS: FixtureCategory = [
     content:
       "Dashboard → Settings → Team → Invite. Choose role (member/owner). " +
       "They get an email; on first login the OAuth handshake creates " +
-      "their user row + assigns team_id. Their MCP connector URL is the " +
+      "their user row + assigns org_id. Their MCP connector URL is the " +
       "same; they auth with their own personal API key from the dashboard.",
     tags: ["runbook", "onboarding", "team", "auth"],
     shared: false,

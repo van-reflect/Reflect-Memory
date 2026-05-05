@@ -22,7 +22,7 @@ import {
 } from "../../src/llm-key-crypto";
 
 interface KeyListResponse {
-  scope: { team_id: string | null; user_id: string | null };
+  scope: { org_id: string | null; user_id: string | null };
   supported_providers: string[];
   keys: Array<{
     provider: string;
@@ -261,7 +261,7 @@ describe("llm-key-crypto module (unit)", () => {
   it("encrypt then decrypt returns the original plaintext", () => {
     pinKey();
     try {
-      const scope = { teamId: "team-abc", userId: null };
+      const scope = { orgId: "team-abc", userId: null };
       const enc = encryptLlmKey("sk-ant-api03-secret-key-zzzz", scope);
       expect(enc.last4).toBe("zzzz");
       expect(enc.nonce.length).toBe(12);
@@ -276,11 +276,11 @@ describe("llm-key-crypto module (unit)", () => {
   it("decrypt with the wrong scope throws (HKDF derives different sub-key)", () => {
     pinKey();
     try {
-      const enc = encryptLlmKey("plaintext-1", { teamId: "team-A", userId: null });
+      const enc = encryptLlmKey("plaintext-1", { orgId: "team-A", userId: null });
       expect(() =>
-        decryptLlmKey(enc, { teamId: "team-B", userId: null }),
+        decryptLlmKey(enc, { orgId: "team-B", userId: null }),
       ).toThrow();
-      expect(() => decryptLlmKey(enc, { teamId: null, userId: "user-X" })).toThrow();
+      expect(() => decryptLlmKey(enc, { orgId: null, userId: "user-X" })).toThrow();
     } finally {
       restoreKey();
     }
@@ -289,7 +289,7 @@ describe("llm-key-crypto module (unit)", () => {
   it("decrypt with the right scope but tampered ciphertext throws (GCM auth)", () => {
     pinKey();
     try {
-      const scope = { teamId: "team-1", userId: null };
+      const scope = { orgId: "team-1", userId: null };
       const enc = encryptLlmKey("plaintext-2", scope);
       // Flip a bit in the ciphertext.
       const tampered = Buffer.from(enc.ciphertext);
@@ -302,21 +302,21 @@ describe("llm-key-crypto module (unit)", () => {
     }
   });
 
-  it("rejects KeyScope with both teamId and userId", () => {
+  it("rejects KeyScope with both orgId and userId", () => {
     pinKey();
     try {
       expect(() =>
-        encryptLlmKey("foo", { teamId: "t", userId: "u" }),
+        encryptLlmKey("foo", { orgId: "t", userId: "u" }),
       ).toThrow(/exactly one/i);
     } finally {
       restoreKey();
     }
   });
 
-  it("rejects KeyScope with neither teamId nor userId", () => {
+  it("rejects KeyScope with neither orgId nor userId", () => {
     pinKey();
     try {
-      expect(() => encryptLlmKey("foo", {})).toThrow(/teamId|userId/i);
+      expect(() => encryptLlmKey("foo", {})).toThrow(/orgId|userId/i);
     } finally {
       restoreKey();
     }
@@ -326,7 +326,7 @@ describe("llm-key-crypto module (unit)", () => {
     pinKey();
     try {
       expect(() =>
-        encryptLlmKey("   ", { teamId: "t", userId: null }),
+        encryptLlmKey("   ", { orgId: "t", userId: null }),
       ).toThrow(/empty/i);
     } finally {
       restoreKey();
@@ -339,7 +339,7 @@ describe("llm-key-crypto module (unit)", () => {
     _resetMasterKeyCacheForTests();
     try {
       expect(() =>
-        encryptLlmKey("foo", { teamId: "t", userId: null }),
+        encryptLlmKey("foo", { orgId: "t", userId: null }),
       ).toThrow(/64 hex/i);
     } finally {
       restoreKey();
@@ -352,7 +352,7 @@ describe("llm-key-crypto module (unit)", () => {
     _resetMasterKeyCacheForTests();
     try {
       expect(() =>
-        encryptLlmKey("foo", { teamId: "t", userId: null }),
+        encryptLlmKey("foo", { orgId: "t", userId: null }),
       ).toThrow(/RM_LLM_KEY_ENCRYPTION_KEY/);
     } finally {
       restoreKey();

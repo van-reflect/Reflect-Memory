@@ -23,9 +23,9 @@ import {
   listMemories,
   readMemoryById,
   readMemoryWithTeamAccess,
-  listTeamMemories,
+  listOrgMemories,
   listChildren,
-  shareMemoryToTeam,
+  shareMemoryToOrg,
   softDeleteMemory,
   unshareMemory,
   updateMemory,
@@ -77,7 +77,7 @@ function trimMemoryForLlm(m: MemoryEntry): Record<string, unknown> {
     memory_type: m.memory_type,
     created_at: m.created_at,
     updated_at: m.updated_at,
-    shared_with_team_id: m.shared_with_team_id ?? null,
+    shared_with_org_id: m.shared_with_org_id ?? null,
     parent_memory_id: m.parent_memory_id ?? null,
   };
 }
@@ -343,16 +343,16 @@ export function buildAgentTools(ctx: AgentToolContext): AgentTools {
         case "read_team_memories": {
           const limit = clampLimit(input.limit, 10);
           const teamRow = db
-            .prepare(`SELECT team_id FROM users WHERE id = ?`)
-            .get(reflectUserId) as { team_id: string | null } | undefined;
-          if (!teamRow?.team_id) {
+            .prepare(`SELECT org_id FROM users WHERE id = ?`)
+            .get(reflectUserId) as { org_id: string | null } | undefined;
+          if (!teamRow?.org_id) {
             return JSON.stringify({
               count: 0,
               memories: [],
               note: "User is not on a team — no team-shared memories to read.",
             });
           }
-          const memories = listTeamMemories(db, teamRow.team_id, { limit });
+          const memories = listOrgMemories(db, teamRow.org_id, { limit });
           return JSON.stringify({
             count: memories.length,
             memories: memories.map(trimMemoryForLlm),
@@ -401,17 +401,17 @@ export function buildAgentTools(ctx: AgentToolContext): AgentTools {
           let shared: string | null = null;
           if (input.share_with_team === true) {
             const teamRow = db
-              .prepare(`SELECT team_id FROM users WHERE id = ?`)
-              .get(reflectUserId) as { team_id: string | null } | undefined;
-            if (teamRow?.team_id) {
-              const sharedMemory = shareMemoryToTeam(db, created.id, reflectUserId, teamRow.team_id);
-              if (sharedMemory) shared = teamRow.team_id;
+              .prepare(`SELECT org_id FROM users WHERE id = ?`)
+              .get(reflectUserId) as { org_id: string | null } | undefined;
+            if (teamRow?.org_id) {
+              const sharedMemory = shareMemoryToOrg(db, created.id, reflectUserId, teamRow.org_id);
+              if (sharedMemory) shared = teamRow.org_id;
             }
           }
           return JSON.stringify({
             ok: true,
             memory: trimMemoryForLlm(created),
-            shared_with_team_id: shared,
+            shared_with_org_id: shared,
           });
         }
         case "write_child_memory": {
@@ -475,12 +475,12 @@ export function buildAgentTools(ctx: AgentToolContext): AgentTools {
           }
           if (share) {
             const teamRow = db
-              .prepare(`SELECT team_id FROM users WHERE id = ?`)
-              .get(reflectUserId) as { team_id: string | null } | undefined;
-            if (!teamRow?.team_id) {
+              .prepare(`SELECT org_id FROM users WHERE id = ?`)
+              .get(reflectUserId) as { org_id: string | null } | undefined;
+            if (!teamRow?.org_id) {
               return JSON.stringify({ error: "You are not on a team — nothing to share with" });
             }
-            const sharedMemory = shareMemoryToTeam(db, id, reflectUserId, teamRow.team_id);
+            const sharedMemory = shareMemoryToOrg(db, id, reflectUserId, teamRow.org_id);
             if (!sharedMemory) return JSON.stringify({ error: "Share failed" });
             return JSON.stringify({ ok: true, shared: true, memory: trimMemoryForLlm(sharedMemory) });
           }

@@ -28,7 +28,7 @@ const DEV_DB = process.env.HARNESS_DEV_DB ?? "/var/lib/reflect/dev/data/reflect-
 
 interface HarnessConfig {
   run_id: string;
-  team_id: string;
+  org_id: string;
   team_name: string;
   mcp_url: string;
   generated_at: string;
@@ -51,7 +51,7 @@ interface SeededOutput {
   run_id: string;
   seeded_at: string;
   api_base: string;
-  team_id: string;
+  org_id: string;
   user_ids: { tamer: string; van: string };
   records: SeededRecord[];
   ref_to_id: Record<string, string>;
@@ -94,18 +94,18 @@ function buildSeedSql(records: Array<{ fx: MemoryFixture; rec: SeededRecord }>):
     const userId = USER_BY_AUTHOR[fx.author];
     const tagsJson = JSON.stringify(fx.tags);
     // Children inherit sharing from their parent. For top-level fixtures
-    // we set shared_with_team_id directly when fx.shared is true.
+    // we set shared_with_org_id directly when fx.shared is true.
     let sharedTeam = "NULL";
     let sharedAt = "NULL";
     if (rec.parent_id) {
       // Children inherit — look up parent's shared status from records list.
       const parentRec = records.find((r) => r.rec.id === rec.parent_id);
       if (parentRec?.rec.shared) {
-        sharedTeam = sql(config.team_id);
+        sharedTeam = sql(config.org_id);
         sharedAt = sql(rec.created_at);
       }
     } else if (fx.shared) {
-      sharedTeam = sql(config.team_id);
+      sharedTeam = sql(config.org_id);
       sharedAt = sql(rec.created_at);
     }
 
@@ -113,7 +113,7 @@ function buildSeedSql(records: Array<{ fx: MemoryFixture; rec: SeededRecord }>):
     const memoryType = fx.memory_type ?? "semantic";
 
     stmts.push(
-      `INSERT INTO memories (id, user_id, title, content, tags, origin, allowed_vendors, memory_type, created_at, updated_at, shared_with_team_id, shared_at, parent_memory_id) VALUES (${sql(rec.id)}, ${sql(userId)}, ${sql(fx.title)}, ${sql(fx.content)}, ${sql(tagsJson)}, 'user', '["*"]', ${sql(memoryType)}, ${sql(rec.created_at)}, ${sql(rec.created_at)}, ${sharedTeam}, ${sharedAt}, ${parentClause});`,
+      `INSERT INTO memories (id, user_id, title, content, tags, origin, allowed_vendors, memory_type, created_at, updated_at, shared_with_org_id, shared_at, parent_memory_id) VALUES (${sql(rec.id)}, ${sql(userId)}, ${sql(fx.title)}, ${sql(fx.content)}, ${sql(tagsJson)}, 'user', '["*"]', ${sql(memoryType)}, ${sql(rec.created_at)}, ${sql(rec.created_at)}, ${sharedTeam}, ${sharedAt}, ${parentClause});`,
     );
   }
 
@@ -175,7 +175,7 @@ function main(): void {
     run_id: config.run_id,
     seeded_at: new Date().toISOString(),
     api_base: API_BASE,
-    team_id: config.team_id,
+    org_id: config.org_id,
     user_ids: {
       tamer: config.users.tamer.id,
       van: config.users.van.id,

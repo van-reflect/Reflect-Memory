@@ -34,7 +34,7 @@ const CONFIG_PATH = "tests/harness/.harness-config.json";
 interface HarnessUser {
   id: string;
   email: string;
-  team_role: "owner" | "member";
+  org_role: "owner" | "member";
   api_key: string; // raw rm_live_... — only persisted locally
   api_key_hash: string;
   api_key_prefix: string;
@@ -43,7 +43,7 @@ interface HarnessUser {
 
 interface HarnessConfig {
   run_id: string;
-  team_id: string;
+  org_id: string;
   team_name: string;
   mcp_url: string;
   generated_at: string;
@@ -61,7 +61,7 @@ function generateKey(userId: string, label: string): HarnessUser {
   return {
     id: userId,
     email: "<placeholder>",
-    team_role: "owner",
+    org_role: "owner",
     api_key: fullKey,
     api_key_hash: keyHash,
     api_key_prefix: keyPrefix,
@@ -104,21 +104,21 @@ function main(): void {
   const now = new Date().toISOString();
 
   // 1. Resolve or create team.
-  const teamName = "harness-team";
-  let teamId = fetchExistingTeamId(teamName);
+  const orgName = "harness-team";
+  let orgId = fetchExistingTeamId(orgName);
   let teamCreatedNow = false;
-  if (!teamId) {
-    teamId = randomUUID();
+  if (!orgId) {
+    orgId = randomUUID();
     teamCreatedNow = true;
-    console.log(`[setup] creating team ${teamName} (${teamId})`);
+    console.log(`[setup] creating team ${orgName} (${orgId})`);
   } else {
-    console.log(`[setup] reusing team ${teamName} (${teamId})`);
+    console.log(`[setup] reusing team ${orgName} (${orgId})`);
   }
 
   // 2. Resolve or create users. We need the team id known before we can
   // insert user rows pointing at it. The owner_id FK on teams also needs
-  // a real user, so we insert the owner user first WITHOUT team_id, then
-  // create the team referencing that user, then update the user's team_id.
+  // a real user, so we insert the owner user first WITHOUT org_id, then
+  // create the team referencing that user, then update the user's org_id.
   const tamerEmail = "harness-tamer@test.local";
   const vanEmail = "harness-van@test.local";
   let tamerId = fetchExistingUserId(tamerEmail);
@@ -133,14 +133,14 @@ function main(): void {
 
   // 3. Generate fresh API keys for both users (revokes any old harness
   // keys to keep cred footprint small).
-  const tamerUser = { ...generateKey(tamerId, "harness-tamer"), email: tamerEmail, team_role: "owner" as const };
-  const vanUser = { ...generateKey(vanId, "harness-van"), email: vanEmail, team_role: "member" as const };
+  const tamerUser = { ...generateKey(tamerId, "harness-tamer"), email: tamerEmail, org_role: "owner" as const };
+  const vanUser = { ...generateKey(vanId, "harness-van"), email: vanEmail, org_role: "member" as const };
 
   // 4. Build the SQL transaction. Order matters: users → team → users
-  // (back-fill team_id) → revoke old keys → insert new keys.
+  // (back-fill org_id) → revoke old keys → insert new keys.
   const sql = [
     "BEGIN TRANSACTION;",
-    // Users (idempotent INSERT OR IGNORE; back-fill team_id later).
+    // Users (idempotent INSERT OR IGNORE; back-fill org_id later).
     createdTamer
       ? `INSERT INTO users (id, email, created_at, updated_at) VALUES ('${tamerId}', '${tamerEmail}', '${now}', '${now}');`
       : "",
@@ -149,11 +149,11 @@ function main(): void {
       : "",
     // Team.
     teamCreatedNow
-      ? `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at) VALUES ('${teamId}', '${teamName}', '${tamerId}', 'team', '${now}', '${now}');`
+      ? `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at) VALUES ('${orgId}', '${orgName}', '${tamerId}', 'team', '${now}', '${now}');`
       : "",
     // Users → team membership.
-    `UPDATE users SET team_id = '${teamId}', team_role = 'owner' WHERE id = '${tamerId}';`,
-    `UPDATE users SET team_id = '${teamId}', team_role = 'member' WHERE id = '${vanId}';`,
+    `UPDATE users SET org_id = '${orgId}', org_role = 'owner' WHERE id = '${tamerId}';`,
+    `UPDATE users SET org_id = '${orgId}', org_role = 'member' WHERE id = '${vanId}';`,
     // Revoke any old harness API keys (label-scoped to ours).
     `UPDATE api_keys SET revoked_at = '${now}' WHERE user_id IN ('${tamerId}', '${vanId}') AND revoked_at IS NULL AND label LIKE 'harness-%';`,
     // Insert new keys.
@@ -171,15 +171,15 @@ function main(): void {
   // intentionally NOT included — we don't need them client-side.
   const config: HarnessConfig = {
     run_id: runId,
-    team_id: teamId,
-    team_name: teamName,
+    org_id: orgId,
+    team_name: orgName,
     mcp_url: MCP_URL,
     generated_at: now,
     users: {
       tamer: {
         id: tamerUser.id,
         email: tamerUser.email,
-        team_role: tamerUser.team_role,
+        org_role: tamerUser.org_role,
         api_key: tamerUser.api_key,
         api_key_prefix: tamerUser.api_key_prefix,
         api_key_id: tamerUser.api_key_id,
@@ -187,7 +187,7 @@ function main(): void {
       van: {
         id: vanUser.id,
         email: vanUser.email,
-        team_role: vanUser.team_role,
+        org_role: vanUser.org_role,
         api_key: vanUser.api_key,
         api_key_prefix: vanUser.api_key_prefix,
         api_key_id: vanUser.api_key_id,
@@ -199,7 +199,7 @@ function main(): void {
 
   console.log(`[setup] wrote ${CONFIG_PATH}`);
   console.log(`[setup] run_id=${runId}`);
-  console.log(`[setup] team_id=${teamId}`);
+  console.log(`[setup] org_id=${orgId}`);
   console.log(`[setup] tamer api key prefix=${tamerUser.api_key_prefix}`);
   console.log(`[setup] van   api key prefix=${vanUser.api_key_prefix}`);
 }

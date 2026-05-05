@@ -18,11 +18,25 @@ import {
   findOrCreateUserByEmail,
   getUserById,
   updateUserName,
-  addUserToTeam,
+  addUserToOrg,
   removeUserFromTeam,
+  setOrgRole,
   getTeamMembers,
-  getTeamMemberCount,
+  getOrgMemberCount,
+  type OrgRole,
 } from "./user-service.js";
+import {
+  createTeam,
+  listTeamsInOrg,
+  getTeam,
+  renameTeam,
+  deleteTeam,
+  assignUserToTeam,
+  removeUserFromTeam as removeUserFromSubteam,
+  listTeamMembers as listSubteamMembers,
+  countTeamSharedMemories,
+  TeamServiceError,
+} from "./team-service.js";
 import type { DeploymentConfig } from "./deployment-config.js";
 import type { EventBroker, EventClient, MemoryEvent, MemoryEventType } from "./event-broker.js";
 import { createSsoVerifier, validateSsoConfig } from "./sso-auth.js";
@@ -99,12 +113,13 @@ import {
   type MemoryFilter,
   type MemoryType,
   type PaginationOptions,
+  shareMemoryToOrg,
   shareMemoryToTeam,
   unshareMemory,
-  listTeamMemories,
-  countTeamMemories,
-  searchTeamMemories,
-  countSearchTeamMemories,
+  listOrgMemories,
+  countOrgMemories,
+  searchOrgMemories,
+  countSearchOrgMemories,
   getVersionHistory,
   createChildMemory,
   listChildren,
@@ -274,7 +289,17 @@ const memoryBodySchema = {
       enum: ["semantic", "episodic", "procedural"],
       default: "semantic",
     },
+    // Share scope. share_with_team (boolean, legacy alias from 2026-04-30)
+    // is preserved as-is and maps to share_scope='org' (the broad pool —
+    // what callers experienced as "team-shared" before migration 026).
+    // share_scope is the canonical parameter going forward; it accepts
+    // 'org' (broad pool) or 'team' (sub-team pool of the user's current
+    // team). If neither is set, the memory is personal.
     share_with_team: { type: "boolean" as const, default: false },
+    share_scope: {
+      type: "string" as const,
+      enum: ["org", "team"],
+    },
   },
 };
 
@@ -302,7 +327,14 @@ const agentMemoryBodySchema = {
       enum: ["semantic", "episodic", "procedural"],
       default: "semantic",
     },
+    // share_with_team is the legacy boolean (kept as alias mapping to
+    // share_scope='org'); share_scope is the canonical parameter — see
+    // the user-path schema above for the full contract.
     share_with_team: { type: "boolean" as const, default: false },
+    share_scope: {
+      type: "string" as const,
+      enum: ["org", "team"],
+    },
   },
 };
 
@@ -483,12 +515,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     testMode,
   } = config;
 
-  // Helper: resolve the team_id for a user (used to scope emit() and subscribe()).
+  // Helper: resolve the org_id for a user (used to scope emit() and subscribe()).
   function getUserTeamId(uid: string): string | null {
     const row = db
-      .prepare("SELECT team_id FROM users WHERE id = ?")
-      .get(uid) as { team_id: string | null } | undefined;
-    return row?.team_id ?? null;
+      .prepare("SELECT org_id FROM users WHERE id = ?")
+      .get(uid) as { org_id: string | null } | undefined;
+    return row?.org_id ?? null;
   }
 
   // Helper: fetch a memory row for inclusion in the event payload.
@@ -497,7 +529,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const row = db
         .prepare(
           `SELECT id, user_id, title, content, tags, origin, allowed_vendors,
-                  created_at, updated_at, deleted_at, shared_with_team_id, shared_at
+                  created_at, updated_at, deleted_at, shared_with_org_id, shared_at
            FROM memories WHERE id = ?`,
         )
         .get(memoryId) as Record<string, unknown> | undefined;
@@ -516,17 +548,18 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     type: MemoryEventType,
     ownerUserId: string,
     memoryId: string,
-    opts: { teamId?: string | null; includeBody?: boolean } = {},
+    opts: { orgId?: string | null; teamId?: string | null; includeBody?: boolean } = {},
   ): void {
     const event: MemoryEvent = {
       type,
       memory_id: memoryId,
       user_id: ownerUserId,
+      org_id: opts.orgId ?? null,
       team_id: opts.teamId ?? null,
       memory: opts.includeBody === false ? undefined : fetchMemoryForEvent(memoryId),
       emitted_at: new Date().toISOString(),
     };
-    eventBroker.emit({ userId: ownerUserId, teamId: opts.teamId ?? null }, event);
+    eventBroker.emit({ userId: ownerUserId, orgId: opts.orgId ?? null }, event);
   }
 
   const server = Fastify({
@@ -901,7 +934,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   server.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?")[0];
     if (path === "/health" || path === "/openapi.json" || path === "/favicon.ico" || path === "/icon.png") return;
-    if (request.method === "GET" && path.startsWith("/teams/invite/")) return;
+    if (request.method === "GET" && path.startsWith("/orgs/invite/")) return;
     if (request.method === "POST" && (path === "/waitlist" || path === "/early-access" || path === "/integration-requests")) return;
     if (deployment.allowPublicWebhooks && request.method === "POST" && path === "/webhooks/clerk") return;
     if (deployment.allowPublicWebhooks && request.method === "POST" && path === "/webhooks/stripe") return;
@@ -1424,7 +1457,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const simMinShared = Math.max(2, parseInt(qs.sim_min_shared ?? "2", 10));
 
       const user = getUserById(db, request.userId);
-      const teamId = user?.team_id ?? null;
+      const orgId = user?.org_id ?? null;
       const sinceClause =
         days > 0
           ? `AND m.created_at >= '${new Date(Date.now() - days * 86400_000).toISOString()}'`
@@ -1439,21 +1472,21 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         scopeWhere = `m.user_id = ?`;
         scopeArgs.push(request.userId);
       } else if (scope === "team") {
-        if (!teamId) {
+        if (!orgId) {
           return { nodes: [], edges: [], clusters: [], scope, days, max_nodes: maxNodes, truncated: false };
         }
-        scopeWhere = `m.shared_with_team_id = ?`;
-        scopeArgs.push(teamId);
+        scopeWhere = `m.shared_with_org_id = ?`;
+        scopeArgs.push(orgId);
       } else {
-        scopeWhere = `(m.user_id = ? OR m.shared_with_team_id = COALESCE(?, ''))`;
-        scopeArgs.push(request.userId, teamId ?? "");
+        scopeWhere = `(m.user_id = ? OR m.shared_with_org_id = COALESCE(?, ''))`;
+        scopeArgs.push(request.userId, orgId ?? "");
       }
 
       // Pull memories. Newest first so when we hit max_nodes we keep the
       // most relevant. Includes thread root + reply count for sizing.
       const memoryRows = db
         .prepare(
-          `SELECT m.id, m.title, m.tags, m.user_id, m.shared_with_team_id,
+          `SELECT m.id, m.title, m.tags, m.user_id, m.shared_with_org_id,
                   m.parent_memory_id, m.created_at,
                   (SELECT COUNT(*) FROM memories c
                    WHERE c.parent_memory_id = m.id AND c.deleted_at IS NULL) AS reply_count
@@ -1469,7 +1502,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           title: string;
           tags: string;
           user_id: string;
-          shared_with_team_id: string | null;
+          shared_with_org_id: string | null;
           parent_memory_id: string | null;
           created_at: string;
           reply_count: number;
@@ -1491,17 +1524,17 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
             )
           : [];
       const teamCluster =
-        scope !== "personal" && teamId
+        scope !== "personal" && orgId
           ? clusterTags(
               ...((): [Array<{ tag_a: string; tag_b: string; count: number }>, Map<string, number>] => {
-                const c = getTagCooccurrence(db, { scope: "team", userId: request.userId, teamId });
+                const c = getTagCooccurrence(db, { scope: "team", userId: request.userId, orgId });
                 return [c.pairs, c.tagFrequencies];
               })(),
             )
           : [];
       const [namedPersonal, namedTeam] = await Promise.all([
         nameClusters(db, request.userId, "personal", null, personalCluster, {}),
-        nameClusters(db, request.userId, "team", teamId, teamCluster, {}),
+        nameClusters(db, request.userId, "team", orgId, teamCluster, {}),
       ]);
       const allNamed = [...namedPersonal, ...namedTeam];
 
@@ -1555,7 +1588,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           title: m.title,
           tags,
           author_id: m.user_id,
-          shared: m.shared_with_team_id !== null,
+          shared: m.shared_with_org_id !== null,
           is_thread_root: m.parent_memory_id === null && m.reply_count > 0,
           is_thread_child: m.parent_memory_id !== null,
           reply_count: m.reply_count,
@@ -1629,7 +1662,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // close idle connections.
   //
   // Client contract:
-  //   event: hello                 { subscribed: {user_id, team_id} }
+  //   event: hello                 { subscribed: {user_id, org_id} }
   //   event: memory.created        MemoryEvent
   //   event: memory.updated        MemoryEvent
   //   event: memory.deleted        MemoryEvent
@@ -1652,7 +1685,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return { error: "Agent keys cannot subscribe to the event stream" };
       }
 
-      const teamId = getUserTeamId(request.userId);
+      const orgId = getUserTeamId(request.userId);
 
       // Take over the raw response. Fastify will not try to finalize after
       // we return; lifecycle is fully ours until the client disconnects.
@@ -1679,7 +1712,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       // Initial hello so the client can verify auth + scope before trusting
       // silence as "no events yet."
       write("hello", {
-        subscribed: { user_id: request.userId, team_id: teamId },
+        subscribed: { user_id: request.userId, org_id: orgId },
         emitted_at: new Date().toISOString(),
       });
 
@@ -1697,7 +1730,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       };
 
       const unsubscribe = eventBroker.subscribe(
-        { userId: request.userId, teamId: teamId ?? undefined },
+        { userId: request.userId, orgId: orgId ?? undefined },
         client,
       );
 
@@ -2079,11 +2112,11 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // DELETE /admin/llm-keys/:provider    -> remove
   // ===========================================================================
 
-  function resolveLlmKeyScope(uid: string): { teamId: string | null; userId: string | null } {
-    const teamId = getUserTeamId(uid);
-    return teamId
-      ? { teamId, userId: null }
-      : { teamId: null, userId: uid };
+  function resolveLlmKeyScope(uid: string): { orgId: string | null; userId: string | null } {
+    const orgId = getUserTeamId(uid);
+    return orgId
+      ? { orgId, userId: null }
+      : { orgId: null, userId: uid };
   }
 
   server.get(
@@ -2097,7 +2130,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const scope = resolveLlmKeyScope(request.userId);
       const keys = listLlmKeys(db, scope);
       return {
-        scope: { team_id: scope.teamId, user_id: scope.userId },
+        scope: { org_id: scope.orgId, user_id: scope.userId },
         supported_providers: SUPPORTED_PROVIDERS,
         keys: keys.map((k) => ({
           provider: k.provider,
@@ -2215,7 +2248,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       slack_team_id: ws.slackTeamId,
       slack_team_name: ws.slackTeamName,
       bot_user_id: ws.botUserId,
-      reflect_team_id: ws.reflectTeamId,
+      reflect_org_id: ws.reflectTeamId,
       reflect_user_id: ws.reflectUserId,
       installed_by_user_id: ws.installedByUserId,
       installed_at: ws.installedAt,
@@ -2226,8 +2259,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   }
 
   function getWorkspaceForCallerScope(uid: string): SlackWorkspace | null {
-    const teamId = getUserTeamId(uid);
-    if (teamId) return getActiveWorkspaceForTeam(db, teamId);
+    const orgId = getUserTeamId(uid);
+    if (orgId) return getActiveWorkspaceForTeam(db, orgId);
     return getActiveWorkspaceForUser(db, uid);
   }
 
@@ -2473,6 +2506,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         allowed_vendors?: string[];
         memory_type?: string;
         share_with_team?: boolean;
+        share_scope?: "org" | "team";
       };
 
       const allowedVendors = body.allowed_vendors ?? ["*"];
@@ -2494,23 +2528,64 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
       const created = createMemory(db, request.userId, input);
       emitMemoryEvent("memory.created", request.userId, created.id);
-      let memory = created;
-      if (body.share_with_team === true) {
-        const user = getUserById(db, request.userId);
-        if (user?.team_id) {
-          const shared = shareMemoryToTeam(db, created.id, request.userId, user.team_id);
-          if (shared) {
-            memory = shared;
-            emitMemoryEvent("memory.shared", request.userId, created.id, {
-              teamId: user.team_id,
-            });
-          }
-        }
-      }
+      const memory = applyShareScope(created.id, request.userId, body) ?? created;
       reply.code(201);
       return memory;
     },
   );
+
+  // Resolve the requested share scope and apply it to a freshly-created
+  // memory. Returns the updated MemoryEntry on success, or null if no
+  // share happened (caller falls back to the unshared row).
+  //
+  // Precedence:
+  //   share_scope='team' AND user is on a team   → shareMemoryToTeam
+  //   share_scope='org'  OR share_with_team===true → shareMemoryToOrg
+  //   otherwise                                   → personal (no share)
+  //
+  // share_with_team is the legacy alias from the 2026-04-30 ergonomics
+  // commit. It maps to share_scope='org' (the broad pool) so that
+  // pre-migration callers see the same visibility post-migration. New
+  // callers should use share_scope explicitly.
+  function applyShareScope(
+    memoryId: string,
+    userId: string,
+    body: { share_with_team?: boolean; share_scope?: "org" | "team" },
+  ): MemoryEntry | null {
+    const wantsTeam = body.share_scope === "team";
+    const wantsOrg = body.share_scope === "org" || body.share_with_team === true;
+    if (!wantsTeam && !wantsOrg) return null;
+
+    const user = getUserById(db, userId);
+    if (!user) return null;
+
+    if (wantsTeam) {
+      // Sub-team scope is only valid when the user is on a team. If
+      // they're not, silently no-op (matches the forgiving pattern from
+      // the legacy share_with_team flag — the LLM doesn't have to know
+      // membership state to set the flag).
+      if (!user.team_id) return null;
+      const shared = shareMemoryToTeam(db, memoryId, userId, user.team_id);
+      if (shared) {
+        emitMemoryEvent("memory.shared", userId, memoryId, {
+          teamId: user.team_id,
+        });
+        return shared;
+      }
+      return null;
+    }
+
+    // wantsOrg
+    if (!user.org_id) return null;
+    const shared = shareMemoryToOrg(db, memoryId, userId, user.org_id);
+    if (shared) {
+      emitMemoryEvent("memory.shared", userId, memoryId, {
+        orgId: user.org_id,
+      });
+      return shared;
+    }
+    return null;
+  }
 
   // ===========================================================================
   // POST /agent/memories -- Create a memory (agent path)
@@ -2537,6 +2612,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         origin?: string;
         memory_type?: string;
         share_with_team?: boolean;
+        share_scope?: "org" | "team";
       };
 
       const vendorErr = validateAllowedVendors(body.allowed_vendors, validVendors);
@@ -2564,19 +2640,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
 
       emitMemoryEvent("memory.created", request.userId, created.id);
-      let memory = created;
-      if (body.share_with_team === true) {
-        const user = getUserById(db, request.userId);
-        if (user?.team_id) {
-          const shared = shareMemoryToTeam(db, created.id, request.userId, user.team_id);
-          if (shared) {
-            memory = shared;
-            emitMemoryEvent("memory.shared", request.userId, created.id, {
-              teamId: user.team_id,
-            });
-          }
-        }
-      }
+      const memory = applyShareScope(created.id, request.userId, body) ?? created;
       reply.code(201);
       return memory;
     },
@@ -2781,8 +2845,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
-      const teamScope = memory.shared_with_team_id
-        ? { teamId: memory.shared_with_team_id }
+      const teamScope = memory.shared_with_org_id
+        ? { orgId: memory.shared_with_org_id }
         : {};
       emitMemoryEvent("memory.deleted", request.userId, id, teamScope);
       if (!memory.parent_memory_id) {
@@ -2976,13 +3040,13 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const offset = Math.max(parseInt(query.offset || "0", 10) || 0, 0);
 
       const user = getUserById(db, request.userId);
-      if (!user?.team_id) {
+      if (!user?.org_id) {
         reply.code(404);
         return { error: "Not a member of any team" };
       }
 
-      const memories = listTeamMemories(db, user.team_id, { limit, offset });
-      const total = countTeamMemories(db, user.team_id);
+      const memories = listOrgMemories(db, user.org_id, { limit, offset });
+      const total = countOrgMemories(db, user.org_id);
       return {
         team_memories: memories,
         total,
@@ -3016,7 +3080,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const { memory_id } = request.body as { memory_id: string };
 
       const user = getUserById(db, request.userId);
-      if (!user?.team_id) {
+      if (!user?.org_id) {
         reply.code(404);
         return { error: "Not a member of any team" };
       }
@@ -3028,15 +3092,15 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
 
       try {
-        shareMemoryToTeam(db, memory_id, request.userId, user.team_id);
+        shareMemoryToOrg(db, memory_id, request.userId, user.org_id);
         emitMemoryEvent("memory.shared", request.userId, memory_id, {
-          teamId: user.team_id,
+          orgId: user.org_id,
         });
-        return { shared: true, memory_id, team_id: user.team_id };
+        return { shared: true, memory_id, org_id: user.org_id };
       } catch (err) {
         const msg = (err as Error).message;
         if (msg.includes("already shared")) {
-          return { shared: true, memory_id, team_id: user.team_id, note: "Already shared" };
+          return { shared: true, memory_id, org_id: user.org_id, note: "Already shared" };
         }
         reply.code(400);
         return { error: "Failed to share memory" };
@@ -3194,8 +3258,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
-      const teamScope = memory.shared_with_team_id
-        ? { teamId: memory.shared_with_team_id }
+      const teamScope = memory.shared_with_org_id
+        ? { orgId: memory.shared_with_org_id }
         : {};
       emitMemoryEvent("memory.deleted", request.userId, id, teamScope);
 
@@ -3229,8 +3293,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found or not in trash" };
       }
-      const teamScope = memory.shared_with_team_id
-        ? { teamId: memory.shared_with_team_id }
+      const teamScope = memory.shared_with_org_id
+        ? { orgId: memory.shared_with_org_id }
         : {};
       emitMemoryEvent("memory.restored", request.userId, memory.id, teamScope);
 
@@ -3262,11 +3326,11 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       // the right team scope (the row is gone afterward).
       const snapshot = db
         .prepare(
-          `SELECT parent_memory_id, shared_with_team_id FROM memories
+          `SELECT parent_memory_id, shared_with_org_id FROM memories
            WHERE id = ? AND user_id = ?`,
         )
         .get(id, request.userId) as
-        | { parent_memory_id: string | null; shared_with_team_id: string | null }
+        | { parent_memory_id: string | null; shared_with_org_id: string | null }
         | undefined;
 
       // Cascade BEFORE the parent purge: caller's own children get fully
@@ -3282,8 +3346,8 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         reply.code(404);
         return { error: "Memory not found" };
       }
-      const teamScope = snapshot?.shared_with_team_id
-        ? { teamId: snapshot.shared_with_team_id }
+      const teamScope = snapshot?.shared_with_org_id
+        ? { orgId: snapshot.shared_with_org_id }
         : {};
       // includeBody:false — the row is gone; we only emit the id so clients
       // can remove it from local state.
@@ -4235,7 +4299,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // ===========================================================================
 
   server.post(
-    "/teams",
+    "/orgs",
     {
       schema: {
         body: {
@@ -4261,7 +4325,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     async (request, reply) => {
       const user = getUserById(db, request.userId);
       if (!user) return reply.code(404).send({ error: "User not found" });
-      if (user.team_id) return reply.code(409).send({ error: "Already on a team" });
+      if (user.org_id) return reply.code(409).send({ error: "Already on a team" });
 
       const body = request.body as {
         name: string;
@@ -4270,14 +4334,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         seed_memory?: { title: string; content: string };
       };
 
-      const teamId = randomUUID();
+      const orgId = randomUUID();
       const now = new Date().toISOString();
 
       db.prepare(
-        `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at) VALUES (?, ?, ?, 'team', ?, ?)`,
-      ).run(teamId, body.name.trim(), request.userId, now, now);
+        `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at) VALUES (?, ?, ?, 'team', ?, ?)`,
+      ).run(orgId, body.name.trim(), request.userId, now, now);
 
-      addUserToTeam(db, request.userId, teamId, "owner");
+      addUserToOrg(db, request.userId, orgId, "owner");
 
       if (body.first_name || body.last_name) {
         updateUserName(db, request.userId, body.first_name ?? "", body.last_name ?? "");
@@ -4291,12 +4355,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           origin: "dashboard",
           allowed_vendors: ["*"],
         });
-        shareMemoryToTeam(db, mem.id, request.userId, teamId);
+        shareMemoryToOrg(db, mem.id, request.userId, orgId);
       }
 
       reply.code(201);
       return {
-        id: teamId,
+        id: orgId,
         name: body.name.trim(),
         owner_id: request.userId,
         plan: "team",
@@ -4306,34 +4370,34 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   server.get(
-    "/teams/:id",
+    "/orgs/:id",
     { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      const { id: teamId } = request.params as { id: string };
+      const { id: orgId } = request.params as { id: string };
       const user = getUserById(db, request.userId);
-      if (!user || user.team_id !== teamId) {
+      if (!user || user.org_id !== orgId) {
         return reply.code(403).send({ error: "Not a member of this team" });
       }
 
-      const team = db.prepare(`SELECT id, name, owner_id, plan, created_at, updated_at FROM teams WHERE id = ?`).get(teamId) as {
+      const team = db.prepare(`SELECT id, name, owner_id, plan, created_at, updated_at FROM orgs WHERE id = ?`).get(orgId) as {
         id: string; name: string; owner_id: string; plan: string; created_at: string; updated_at: string;
       } | undefined;
 
       if (!team) return reply.code(404).send({ error: "Team not found" });
 
-      const members = getTeamMembers(db, teamId);
-      const memoryCount = countTeamMemories(db, teamId);
+      const members = getTeamMembers(db, orgId);
+      const memoryCount = countOrgMemories(db, orgId);
 
       const invites = db
-        .prepare(`SELECT id, email, status, created_at, expires_at FROM team_invites WHERE team_id = ? AND status = 'pending' ORDER BY created_at DESC`)
-        .all(teamId);
+        .prepare(`SELECT id, email, status, created_at, expires_at FROM org_invites WHERE org_id = ? AND status = 'pending' ORDER BY created_at DESC`)
+        .all(orgId);
 
       return { ...team, members, memory_count: memoryCount, pending_invites: invites };
     },
   );
 
   server.post(
-    "/teams/:id/invite",
+    "/orgs/:id/invite",
     {
       schema: {
         body: {
@@ -4348,13 +4412,13 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      const { id: teamId } = request.params as { id: string };
+      const { id: orgId } = request.params as { id: string };
       const user = getUserById(db, request.userId);
-      if (!user || user.team_id !== teamId || user.team_role !== "owner") {
+      if (!user || user.org_id !== orgId || user.org_role !== "owner") {
         return reply.code(403).send({ error: "Only team owner can invite" });
       }
 
-      const memberCount = getTeamMemberCount(db, teamId);
+      const memberCount = getOrgMemberCount(db, orgId);
       const body = request.body as { emails: string[] };
 
       if (memberCount + body.emails.length > 10) {
@@ -4363,7 +4427,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         });
       }
 
-      const team = db.prepare(`SELECT name FROM teams WHERE id = ?`).get(teamId) as { name: string } | undefined;
+      const team = db.prepare(`SELECT name FROM orgs WHERE id = ?`).get(orgId) as { name: string } | undefined;
       const inviterName = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.email;
       const results: { email: string; token: string; status: string }[] = [];
       const now = new Date().toISOString();
@@ -4374,16 +4438,16 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         if (!email) continue;
 
         const existing = db
-          .prepare(`SELECT id FROM team_invites WHERE team_id = ? AND email = ? AND status = 'pending'`)
-          .get(teamId, email) as { id: string } | undefined;
+          .prepare(`SELECT id FROM org_invites WHERE org_id = ? AND email = ? AND status = 'pending'`)
+          .get(orgId, email) as { id: string } | undefined;
         if (existing) {
           results.push({ email, token: "", status: "already_invited" });
           continue;
         }
 
         const alreadyMember = db
-          .prepare(`SELECT id FROM users WHERE team_id = ? AND email = ?`)
-          .get(teamId, email) as { id: string } | undefined;
+          .prepare(`SELECT id FROM users WHERE org_id = ? AND email = ?`)
+          .get(orgId, email) as { id: string } | undefined;
         if (alreadyMember) {
           results.push({ email, token: "", status: "already_member" });
           continue;
@@ -4392,9 +4456,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         const token = randomUUID();
         const inviteId = randomUUID();
         db.prepare(
-          `INSERT INTO team_invites (id, team_id, email, token, invited_by, status, created_at, expires_at)
+          `INSERT INTO org_invites (id, org_id, email, token, invited_by, status, created_at, expires_at)
            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
-        ).run(inviteId, teamId, email, token, request.userId, now, expiresAt);
+        ).run(inviteId, orgId, email, token, request.userId, now, expiresAt);
 
         results.push({ email, token, status: "invited" });
       }
@@ -4404,7 +4468,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   server.post(
-    "/teams/join",
+    "/orgs/join",
     {
       schema: {
         body: {
@@ -4423,55 +4487,55 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     async (request, reply) => {
       const body = request.body as { token: string; first_name?: string; last_name?: string };
       const invite = db
-        .prepare(`SELECT id, team_id, email, status, expires_at FROM team_invites WHERE token = ?`)
+        .prepare(`SELECT id, org_id, email, status, expires_at FROM org_invites WHERE token = ?`)
         .get(body.token) as {
-          id: string; team_id: string; email: string | null; status: string; expires_at: string;
+          id: string; org_id: string; email: string | null; status: string; expires_at: string;
         } | undefined;
 
       if (!invite) return reply.code(404).send({ error: "Invite not found" });
       if (invite.status !== "pending") return reply.code(400).send({ error: "Invite already used" });
       if (new Date(invite.expires_at) < new Date()) {
-        db.prepare(`UPDATE team_invites SET status = 'expired' WHERE id = ?`).run(invite.id);
+        db.prepare(`UPDATE org_invites SET status = 'expired' WHERE id = ?`).run(invite.id);
         return reply.code(400).send({ error: "Invite expired" });
       }
 
       const user = getUserById(db, request.userId);
       if (!user) return reply.code(404).send({ error: "User not found" });
-      if (user.team_id) return reply.code(409).send({ error: "Already on a team" });
+      if (user.org_id) return reply.code(409).send({ error: "Already on a team" });
 
-      const memberCount = getTeamMemberCount(db, invite.team_id);
+      const memberCount = getOrgMemberCount(db, invite.org_id);
       if (memberCount >= 10) {
         return reply.code(400).send({ error: "Team is full (10 seats)" });
       }
 
-      addUserToTeam(db, request.userId, invite.team_id, "member");
+      addUserToOrg(db, request.userId, invite.org_id, "member");
       if (body.first_name || body.last_name) {
         updateUserName(db, request.userId, body.first_name ?? "", body.last_name ?? "");
       }
 
-      db.prepare(`UPDATE team_invites SET status = 'accepted' WHERE id = ?`).run(invite.id);
+      db.prepare(`UPDATE org_invites SET status = 'accepted' WHERE id = ?`).run(invite.id);
 
-      const team = db.prepare(`SELECT id, name FROM teams WHERE id = ?`).get(invite.team_id) as { id: string; name: string };
-      return { team_id: team.id, team_name: team.name, role: "member" };
+      const team = db.prepare(`SELECT id, name FROM orgs WHERE id = ?`).get(invite.org_id) as { id: string; name: string };
+      return { org_id: team.id, team_name: team.name, role: "member" };
     },
   );
 
   server.get(
-    "/teams/invite/:token",
+    "/orgs/invite/:token",
     { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
     async (request, reply) => {
       const { token } = request.params as { token: string };
       const invite = db
         .prepare(
-          `SELECT ti.id, ti.team_id, ti.email, ti.status, ti.expires_at, ti.invited_by,
+          `SELECT ti.id, ti.org_id, ti.email, ti.status, ti.expires_at, ti.invited_by,
                   t.name AS team_name, u.first_name AS inviter_first, u.last_name AS inviter_last, u.email AS inviter_email
-           FROM team_invites ti
-           JOIN teams t ON t.id = ti.team_id
+           FROM org_invites ti
+           JOIN teams t ON t.id = ti.org_id
            JOIN users u ON u.id = ti.invited_by
            WHERE ti.token = ?`,
         )
         .get(token) as {
-          id: string; team_id: string; email: string | null; status: string; expires_at: string;
+          id: string; org_id: string; email: string | null; status: string; expires_at: string;
           team_name: string; inviter_first: string | null; inviter_last: string | null; inviter_email: string;
         } | undefined;
 
@@ -4479,7 +4543,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
       const expired = new Date(invite.expires_at) < new Date();
       if (expired && invite.status === "pending") {
-        db.prepare(`UPDATE team_invites SET status = 'expired' WHERE id = ?`).run(invite.id);
+        db.prepare(`UPDATE org_invites SET status = 'expired' WHERE id = ?`).run(invite.id);
       }
 
       const inviterName = [invite.inviter_first, invite.inviter_last].filter(Boolean).join(" ") || invite.inviter_email;
@@ -4577,7 +4641,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           "memory.created",
           request.userId,
           child.id,
-          child.shared_with_team_id ? { teamId: child.shared_with_team_id } : {},
+          child.shared_with_org_id ? { orgId: child.shared_with_org_id } : {},
         );
         reply.code(201);
         return child;
@@ -4632,7 +4696,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           "memory.created",
           request.userId,
           child.id,
-          child.shared_with_team_id ? { teamId: child.shared_with_team_id } : {},
+          child.shared_with_org_id ? { orgId: child.shared_with_org_id } : {},
         );
         reply.code(201);
         return child;
@@ -4771,25 +4835,25 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     async (request, reply) => {
       const { id: memoryId } = request.params as { id: string };
       const user = getUserById(db, request.userId);
-      if (!user?.team_id) return reply.code(400).send({ error: "Not on a team" });
+      if (!user?.org_id) return reply.code(400).send({ error: "Not on a team" });
 
-      const result = shareMemoryToTeam(db, memoryId, request.userId, user.team_id);
+      const result = shareMemoryToOrg(db, memoryId, request.userId, user.org_id);
       if (!result) return reply.code(404).send({ error: "Memory not found or already shared" });
       emitMemoryEvent("memory.shared", request.userId, memoryId, {
-        teamId: user.team_id,
+        orgId: user.org_id,
       });
 
       // Share cascades to children: any replies under this parent become
       // visible to the team too. Operates on ALL children regardless of
       // author — the whole thread's visibility flips together.
       if (!result.parent_memory_id) {
-        const sharedIds = cascadeShare(db, memoryId, user.team_id);
+        const sharedIds = cascadeShare(db, memoryId, user.org_id);
         for (const childId of sharedIds) {
           // We use request.userId for the event scope so it lands on the
           // sharing user's stream too. The team channel is the important one
           // since teammates receive shared events through it.
           emitMemoryEvent("memory.shared", request.userId, childId, {
-            teamId: user.team_id,
+            orgId: user.org_id,
           });
         }
       }
@@ -4803,25 +4867,25 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
     async (request, reply) => {
       const { id: memoryId } = request.params as { id: string };
       // Capture team id BEFORE unshare so we still know which team channel
-      // to notify (the row's shared_with_team_id is cleared in the mutation).
+      // to notify (the row's shared_with_org_id is cleared in the mutation).
       const priorRow = db
-        .prepare("SELECT shared_with_team_id, parent_memory_id FROM memories WHERE id = ? AND user_id = ?")
+        .prepare("SELECT shared_with_org_id, parent_memory_id FROM memories WHERE id = ? AND user_id = ?")
         .get(memoryId, request.userId) as
-        | { shared_with_team_id: string | null; parent_memory_id: string | null }
+        | { shared_with_org_id: string | null; parent_memory_id: string | null }
         | undefined;
-      const priorTeamId = priorRow?.shared_with_team_id ?? null;
+      const priorTeamId = priorRow?.shared_with_org_id ?? null;
 
       const result = unshareMemory(db, memoryId, request.userId);
       if (!result) return reply.code(404).send({ error: "Memory not found" });
       emitMemoryEvent("memory.unshared", request.userId, memoryId, {
-        teamId: priorTeamId,
+        orgId: priorTeamId,
       });
 
       if (priorRow && priorRow.parent_memory_id === null) {
         const unsharedIds = cascadeUnshare(db, memoryId);
         for (const childId of unsharedIds) {
           emitMemoryEvent("memory.unshared", request.userId, childId, {
-            teamId: priorTeamId,
+            orgId: priorTeamId,
           });
         }
       }
@@ -4830,12 +4894,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   server.get(
-    "/teams/:id/memories",
+    "/orgs/:id/memories",
     { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      const { id: teamId } = request.params as { id: string };
+      const { id: orgId } = request.params as { id: string };
       const user = getUserById(db, request.userId);
-      if (!user || user.team_id !== teamId) {
+      if (!user || user.org_id !== orgId) {
         return reply.code(403).send({ error: "Not a member of this team" });
       }
 
@@ -4847,13 +4911,13 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
       const term = qs.term?.trim() ?? "";
       if (term.length > 0) {
-        const memories = searchTeamMemories(db, teamId, term, pagination);
-        const total = countSearchTeamMemories(db, teamId, term);
+        const memories = searchOrgMemories(db, orgId, term, pagination);
+        const total = countSearchOrgMemories(db, orgId, term);
         return { memories, total, term };
       }
 
-      const memories = listTeamMemories(db, teamId, pagination);
-      const total = countTeamMemories(db, teamId);
+      const memories = listOrgMemories(db, orgId, pagination);
+      const total = countOrgMemories(db, orgId);
       return { memories, total };
     },
   );
@@ -4863,7 +4927,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   // ===========================================================================
 
   server.patch(
-    "/teams/:id",
+    "/orgs/:id",
     {
       schema: {
         body: {
@@ -4877,18 +4941,18 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      const { id: teamId } = request.params as { id: string };
+      const { id: orgId } = request.params as { id: string };
       const user = getUserById(db, request.userId);
-      if (!user || user.team_id !== teamId || user.team_role !== "owner") {
+      if (!user || user.org_id !== orgId || user.org_role !== "owner") {
         return reply.code(403).send({ error: "Only team owner can update" });
       }
 
       const body = request.body as { name?: string };
       if (body.name) {
-        db.prepare(`UPDATE teams SET name = ?, updated_at = ? WHERE id = ?`).run(
+        db.prepare(`UPDATE orgs SET name = ?, updated_at = ? WHERE id = ?`).run(
           body.name.trim(),
           new Date().toISOString(),
-          teamId,
+          orgId,
         );
       }
 
@@ -4897,12 +4961,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   server.delete(
-    "/teams/:id/members/:userId",
+    "/orgs/:id/members/:userId",
     { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      const { id: teamId, userId: targetUserId } = request.params as { id: string; userId: string };
+      const { id: orgId, userId: targetUserId } = request.params as { id: string; userId: string };
       const user = getUserById(db, request.userId);
-      if (!user || user.team_id !== teamId || user.team_role !== "owner") {
+      if (!user || user.org_id !== orgId || user.org_role !== "owner") {
         return reply.code(403).send({ error: "Only team owner can remove members" });
       }
       if (targetUserId === request.userId) {
@@ -4915,12 +4979,12 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   server.post(
-    "/teams/leave",
+    "/orgs/leave",
     { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
     async (request, reply) => {
       const user = getUserById(db, request.userId);
-      if (!user?.team_id) return reply.code(400).send({ error: "Not on a team" });
-      if (user.team_role === "owner") {
+      if (!user?.org_id) return reply.code(400).send({ error: "Not on a team" });
+      if (user.org_role === "owner") {
         return reply.code(400).send({ error: "Team owner cannot leave. Transfer ownership or delete the team." });
       }
 
@@ -4930,17 +4994,298 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
   );
 
   server.delete(
-    "/teams/:id/invites/:inviteId",
+    "/orgs/:id/invites/:inviteId",
     { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     async (request, reply) => {
-      const { id: teamId, inviteId } = request.params as { id: string; inviteId: string };
+      const { id: orgId, inviteId } = request.params as { id: string; inviteId: string };
       const user = getUserById(db, request.userId);
-      if (!user || user.team_id !== teamId || user.team_role !== "owner") {
+      if (!user || user.org_id !== orgId || user.org_role !== "owner") {
         return reply.code(403).send({ error: "Only team owner can revoke invites" });
       }
 
-      db.prepare(`DELETE FROM team_invites WHERE id = ? AND team_id = ?`).run(inviteId, teamId);
+      db.prepare(`DELETE FROM org_invites WHERE id = ? AND org_id = ?`).run(inviteId, orgId);
       return { success: true };
+    },
+  );
+
+  // ===========================================================================
+  // Teams (sub-units within an org). Admin-only CRUD; "team" here is the
+  // new sub-team primitive introduced in migration 026 (the existing
+  // company-wide pool is now the org).
+  //
+  // Permission model: only org owners and admins can create / rename /
+  // delete teams or move users between them. Regular org members can
+  // read team metadata but not mutate. See docs/eng-plan-orgs-and-teams-v1.md
+  // for the full permission table.
+  // ===========================================================================
+
+  function requireOrgAdmin(
+    request: { userId: string },
+    orgId: string,
+    reply: { code: (n: number) => { send: (b: unknown) => unknown } },
+  ): { user: ReturnType<typeof getUserById> } | { error: true } {
+    const user = getUserById(db, request.userId);
+    if (!user || user.org_id !== orgId) {
+      reply.code(403).send({ error: "Not a member of this org" });
+      return { error: true };
+    }
+    if (user.org_role !== "owner" && user.org_role !== "admin") {
+      reply.code(403).send({ error: "Org admin role required" });
+      return { error: true };
+    }
+    return { user };
+  }
+
+  // GET /orgs/:id/teams — list teams in the org (any org member can read)
+  server.get(
+    "/orgs/:id/teams",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: orgId } = request.params as { id: string };
+      const user = getUserById(db, request.userId);
+      if (!user || user.org_id !== orgId) {
+        return reply.code(403).send({ error: "Not a member of this org" });
+      }
+      const teams = listTeamsInOrg(db, orgId);
+      const enriched = teams.map((t) => ({
+        ...t,
+        member_count: db.prepare(`SELECT COUNT(*) as c FROM users WHERE team_id = ?`).get(t.id) as { c: number },
+        memory_count: countTeamSharedMemories(db, t.id),
+      })).map((t) => ({ ...t, member_count: (t.member_count as { c: number }).c }));
+      return { teams: enriched };
+    },
+  );
+
+  // POST /orgs/:id/teams — create a team (admin only)
+  server.post(
+    "/orgs/:id/teams",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["name"],
+          additionalProperties: false,
+          properties: {
+            name: { type: "string" as const, minLength: 1, maxLength: 100 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id: orgId } = request.params as { id: string };
+      const guard = requireOrgAdmin(request, orgId, reply);
+      if ("error" in guard) return;
+
+      const { name } = request.body as { name: string };
+      try {
+        const team = createTeam(db, orgId, name);
+        reply.code(201);
+        return team;
+      } catch (err) {
+        if (err instanceof TeamServiceError) {
+          reply.code(err.code === "duplicate_name" ? 409 : 400);
+          return { error: err.message, code: err.code };
+        }
+        throw err;
+      }
+    },
+  );
+
+  // GET /orgs/:id/teams/:tid — team detail (any org member)
+  server.get(
+    "/orgs/:id/teams/:tid",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: orgId, tid: teamId } = request.params as { id: string; tid: string };
+      const user = getUserById(db, request.userId);
+      if (!user || user.org_id !== orgId) {
+        return reply.code(403).send({ error: "Not a member of this org" });
+      }
+      const team = getTeam(db, teamId);
+      if (!team || team.org_id !== orgId) {
+        return reply.code(404).send({ error: "Team not found in this org" });
+      }
+      const members = listSubteamMembers(db, teamId);
+      const memoryCount = countTeamSharedMemories(db, teamId);
+      return { ...team, members, memory_count: memoryCount };
+    },
+  );
+
+  // PATCH /orgs/:id/teams/:tid — rename (admin only)
+  server.patch(
+    "/orgs/:id/teams/:tid",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["name"],
+          additionalProperties: false,
+          properties: {
+            name: { type: "string" as const, minLength: 1, maxLength: 100 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id: orgId, tid: teamId } = request.params as { id: string; tid: string };
+      const guard = requireOrgAdmin(request, orgId, reply);
+      if ("error" in guard) return;
+
+      const team = getTeam(db, teamId);
+      if (!team || team.org_id !== orgId) {
+        return reply.code(404).send({ error: "Team not found in this org" });
+      }
+
+      const { name } = request.body as { name: string };
+      try {
+        const updated = renameTeam(db, teamId, name);
+        return updated;
+      } catch (err) {
+        if (err instanceof TeamServiceError) {
+          reply.code(err.code === "duplicate_name" ? 409 : 400);
+          return { error: err.message, code: err.code };
+        }
+        throw err;
+      }
+    },
+  );
+
+  // DELETE /orgs/:id/teams/:tid — delete (admin only). Refuses to delete
+  // a team with members or shared memories unless ?force=true is passed.
+  server.delete(
+    "/orgs/:id/teams/:tid",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: orgId, tid: teamId } = request.params as { id: string; tid: string };
+      const guard = requireOrgAdmin(request, orgId, reply);
+      if ("error" in guard) return;
+
+      const team = getTeam(db, teamId);
+      if (!team || team.org_id !== orgId) {
+        return reply.code(404).send({ error: "Team not found in this org" });
+      }
+
+      const force = (request.query as { force?: string }).force === "true";
+      try {
+        const result = deleteTeam(db, teamId, { force });
+        return { deleted: true, ...result };
+      } catch (err) {
+        if (err instanceof TeamServiceError) {
+          reply.code(err.code === "has_members" || err.code === "has_memories" ? 409 : 400);
+          return { error: err.message, code: err.code };
+        }
+        throw err;
+      }
+    },
+  );
+
+  // POST /orgs/:id/teams/:tid/members — add an existing org member to the team (admin only)
+  server.post(
+    "/orgs/:id/teams/:tid/members",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["user_id"],
+          additionalProperties: false,
+          properties: {
+            user_id: { type: "string" as const, minLength: 1 },
+          },
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id: orgId, tid: teamId } = request.params as { id: string; tid: string };
+      const guard = requireOrgAdmin(request, orgId, reply);
+      if ("error" in guard) return;
+
+      const team = getTeam(db, teamId);
+      if (!team || team.org_id !== orgId) {
+        return reply.code(404).send({ error: "Team not found in this org" });
+      }
+
+      const { user_id } = request.body as { user_id: string };
+      try {
+        assignUserToTeam(db, user_id, teamId);
+        return { added: true, user_id, team_id: teamId };
+      } catch (err) {
+        if (err instanceof TeamServiceError) {
+          reply.code(err.code === "user_not_in_org" ? 400 : 404);
+          return { error: err.message, code: err.code };
+        }
+        throw err;
+      }
+    },
+  );
+
+  // DELETE /orgs/:id/teams/:tid/members/:uid — remove from team (admin only).
+  // User stays in the org.
+  server.delete(
+    "/orgs/:id/teams/:tid/members/:uid",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: orgId, tid: teamId, uid } = request.params as {
+        id: string; tid: string; uid: string;
+      };
+      const guard = requireOrgAdmin(request, orgId, reply);
+      if ("error" in guard) return;
+
+      const team = getTeam(db, teamId);
+      if (!team || team.org_id !== orgId) {
+        return reply.code(404).send({ error: "Team not found in this org" });
+      }
+
+      // Only remove if the user IS on this team (don't silently affect a
+      // user who's already not on this team).
+      const user = getUserById(db, uid);
+      if (!user || user.org_id !== orgId) {
+        return reply.code(404).send({ error: "User not in this org" });
+      }
+      removeUserFromSubteam(db, uid);
+      return { removed: true };
+    },
+  );
+
+  // ===========================================================================
+  // Org member role management (admin/member promote/demote)
+  // ===========================================================================
+
+  server.post(
+    "/orgs/:id/members/:uid/role",
+    {
+      schema: {
+        body: {
+          type: "object" as const,
+          required: ["role"],
+          additionalProperties: false,
+          properties: {
+            role: { type: "string" as const, enum: ["admin", "member"] },
+          },
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { id: orgId, uid } = request.params as { id: string; uid: string };
+      // Only the owner can promote/demote. Admins can do most things but
+      // not change other admins' roles — keeps the trust hierarchy clear.
+      const caller = getUserById(db, request.userId);
+      if (!caller || caller.org_id !== orgId || caller.org_role !== "owner") {
+        return reply.code(403).send({ error: "Org owner only" });
+      }
+      const target = getUserById(db, uid);
+      if (!target || target.org_id !== orgId) {
+        return reply.code(404).send({ error: "User not in this org" });
+      }
+      if (target.org_role === "owner") {
+        return reply.code(400).send({ error: "Cannot change owner's role via this endpoint" });
+      }
+      const { role } = request.body as { role: "admin" | "member" };
+      setOrgRole(db, uid, role as OrgRole);
+      return { user_id: uid, role };
     },
   );
 

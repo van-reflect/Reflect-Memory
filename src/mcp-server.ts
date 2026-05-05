@@ -27,7 +27,9 @@ import {
   updateMemory,
   softDeleteMemory,
   countMemories,
+  shareMemoryToOrg,
   shareMemoryToTeam,
+  listOrgMemories,
   listTeamMemories,
   createChildMemory,
   listChildren,
@@ -216,22 +218,31 @@ async function createMcpServerWithTools(
     "Create a new TOP-LEVEL memory entry. Use this when the content is a fresh idea, decision, or note that doesn't belong inside an existing thread. " +
       "**Before calling, check the briefing's open threads + topic clusters** — if your content fits inside an existing thread, use `write_child_memory` instead so it threads correctly. " +
       "**Match the user's existing tag vocabulary** — see the topic map in the briefing for the canonical tag clusters. " +
-      "**Set `share_with_team=true` ONLY when the user explicitly asks to share** (\"save this for the team\", \"team note\", \"share with the team\", \"add to team shared\"). Otherwise leave it false — personal-by-default. If the user isn't on a team, the flag is silently ignored and the memory stays personal.",
+      "**Visibility is personal by default.** To share, pass `share_scope`: `'team'` (visible to the user's sub-team only) or `'org'` (visible to the whole organization). " +
+      "Set a scope ONLY when the user explicitly asks to share (\"save this for the team\", \"team note\", \"share with my org\", \"add to org shared\"). " +
+      "If the user isn't on a team / org, the flag is silently ignored and the memory stays personal. " +
+      "`share_with_team` (legacy boolean) is kept as an alias mapping to `share_scope='org'`; new callers should use `share_scope` directly.",
     {
       title: z.string().min(1).max(500).describe("Short title for the memory"),
       content: z.string().min(1).max(100_000).describe("The memory content"),
       tags: z.array(z.string().min(1).max(100)).max(50).default([]).describe("Tags for categorization"),
       allowed_vendors: z.array(z.string().min(1).max(50)).min(1).max(50).default(["*"]).describe("Which vendors can see this. Use ['*'] for all."),
       memory_type: z.enum(["semantic", "episodic", "procedural"]).default("semantic").describe("Type of memory: semantic (facts/knowledge), episodic (events/decisions), procedural (workflows/patterns)"),
+      share_scope: z
+        .enum(["org", "team"])
+        .optional()
+        .describe(
+          "Share scope: 'team' (sub-team only) or 'org' (whole org). Omit for personal-only.",
+        ),
       share_with_team: z
         .boolean()
         .default(false)
         .describe(
-          "If true, immediately share the new memory with the user's team (one-call equivalent of write_memory + share_memory). Default false. ONLY set true when the user explicitly asks to share with the team.",
+          "Legacy alias for share_scope='org'. If true, share with the user's org. New callers: prefer share_scope.",
         ),
     },
     { title: "Create Memory", destructiveHint: true },
-    async ({ title, content, tags, allowed_vendors, memory_type, share_with_team }) => {
+    async ({ title, content, tags, allowed_vendors, memory_type, share_scope, share_with_team }) => {
       const created = createMemory(db, userId, {
         title,
         content,
@@ -241,11 +252,22 @@ async function createMcpServerWithTools(
         memory_type,
       });
       let memory = created;
-      if (share_with_team) {
+      // Resolve scope: explicit share_scope wins; share_with_team=true is
+      // the legacy alias mapping to 'org' (preserves visibility for
+      // pre-2026-05-05 callers since today's "team-shared" became
+      // "org-shared" post-migration 026).
+      const wantsTeam = share_scope === "team";
+      const wantsOrg = share_scope === "org" || share_with_team === true;
+      if (wantsTeam || wantsOrg) {
         const user = getUserById(db, userId);
-        if (user?.team_id) {
-          const shared = shareMemoryToTeam(db, created.id, userId, user.team_id);
-          if (shared) memory = shared;
+        if (user) {
+          if (wantsTeam && user.team_id) {
+            const shared = shareMemoryToTeam(db, created.id, userId, user.team_id);
+            if (shared) memory = shared;
+          } else if (wantsOrg && user.org_id) {
+            const shared = shareMemoryToOrg(db, created.id, userId, user.org_id);
+            if (shared) memory = shared;
+          }
         }
       }
       return { content: [{ type: "text", text: JSON.stringify(memory, null, 2) }] };
@@ -294,12 +316,56 @@ async function createMcpServerWithTools(
   );
 
   // ---------------------------------------------------------------------------
-  // Team memory tools — shared knowledge pool across team members
+  // Org + Team memory tools — two-level shared pools (since migration 026,
+  // 2026-05-05). The ORG is the company-wide pool that pre-migration users
+  // experienced as "team shared". The TEAM is a sub-unit within an org
+  // (Engineering, Sales, etc.) with its own narrower pool.
+  //
+  // For pre-migration callers: the broad pool you've been reading from is
+  // now `read_org_memories`. `read_team_memories` returns the sub-team pool
+  // (initially empty until your org admin creates teams + assigns members).
   // ---------------------------------------------------------------------------
 
   mcp.tool(
+    "read_org_memories",
+    "Get memories shared with your ORG (company-wide pool). Returns the org knowledge pool with author attribution. Only available if you belong to an org. " +
+      "This is the broader pool — what pre-migration users called \"team shared\". For the narrower sub-team pool, use `read_team_memories`.",
+    {
+      limit: z.number().min(1).max(50).default(20).describe("Max org memories to return (1-50)"),
+      offset: z.number().min(0).default(0).describe("Skip this many results for pagination"),
+    },
+    { title: "Read Org Memories", readOnlyHint: true },
+    async ({ limit, offset }) => {
+      const user = getUserById(db, userId);
+      if (!user?.org_id) {
+        return { content: [{ type: "text", text: "You are not part of an org. Org memories are only available to org members." }], isError: true };
+      }
+
+      const memories = listOrgMemories(db, user.org_id, { limit, offset });
+      if (memories.length === 0) {
+        return { content: [{ type: "text", text: "No shared org memories yet. Use share_memory with scope='org' to share a personal memory with the whole org." }] };
+      }
+
+      const formatted = memories.map((m) => ({
+        id: m.id,
+        title: m.title,
+        content: m.content,
+        tags: m.tags,
+        origin: m.origin,
+        memory_type: m.memory_type,
+        author: [m.author_first_name, m.author_last_name].filter(Boolean).join(" ") || m.author_email,
+        shared_at: m.shared_at,
+        created_at: m.created_at,
+      }));
+
+      return { content: [{ type: "text", text: JSON.stringify({ org_memories: formatted, count: formatted.length, offset, has_more: formatted.length === limit }, null, 2) }] };
+    },
+  );
+
+  mcp.tool(
     "read_team_memories",
-    "Get memories shared with your team. Returns the team knowledge pool with author attribution. Only available if you belong to a team.",
+    "Get memories shared with your TEAM (sub-unit within your org). Returns the team knowledge pool with author attribution. Only available if you belong to a team. " +
+      "This is a narrower pool than the org. Pre-migration callers: this used to return the org-wide pool — that pool is now under `read_org_memories`.",
     {
       limit: z.number().min(1).max(50).default(20).describe("Max team memories to return (1-50)"),
       offset: z.number().min(0).default(0).describe("Skip this many results for pagination"),
@@ -308,12 +374,20 @@ async function createMcpServerWithTools(
     async ({ limit, offset }) => {
       const user = getUserById(db, userId);
       if (!user?.team_id) {
-        return { content: [{ type: "text", text: "You are not part of a team. Team memories are only available to team members." }], isError: true };
+        return {
+          content: [{
+            type: "text",
+            text: user?.org_id
+              ? "You're in an org but not assigned to a team yet. Ask your org admin to add you to a team, or use read_org_memories for the broader org pool."
+              : "You are not part of an org. Team memories are only available to team members.",
+          }],
+          isError: true,
+        };
       }
 
       const memories = listTeamMemories(db, user.team_id, { limit, offset });
       if (memories.length === 0) {
-        return { content: [{ type: "text", text: "No shared team memories yet. Use share_memory to share a personal memory with your team." }] };
+        return { content: [{ type: "text", text: "No shared team memories yet. Use share_memory with scope='team' to share a personal memory with your team." }] };
       }
 
       const formatted = memories.map((m) => ({
@@ -449,27 +523,27 @@ async function createMcpServerWithTools(
       // Pull memories the caller can see (own + team-shared) tagged with
       // this tag, newest first.
       const teamRow = db
-        .prepare("SELECT team_id FROM users WHERE id = ?")
-        .get(userId) as { team_id: string | null } | undefined;
-      const teamId = teamRow?.team_id ?? "";
+        .prepare("SELECT org_id FROM users WHERE id = ?")
+        .get(userId) as { org_id: string | null } | undefined;
+      const orgId = teamRow?.org_id ?? "";
       const rows = db
         .prepare(
-          `SELECT m.id, m.title, m.tags, m.user_id, m.shared_with_team_id,
+          `SELECT m.id, m.title, m.tags, m.user_id, m.shared_with_org_id,
                   m.parent_memory_id, m.created_at, m.updated_at
            FROM memories m, json_each(m.tags) t
            WHERE m.deleted_at IS NULL
              AND t.value = ?
-             AND (m.user_id = ? OR m.shared_with_team_id = COALESCE(?, ''))
+             AND (m.user_id = ? OR m.shared_with_org_id = COALESCE(?, ''))
            GROUP BY m.id
            ORDER BY m.updated_at DESC
            LIMIT ?`,
         )
-        .all(tag, userId, teamId, limit) as Array<{
+        .all(tag, userId, orgId, limit) as Array<{
           id: string;
           title: string;
           tags: string;
           user_id: string;
-          shared_with_team_id: string | null;
+          shared_with_org_id: string | null;
           parent_memory_id: string | null;
           created_at: string;
           updated_at: string;
@@ -491,23 +565,49 @@ async function createMcpServerWithTools(
 
   mcp.tool(
     "share_memory",
-    "Share one of your personal memories with your team. The memory becomes visible to all team members via read_team_memories. You must own the memory.",
+    "Share one of your personal memories at the chosen scope. " +
+      "`scope='org'` (default) makes it visible to the whole organization via read_org_memories — this is what pre-migration callers know as \"share with team\". " +
+      "`scope='team'` shares it only with the user's sub-team via read_team_memories (requires team membership). " +
+      "Promote/demote: re-calling with a different scope flips the visibility (memory moves between pools rather than appearing in both — they're mutually exclusive).",
     {
-      memory_id: z.string().describe("The UUID of your memory to share with the team"),
+      memory_id: z.string().describe("The UUID of your memory to share"),
+      scope: z
+        .enum(["org", "team"])
+        .default("org")
+        .describe(
+          "Visibility scope. 'org' (default) = whole organization. 'team' = the user's current sub-team only.",
+        ),
     },
-    { title: "Share Memory with Team", destructiveHint: true },
-    async ({ memory_id }) => {
+    { title: "Share Memory", destructiveHint: true },
+    async ({ memory_id, scope }) => {
       const user = getUserById(db, userId);
-      if (!user?.team_id) {
-        return { content: [{ type: "text", text: "You are not part of a team. Team sharing is only available to team members." }], isError: true };
+      if (!user?.org_id) {
+        return { content: [{ type: "text", text: "You are not part of an org. Sharing is only available to org members." }], isError: true };
       }
 
-      const updated = shareMemoryToTeam(db, memory_id, userId, user.team_id);
+      if (scope === "team") {
+        if (!user.team_id) {
+          return {
+            content: [{
+              type: "text",
+              text: "You're not on a sub-team yet. Ask your org admin to add you to a team, or use scope='org' to share with the whole org.",
+            }],
+            isError: true,
+          };
+        }
+        const updated = shareMemoryToTeam(db, memory_id, userId, user.team_id);
+        if (!updated) {
+          return { content: [{ type: "text", text: "Memory not found or you don't own it." }], isError: true };
+        }
+        return { content: [{ type: "text", text: JSON.stringify({ shared: true, scope: "team", team_id: user.team_id, memory: updated }, null, 2) }] };
+      }
+
+      // scope === "org"
+      const updated = shareMemoryToOrg(db, memory_id, userId, user.org_id);
       if (!updated) {
         return { content: [{ type: "text", text: "Memory not found or you don't own it." }], isError: true };
       }
-
-      return { content: [{ type: "text", text: JSON.stringify({ shared: true, memory: updated }, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify({ shared: true, scope: "org", org_id: user.org_id, memory: updated }, null, 2) }] };
     },
   );
 

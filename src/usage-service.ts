@@ -86,21 +86,21 @@ export function checkQuota(
   userId: string,
 ): QuotaStatus {
   const user = db
-    .prepare(`SELECT plan, team_id FROM users WHERE id = ?`)
-    .get(userId) as { plan: string; team_id: string | null } | undefined;
+    .prepare(`SELECT plan, org_id FROM users WHERE id = ?`)
+    .get(userId) as { plan: string; org_id: string | null } | undefined;
 
   const plan = user?.plan ?? "free";
-  const teamId = user?.team_id ?? null;
+  const orgId = user?.org_id ?? null;
   const limits = PLAN_LIMITS[plan] ?? PLAN_LIMITS.free;
 
   let memoryCount: number;
-  if (teamId && plan === "team") {
+  if (orgId && plan === "team") {
     const row = db
       .prepare(
         `SELECT COUNT(*) as cnt FROM memories
-         WHERE deleted_at IS NULL AND user_id IN (SELECT id FROM users WHERE team_id = ?)`,
+         WHERE deleted_at IS NULL AND user_id IN (SELECT id FROM users WHERE org_id = ?)`,
       )
-      .get(teamId) as { cnt: number };
+      .get(orgId) as { cnt: number };
     memoryCount = row.cnt;
   } else {
     const row = db

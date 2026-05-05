@@ -30,7 +30,7 @@ export interface ScenarioContext {
   /** harness-tamer + harness-van user IDs, in case an assertion needs them. */
   userIds: { tamer: string; van: string };
   /** harness team id. */
-  teamId: string;
+  orgId: string;
 }
 
 export interface CapturedTranscript {

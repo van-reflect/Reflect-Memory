@@ -43,7 +43,7 @@ beforeAll(() => {
       const id = randomUUID();
       db.prepare(
         `INSERT INTO memories (id, user_id, title, content, tags, origin, allowed_vendors, memory_type,
-          created_at, updated_at, shared_with_team_id, shared_at, parent_memory_id)
+          created_at, updated_at, shared_with_org_id, shared_at, parent_memory_id)
          VALUES (?, ?, ?, ?, ?, 'user', '["*"]', 'semantic', ?, ?, NULL, NULL, ?)`,
       ).run(
         id,

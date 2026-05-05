@@ -30,7 +30,7 @@ const MANIFEST_PATH = "../docs/dev-real-seed-manifest.json";
 interface UserRow {
   id: string;
   email: string;
-  team_id: string | null;
+  org_id: string | null;
 }
 
 function ssh(remoteCmd: string): string {
@@ -51,15 +51,15 @@ function execSql(sql: string): void {
 
 function fetchUser(email: string): UserRow {
   const out = ssh(
-    `sqlite3 -separator '|' ${DEV_DB} "SELECT id, COALESCE(team_id, '') FROM users WHERE email = '${email}' LIMIT 1;"`,
+    `sqlite3 -separator '|' ${DEV_DB} "SELECT id, COALESCE(org_id, '') FROM users WHERE email = '${email}' LIMIT 1;"`,
   ).trim();
   if (!out) {
     throw new Error(
       `User ${email} not found on dev. Aborting — both ts@ and vm@ must already exist.`,
     );
   }
-  const [id, team_id] = out.split("|");
-  return { id, email, team_id: team_id || null };
+  const [id, org_id] = out.split("|");
+  return { id, email, org_id: org_id || null };
 }
 
 function fetchTeamId(name: string): string | null {
@@ -80,25 +80,25 @@ function isoOffsetDays(days: number): string {
 function main(): void {
   const ts = fetchUser("ts@reflectmemory.com");
   const vm = fetchUser("vm@reflectmemory.com");
-  console.log(`[seed-real] ts@: ${ts.id} (current team: ${ts.team_id ?? "none"})`);
-  console.log(`[seed-real] vm@: ${vm.id} (current team: ${vm.team_id ?? "none"})`);
+  console.log(`[seed-real] ts@: ${ts.id} (current team: ${ts.org_id ?? "none"})`);
+  console.log(`[seed-real] vm@: ${vm.id} (current team: ${vm.org_id ?? "none"})`);
 
   // Resolve or create the team. NOTE: if either user is already on a
   // DIFFERENT team, we abort — joining a new team while in an existing
   // team would silently break their existing shared memories.
-  let teamId = fetchTeamId(TEAM_NAME);
-  const teamExisted = !!teamId;
-  if (!teamId) {
-    teamId = randomUUID();
-    console.log(`[seed-real] creating team "${TEAM_NAME}" (${teamId})`);
+  let orgId = fetchTeamId(TEAM_NAME);
+  const teamExisted = !!orgId;
+  if (!orgId) {
+    orgId = randomUUID();
+    console.log(`[seed-real] creating team "${TEAM_NAME}" (${orgId})`);
   } else {
-    console.log(`[seed-real] reusing existing team "${TEAM_NAME}" (${teamId})`);
+    console.log(`[seed-real] reusing existing team "${TEAM_NAME}" (${orgId})`);
   }
 
   for (const u of [ts, vm]) {
-    if (u.team_id && u.team_id !== teamId) {
+    if (u.org_id && u.org_id !== orgId) {
       throw new Error(
-        `User ${u.email} is already on team ${u.team_id}, refusing to move them. Manually unset their team first if you want to reassign.`,
+        `User ${u.email} is already on team ${u.org_id}, refusing to move them. Manually unset their team first if you want to reassign.`,
       );
     }
   }
@@ -120,14 +120,14 @@ function main(): void {
   // Team setup.
   if (!teamExisted) {
     stmts.push(
-      `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at) VALUES (${sql(teamId)}, ${sql(TEAM_NAME)}, ${sql(ts.id)}, 'team', ${sql(now)}, ${sql(now)});`,
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at) VALUES (${sql(orgId)}, ${sql(TEAM_NAME)}, ${sql(ts.id)}, 'team', ${sql(now)}, ${sql(now)});`,
     );
   }
   stmts.push(
-    `UPDATE users SET team_id = ${sql(teamId)}, team_role = 'owner' WHERE id = ${sql(ts.id)};`,
+    `UPDATE users SET org_id = ${sql(orgId)}, org_role = 'owner' WHERE id = ${sql(ts.id)};`,
   );
   stmts.push(
-    `UPDATE users SET team_id = ${sql(teamId)}, team_role = 'member' WHERE id = ${sql(vm.id)};`,
+    `UPDATE users SET org_id = ${sql(orgId)}, org_role = 'member' WHERE id = ${sql(vm.id)};`,
   );
 
   // Fixture inserts.
@@ -150,16 +150,16 @@ function main(): void {
     let sharedTeam = "NULL";
     let sharedAt = "NULL";
     if (parentFixture?.shared) {
-      sharedTeam = sql(teamId);
+      sharedTeam = sql(orgId);
       sharedAt = sql(createdAt);
     } else if (fx.shared) {
-      sharedTeam = sql(teamId);
+      sharedTeam = sql(orgId);
       sharedAt = sql(createdAt);
     }
     const parentClause = parentId ? sql(parentId) : "NULL";
 
     stmts.push(
-      `INSERT INTO memories (id, user_id, title, content, tags, origin, allowed_vendors, memory_type, created_at, updated_at, shared_with_team_id, shared_at, parent_memory_id) VALUES (${sql(id)}, ${sql(userId)}, ${sql(fx.title)}, ${sql(fx.content)}, ${sql(tagsJson)}, 'user', '["*"]', ${sql(memoryType)}, ${sql(createdAt)}, ${sql(createdAt)}, ${sharedTeam}, ${sharedAt}, ${parentClause});`,
+      `INSERT INTO memories (id, user_id, title, content, tags, origin, allowed_vendors, memory_type, created_at, updated_at, shared_with_org_id, shared_at, parent_memory_id) VALUES (${sql(id)}, ${sql(userId)}, ${sql(fx.title)}, ${sql(fx.content)}, ${sql(tagsJson)}, 'user', '["*"]', ${sql(memoryType)}, ${sql(createdAt)}, ${sql(createdAt)}, ${sharedTeam}, ${sharedAt}, ${parentClause});`,
     );
   }
 
@@ -180,7 +180,7 @@ function main(): void {
   }).length;
   const manifest = {
     seeded_at: new Date().toISOString(),
-    team: { id: teamId, name: TEAM_NAME, created_now: !teamExisted },
+    team: { id: orgId, name: TEAM_NAME, created_now: !teamExisted },
     users: {
       tamer: { id: ts.id, email: ts.email, role: "owner" },
       van: { id: vm.id, email: vm.email, role: "member" },
@@ -199,8 +199,8 @@ function main(): void {
       "BEGIN;",
       `DELETE FROM memory_versions WHERE memory_id IN (SELECT id FROM memories WHERE id IN (${[...refToId.values()].map((id) => `'${id}'`).join(",")}));`,
       `DELETE FROM memories WHERE id IN (${[...refToId.values()].map((id) => `'${id}'`).join(",")});`,
-      `-- To leave team: UPDATE users SET team_id = NULL, team_role = NULL WHERE id IN ('${ts.id}', '${vm.id}');`,
-      `-- To delete team: DELETE FROM teams WHERE id = '${teamId}';`,
+      `-- To leave team: UPDATE users SET org_id = NULL, org_role = NULL WHERE id IN ('${ts.id}', '${vm.id}');`,
+      `-- To delete team: DELETE FROM teams WHERE id = '${orgId}';`,
       "COMMIT;",
     ].join("\n"),
   };
@@ -208,7 +208,7 @@ function main(): void {
   console.log(`[seed-real] manifest written to ${MANIFEST_PATH}`);
 
   console.log(`[seed-real] DONE.`);
-  console.log(`            Team:        "${TEAM_NAME}" (${teamId})`);
+  console.log(`            Team:        "${TEAM_NAME}" (${orgId})`);
   console.log(`            Owner:       ${ts.email}`);
   console.log(`            Member:      ${vm.email}`);
   console.log(`            Memories:    ${fixtures.length} new (${sharedCount} shared with team)`);
