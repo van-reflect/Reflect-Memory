@@ -30,8 +30,10 @@ export interface MemoryEvent {
   memory_id: string;
   /** Owner of the memory. */
   user_id: string;
-  /** Team this event is relevant to (only set for share/unshare). */
+  /** Org this event is relevant to (set for org-scoped share/unshare). */
   org_id?: string | null;
+  /** Sub-team this event is relevant to (set for team-scoped share/unshare). */
+  team_id?: string | null;
   /** Freshly-fetched memory row if still retrievable; null when hard-deleted. */
   memory?: unknown;
   /** ISO8601 wall clock on the server. */

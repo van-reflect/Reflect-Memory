@@ -14,7 +14,10 @@ export interface MemoryEntry {
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
+  /** Org-scope share. Mutually exclusive with shared_with_team_id. */
   shared_with_org_id?: string | null;
+  /** Team-scope (sub-team) share. Mutually exclusive with shared_with_org_id. */
+  shared_with_team_id?: string | null;
   shared_at?: string | null;
   /** Present when this memory is a reply / child of another. Top-level
    *  memories have this as null or undefined. Children never have children
@@ -74,6 +77,7 @@ interface MemoryRow {
   updated_at: string;
   deleted_at?: string | null;
   shared_with_org_id?: string | null;
+  shared_with_team_id?: string | null;
   shared_at?: string | null;
   parent_memory_id?: string | null;
 }
@@ -100,12 +104,13 @@ function rowToMemory(row: MemoryRow): MemoryEntry {
     updated_at: row.updated_at,
     deleted_at: row.deleted_at ?? undefined,
     shared_with_org_id: row.shared_with_org_id ?? null,
+    shared_with_team_id: row.shared_with_team_id ?? null,
     shared_at: row.shared_at ?? null,
     parent_memory_id: row.parent_memory_id ?? null,
   };
 }
 
-const MEMORY_COLUMNS = ["id", "user_id", "title", "content", "tags", "origin", "allowed_vendors", "memory_type", "created_at", "updated_at", "deleted_at", "shared_with_org_id", "shared_at", "parent_memory_id"] as const;
+const MEMORY_COLUMNS = ["id", "user_id", "title", "content", "tags", "origin", "allowed_vendors", "memory_type", "created_at", "updated_at", "deleted_at", "shared_with_org_id", "shared_with_team_id", "shared_at", "parent_memory_id"] as const;
 const COLUMNS = MEMORY_COLUMNS.join(", ");
 const COLUMNS_ALIASED = MEMORY_COLUMNS.map(c => `m.${c}`).join(", ");
 
@@ -1090,9 +1095,43 @@ export function cascadeShare(
 
   for (const id of childIds) {
     db.prepare(
-      `UPDATE memories SET shared_with_org_id = ?, shared_at = ?, updated_at = ?
+      `UPDATE memories
+       SET shared_with_org_id = ?, shared_with_team_id = NULL,
+           shared_at = ?, updated_at = ?
        WHERE id = ?`,
     ).run(orgId, now, now, id);
+  }
+  return childIds;
+}
+
+/**
+ * Cascade-share at TEAM scope. Mirrors cascadeShare for org but applies
+ * shared_with_team_id (and clears any prior org scope so the
+ * mutually-exclusive invariant holds across the whole thread).
+ */
+export function cascadeShareToTeam(
+  db: Database.Database,
+  parentId: string,
+  teamId: string,
+): string[] {
+  const now = new Date().toISOString();
+  const childIds = db
+    .prepare(
+      `SELECT id FROM memories
+       WHERE parent_memory_id = ?
+         AND deleted_at IS NULL
+         AND (shared_with_team_id IS NULL OR shared_with_team_id != ?)`,
+    )
+    .all(parentId, teamId)
+    .map((r) => (r as { id: string }).id);
+
+  for (const id of childIds) {
+    db.prepare(
+      `UPDATE memories
+       SET shared_with_team_id = ?, shared_with_org_id = NULL,
+           shared_at = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(teamId, now, now, id);
   }
   return childIds;
 }
@@ -1110,17 +1149,22 @@ export function cascadeUnshare(
   parentId: string,
 ): string[] {
   const now = new Date().toISOString();
+  // Clears whichever scope is set on each child (org OR team — they're
+  // mutually exclusive so at most one is populated).
   const childIds = db
     .prepare(
       `SELECT id FROM memories
-       WHERE parent_memory_id = ? AND shared_with_org_id IS NOT NULL`,
+       WHERE parent_memory_id = ?
+         AND (shared_with_org_id IS NOT NULL OR shared_with_team_id IS NOT NULL)`,
     )
     .all(parentId)
     .map((r) => (r as { id: string }).id);
 
   for (const id of childIds) {
     db.prepare(
-      `UPDATE memories SET shared_with_org_id = NULL, shared_at = NULL, updated_at = ?
+      `UPDATE memories
+       SET shared_with_org_id = NULL, shared_with_team_id = NULL,
+           shared_at = NULL, updated_at = ?
        WHERE id = ?`,
     ).run(now, id);
   }
@@ -1131,6 +1175,12 @@ export function cascadeUnshare(
 // Team memory functions
 // ---------------------------------------------------------------------------
 
+/**
+ * Share a memory at the ORG scope. Mutually exclusive with team scope —
+ * if the memory was team-shared, the team scope is cleared as part of
+ * the same UPDATE so we never end up with both fields set (per D2 in
+ * docs/eng-plan-orgs-and-teams-v1.md).
+ */
 export function shareMemoryToOrg(
   db: Database.Database,
   memoryId: string,
@@ -1140,7 +1190,9 @@ export function shareMemoryToOrg(
   const now = new Date().toISOString();
   const result = db
     .prepare(
-      `UPDATE memories SET shared_with_org_id = ?, shared_at = ?, updated_at = ?
+      `UPDATE memories
+       SET shared_with_org_id = ?, shared_with_team_id = NULL,
+           shared_at = ?, updated_at = ?
        WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
     )
     .run(orgId, now, now, memoryId, userId);
@@ -1148,6 +1200,35 @@ export function shareMemoryToOrg(
   return readMemoryById(db, userId, memoryId);
 }
 
+/**
+ * Share a memory at the TEAM scope. Mutually exclusive with org scope —
+ * promoting from team to org clears team_id; demoting from org to team
+ * clears org_id. Caller must have verified the user is a member of the
+ * given team (or the team is in the user's org).
+ */
+export function shareMemoryToTeam(
+  db: Database.Database,
+  memoryId: string,
+  userId: string,
+  teamId: string,
+): MemoryEntry | null {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE memories
+       SET shared_with_team_id = ?, shared_with_org_id = NULL,
+           shared_at = ?, updated_at = ?
+       WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+    )
+    .run(teamId, now, now, memoryId, userId);
+  if (result.changes === 0) return null;
+  return readMemoryById(db, userId, memoryId);
+}
+
+/**
+ * Clear ANY share scope on a memory (whether org or team). Used by the
+ * dashboard's Unshare button + when a memory is being deleted.
+ */
 export function unshareMemory(
   db: Database.Database,
   memoryId: string,
@@ -1156,7 +1237,9 @@ export function unshareMemory(
   const now = new Date().toISOString();
   const result = db
     .prepare(
-      `UPDATE memories SET shared_with_org_id = NULL, shared_at = NULL, updated_at = ?
+      `UPDATE memories
+       SET shared_with_org_id = NULL, shared_with_team_id = NULL,
+           shared_at = NULL, updated_at = ?
        WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
     )
     .run(now, memoryId, userId);

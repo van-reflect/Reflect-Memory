@@ -15,6 +15,7 @@ export interface UserRow {
   stripe_customer_id: string | null;
   org_id: string | null;
   org_role: string | null;
+  team_id: string | null;
   first_name: string | null;
   last_name: string | null;
 }
@@ -65,7 +66,7 @@ export function findOrCreateUserByEmail(
   return id;
 }
 
-const USER_COLS = "id, email, clerk_id, role, plan, stripe_customer_id, org_id, org_role, first_name, last_name";
+const USER_COLS = "id, email, clerk_id, role, plan, stripe_customer_id, org_id, org_role, team_id, first_name, last_name";
 
 export function getUserByEmail(
   db: Database.Database,
@@ -110,15 +111,31 @@ export function updateUserName(
   );
 }
 
+export type OrgRole = "owner" | "admin" | "member";
+
 export function addUserToOrg(
   db: Database.Database,
   userId: string,
   orgId: string,
-  role: "owner" | "member",
+  role: OrgRole,
 ): void {
   db.prepare(
     `UPDATE users SET org_id = ?, org_role = ?, plan = 'team', updated_at = ? WHERE id = ?`,
   ).run(orgId, role, new Date().toISOString(), userId);
+}
+
+/**
+ * Update an existing org member's role (owner ↔ admin ↔ member).
+ * Idempotent: setting the same role twice is a no-op.
+ */
+export function setOrgRole(
+  db: Database.Database,
+  userId: string,
+  role: OrgRole,
+): void {
+  db.prepare(
+    `UPDATE users SET org_role = ?, updated_at = ? WHERE id = ?`,
+  ).run(role, new Date().toISOString(), userId);
 }
 
 export function removeUserFromTeam(

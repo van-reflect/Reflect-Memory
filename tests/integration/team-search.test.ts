@@ -1,7 +1,7 @@
 // Team Shared search integration tests.
 // Provisions a team in the test DB, drops the primary test user onto it,
 // seeds a handful of shared memories (mix of authors, tags, bodies), then
-// exercises GET /teams/:id/memories?term=... across the four match axes
+// exercises GET /orgs/:id/memories?term=... across the four match axes
 // the ticket asks for: title, content, tags, author name.
 
 import Database from "better-sqlite3";
@@ -137,16 +137,16 @@ afterAll(() => {
   }
 });
 
-describe("GET /teams/:id/memories (search)", () => {
+describe("GET /orgs/:id/memories (search)", () => {
   it("returns the full pool when no term is provided", async () => {
-    const r = await api<ListResponse>("GET", `/teams/${orgId}/memories`);
+    const r = await api<ListResponse>("GET", `/orgs/${orgId}/memories`);
     expect(r.status).toBe(200);
     expect(r.json.memories.length).toBe(seededMemoryIds.length);
     expect(r.json.term).toBeUndefined();
   });
 
   it("matches on title (case-insensitive)", async () => {
-    const r = await api<ListResponse>("GET", `/teams/${orgId}/memories?term=STRIPE`);
+    const r = await api<ListResponse>("GET", `/orgs/${orgId}/memories?term=STRIPE`);
     expect(r.status).toBe(200);
     expect(r.json.term).toBe("STRIPE");
     expect(r.json.memories.map((m) => m.title)).toEqual([
@@ -156,7 +156,7 @@ describe("GET /teams/:id/memories (search)", () => {
   });
 
   it("matches on content body", async () => {
-    const r = await api<ListResponse>("GET", `/teams/${orgId}/memories?term=tailwind`);
+    const r = await api<ListResponse>("GET", `/orgs/${orgId}/memories?term=tailwind`);
     expect(r.status).toBe(200);
     expect(r.json.memories.map((m) => m.title)).toEqual(["Frontend bundle audit"]);
   });
@@ -164,14 +164,14 @@ describe("GET /teams/:id/memories (search)", () => {
   it("matches on tags (substring)", async () => {
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${orgId}/memories?term=performance`,
+      `/orgs/${orgId}/memories?term=performance`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories.map((m) => m.title)).toEqual(["Frontend bundle audit"]);
   });
 
   it("matches on author first name", async () => {
-    const r = await api<ListResponse>("GET", `/teams/${orgId}/memories?term=Tammy`);
+    const r = await api<ListResponse>("GET", `/orgs/${orgId}/memories?term=Tammy`);
     expect(r.status).toBe(200);
     const titles = r.json.memories.map((m) => m.title).sort();
     expect(titles).toEqual(["Frontend bundle audit", "Unrelated scratch note"].sort());
@@ -180,7 +180,7 @@ describe("GET /teams/:id/memories (search)", () => {
   it("matches on author email fragment", async () => {
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${orgId}/memories?term=tammy-search`,
+      `/orgs/${orgId}/memories?term=tammy-search`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories.length).toBe(2);
@@ -189,7 +189,7 @@ describe("GET /teams/:id/memories (search)", () => {
   it("returns empty set (not an error) when nothing matches", async () => {
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${orgId}/memories?term=xyzzy-no-match-expected`,
+      `/orgs/${orgId}/memories?term=xyzzy-no-match-expected`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories).toEqual([]);
@@ -199,7 +199,7 @@ describe("GET /teams/:id/memories (search)", () => {
   it("whitespace-only term is treated as no-term (full list)", async () => {
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${orgId}/memories?term=${encodeURIComponent("   ")}`,
+      `/orgs/${orgId}/memories?term=${encodeURIComponent("   ")}`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories.length).toBe(seededMemoryIds.length);
@@ -212,7 +212,7 @@ describe("GET /teams/:id/memories (search)", () => {
     // that contain a literal "%".
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${orgId}/memories?term=${encodeURIComponent("%")}`,
+      `/orgs/${orgId}/memories?term=${encodeURIComponent("%")}`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories.length).toBe(1);
