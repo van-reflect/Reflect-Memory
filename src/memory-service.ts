@@ -1300,6 +1300,55 @@ export function countOrgMemories(
 }
 
 /**
+ * List sub-team-shared memories. Mirrors listOrgMemories but on
+ * shared_with_team_id. Returns the same enriched shape (author + shared_at)
+ * so the dashboard can pipe through one renderer.
+ */
+export function listTeamMemories(
+  db: Database.Database,
+  teamId: string,
+  pagination?: PaginationOptions,
+): TeamMemoryEntry[] {
+  const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
+  const rows = db
+    .prepare(
+      `SELECT ${COLUMNS_ALIASED}, u.email AS author_email, u.first_name AS author_first_name,
+              u.last_name AS author_last_name, m.shared_at
+       FROM memories m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.shared_with_team_id = ? AND m.deleted_at IS NULL
+       ORDER BY m.shared_at DESC, m.created_at DESC${pagSql}`,
+    )
+    .all(teamId, ...pagParams) as (MemoryRow & {
+      author_email: string;
+      author_first_name: string | null;
+      author_last_name: string | null;
+      shared_at: string | null;
+    })[];
+
+  return rows.map((row) => ({
+    ...rowToMemory(row),
+    author_email: row.author_email,
+    author_first_name: row.author_first_name,
+    author_last_name: row.author_last_name,
+    shared_at: row.shared_at,
+  }));
+}
+
+export function countTeamMemories(
+  db: Database.Database,
+  teamId: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM memories
+       WHERE shared_with_team_id = ? AND deleted_at IS NULL`,
+    )
+    .get(teamId) as { cnt: number };
+  return row.cnt;
+}
+
+/**
  * Full-text-ish search across the Team Shared pool. Case-insensitive LIKE
  * across title, content, tags (JSON TEXT column, substring match), and
  * author identity (email, first_name, last_name). Matches listOrgMemories
