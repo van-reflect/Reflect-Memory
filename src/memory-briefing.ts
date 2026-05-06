@@ -504,13 +504,18 @@ async function loadTopicClusters(
   // 'team' scope here covers everything the user can see in any
   // shared pool — org-wide-shared + their sub-team-shared. Pass both
   // ids so a sub-team-only member (no org-wide visibility) still gets
-  // their cluster topics.
+  // their cluster topics. For org owners/admins the pool widens to
+  // every sub-team in the org so the briefing's clusters mirror the
+  // graph's admin view.
+  const isOrgAdmin =
+    Boolean(user.org_id) && (user.org_role === "owner" || user.org_role === "admin");
   const teamCo = user.org_id || user.subteam_id
     ? getTagCooccurrence(db, {
         scope: "team",
         userId,
         orgId: user.org_id,
         subteamId: user.subteam_id,
+        isOrgAdmin,
       })
     : { pairs: [], tagFrequencies: new Map<string, number>() };
   const teamClusters = clusterTags(teamCo.pairs, teamCo.tagFrequencies, {

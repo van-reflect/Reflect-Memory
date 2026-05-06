@@ -77,6 +77,10 @@ function setUserSubteam(userId: string, subteamId: string | null): void {
   t.db.prepare(`UPDATE users SET team_id = ? WHERE id = ?`).run(subteamId, userId);
 }
 
+function setOrgRole(userId: string, role: "owner" | "admin" | "member"): void {
+  t.db.prepare(`UPDATE users SET org_role = ? WHERE id = ?`).run(role, userId);
+}
+
 function seedTeam(): string {
   const orgId = randomUUID();
   // Need an owner user to satisfy teams.owner_id FK; create then assign.
@@ -151,6 +155,58 @@ describe("getBacklinks", () => {
 
     const backlinks = getBacklinks(t.db, u.id, target);
     expect(backlinks).toEqual([]);
+  });
+
+  it("org owner/admin sees every sub-team's shared pool, not just their own", () => {
+    // Two sub-teams in one org. The admin sits on Engineering, but a
+    // sub-team-shared memory authored on Sales (which they don't
+    // belong to) must still surface for them. A regular member on
+    // Engineering must NOT see the Sales-only memory.
+    const orgId = seedTeam();
+    const eng = seedSubteam(orgId, "Engineering");
+    const sales = seedSubteam(orgId, "Sales");
+    const admin = seedUser(t.db, { orgId });
+    const member = seedUser(t.db, { orgId });
+    const salesAuthor = seedUser(t.db, { orgId });
+    setUserSubteam(admin.id, eng);
+    setUserSubteam(member.id, eng);
+    setUserSubteam(salesAuthor.id, sales);
+    setOrgRole(admin.id, "admin");
+    setOrgRole(member.id, "member");
+
+    const salesOnlyTarget = seedMemory({
+      userId: salesAuthor.id,
+      sharedWithSubteamId: sales,
+    });
+    // Same author writes a backlink, also sales-only.
+    const salesOnlyRef = seedMemory({
+      userId: salesAuthor.id,
+      content: `following ${salesOnlyTarget}`,
+      sharedWithSubteamId: sales,
+    });
+
+    // Admin can see the Sales target + the backlink to it.
+    const adminBacklinks = getBacklinks(t.db, admin.id, salesOnlyTarget);
+    expect(adminBacklinks.map((b) => b.id)).toContain(salesOnlyRef);
+    expect(getGraphAround(t.db, admin.id, salesOnlyTarget)).not.toBeNull();
+
+    // Same-org regular member on Engineering cannot see the Sales row.
+    expect(getGraphAround(t.db, member.id, salesOnlyTarget)).toBeNull();
+    expect(getBacklinks(t.db, member.id, salesOnlyTarget)).toEqual([]);
+  });
+
+  it("admin still cannot see other users' personal-only memories", () => {
+    // Admin power is scoped to *shared* pools. A teammate's personal-
+    // only memory (no share scope set) must remain private even from
+    // the org owner.
+    const orgId = seedTeam();
+    const owner = seedUser(t.db, { orgId });
+    const teammate = seedUser(t.db, { orgId });
+    setOrgRole(owner.id, "owner");
+    setOrgRole(teammate.id, "member");
+
+    const private_ = seedMemory({ userId: teammate.id, title: "private note" });
+    expect(getGraphAround(t.db, owner.id, private_)).toBeNull();
   });
 
   it("respects sub-team-shared visibility (post migration-026)", () => {
@@ -296,6 +352,43 @@ describe("getTagCooccurrence", () => {
     // Only the (x,y) pair (the shared one) should appear.
     expect(pairs.length).toBe(1);
     expect(pairs[0]).toMatchObject({ tag_a: "x", tag_b: "y", count: 1 });
+  });
+
+  it("scope=team for org admin spans every sub-team in the org", () => {
+    // Admin sits on Engineering. A Sales-only sub-team-shared memory
+    // contributes (s1,s2) — must appear in admin clustering, must
+    // NOT appear for an Engineering-only regular member.
+    const orgId = seedTeam();
+    const eng = seedSubteam(orgId, "Engineering");
+    const sales = seedSubteam(orgId, "Sales");
+    const admin = seedUser(t.db, { orgId });
+    const member = seedUser(t.db, { orgId });
+    const salesAuthor = seedUser(t.db, { orgId });
+    setUserSubteam(admin.id, eng);
+    setUserSubteam(member.id, eng);
+    setUserSubteam(salesAuthor.id, sales);
+    setOrgRole(admin.id, "admin");
+    setOrgRole(member.id, "member");
+    seedMemory({ userId: salesAuthor.id, tags: ["s1", "s2"], sharedWithSubteamId: sales });
+    seedMemory({ userId: admin.id, tags: ["e1", "e2"], sharedWithSubteamId: eng });
+
+    const adminPairs = getTagCooccurrence(t.db, {
+      scope: "team",
+      userId: admin.id,
+      orgId,
+      subteamId: eng,
+      isOrgAdmin: true,
+    }).pairs;
+    expect(adminPairs.map((p) => `${p.tag_a}-${p.tag_b}`).sort()).toEqual(["e1-e2", "s1-s2"]);
+
+    const memberPairs = getTagCooccurrence(t.db, {
+      scope: "team",
+      userId: member.id,
+      orgId,
+      subteamId: eng,
+      isOrgAdmin: false,
+    }).pairs;
+    expect(memberPairs.map((p) => `${p.tag_a}-${p.tag_b}`).sort()).toEqual(["e1-e2"]);
   });
 
   it("scope=team unions org-wide and sub-team-shared cooccurrences", () => {

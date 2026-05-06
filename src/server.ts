@@ -1465,6 +1465,11 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       // team_id on users is the sub-team membership (legacy column
       // name kept post-migration 026). One sub-team per user today.
       const subteamId = user?.team_id ?? null;
+      // Org owners + admins see every sub-team's shared pool, not just
+      // their own. Personal-only memories of other users still stay
+      // private — admins govern shared pools, not private notes.
+      const isOrgAdmin =
+        Boolean(orgId) && (user?.org_role === "owner" || user?.org_role === "admin");
       const sinceClause =
         days > 0
           ? `AND m.created_at >= '${new Date(Date.now() - days * 86400_000).toISOString()}'`
@@ -1473,13 +1478,22 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       // Visibility scope:
       //   personal = own memories only
       //   team     = everything the user can see that isn't personal-
-      //              only — org-wide-shared + their sub-team-shared
-      //   both     = own + everything they can see in any shared pool
+      //              only. Regular members see org-wide-shared + their
+      //              sub-team-shared. Org owners/admins see org-wide
+      //              + every sub-team-shared row in the org.
+      //   both     = own + the same broadened shared pool above.
       // The COALESCE-to-empty-string trick lets a no-org / no-sub-team
       // caller still bind the params positionally without matching
       // anything (no UUID equals '').
       let scopeWhere: string;
       const scopeArgs: unknown[] = [];
+      // Sub-team-shared clause varies by admin status. For admins it's
+      // an IN (SELECT ...) over the whole org; for members it's their
+      // own sub-team only. Both bind a single positional param.
+      const subteamClause = isOrgAdmin
+        ? `m.shared_with_team_id IN (SELECT id FROM teams WHERE org_id = ?)`
+        : `m.shared_with_team_id = COALESCE(?, '')`;
+      const subteamArg = isOrgAdmin ? orgId : (subteamId ?? "");
       if (scope === "personal") {
         scopeWhere = `m.user_id = ?`;
         scopeArgs.push(request.userId);
@@ -1487,14 +1501,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         if (!orgId && !subteamId) {
           return { nodes: [], edges: [], clusters: [], scope, days, max_nodes: maxNodes, truncated: false };
         }
-        scopeWhere = `(m.shared_with_org_id = COALESCE(?, '') OR m.shared_with_team_id = COALESCE(?, ''))`;
-        scopeArgs.push(orgId ?? "", subteamId ?? "");
+        scopeWhere = `(m.shared_with_org_id = COALESCE(?, '') OR ${subteamClause})`;
+        scopeArgs.push(orgId ?? "", subteamArg);
       } else {
         scopeWhere =
           `(m.user_id = ?` +
           ` OR m.shared_with_org_id = COALESCE(?, '')` +
-          ` OR m.shared_with_team_id = COALESCE(?, ''))`;
-        scopeArgs.push(request.userId, orgId ?? "", subteamId ?? "");
+          ` OR ${subteamClause})`;
+        scopeArgs.push(request.userId, orgId ?? "", subteamArg);
       }
 
       // Pull memories. Newest first so when we hit max_nodes we keep the
@@ -1553,6 +1567,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
                   userId: request.userId,
                   orgId,
                   subteamId,
+                  isOrgAdmin,
                 });
                 return [c.pairs, c.tagFrequencies];
               })(),
