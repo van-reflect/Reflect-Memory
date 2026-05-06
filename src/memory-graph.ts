@@ -50,10 +50,19 @@ export interface TagCooccurrenceRow {
 }
 
 export interface TagCooccurrenceOptions {
-  /** Per-user pool ('personal') or team-shared pool ('team'). */
+  /** Per-user pool ('personal') or shared pool ('team'). 'team' here
+   *  means everything the user can see *that isn't personal-only* —
+   *  org-wide-shared + their sub-team-shared memories merged into one
+   *  pool for clustering. The legacy 'team' name is preserved for API
+   *  compatibility with callers built before the org/sub-team split. */
   scope: "personal" | "team";
   userId: string;
+  /** The caller's org id. Required for any org-shared rows to surface
+   *  in the 'team' scope. */
   orgId?: string | null;
+  /** The caller's sub-team id (users.team_id post-migration 026).
+   *  Required for sub-team-shared rows to surface in the 'team' scope. */
+  subteamId?: string | null;
   /** Drop pairs with count below this threshold. Default 1. */
   minCount?: number;
   /** Drop tags appearing on fewer memories than this. Default 1. */
@@ -68,6 +77,7 @@ interface MemoryRow {
   tags: string;
   user_id: string;
   shared_with_org_id: string | null;
+  shared_with_team_id: string | null;
   parent_memory_id: string | null;
   created_at: string;
 }
@@ -96,26 +106,49 @@ function rowToGraphMemory(row: MemoryRow, relation: GraphRelation): GraphMemory 
 const COLS =
   "m.id AS id, m.title AS title, m.tags AS tags, m.user_id AS user_id, " +
   "m.shared_with_org_id AS shared_with_org_id, " +
+  "m.shared_with_team_id AS shared_with_team_id, " +
   "m.parent_memory_id AS parent_memory_id, m.created_at AS created_at";
 
+interface UserContext {
+  /** The caller's org id, or null if they aren't in any org. */
+  orgId: string | null;
+  /** The caller's sub-team id (users.team_id post-migration 026), or
+   *  null. A user can be in an org without belonging to any sub-team. */
+  subteamId: string | null;
+}
+
 /**
- * Resolve the calling user's org_id (or null). Internal — many graph
- * queries need to honour team-shared visibility.
+ * Resolve the calling user's org + sub-team membership. Internal — every
+ * graph query needs both to project the full visible memory pool
+ * (own + org-shared + sub-team-shared).
  */
-function getUserTeamId(db: Database.Database, userId: string): string | null {
+function getUserContext(db: Database.Database, userId: string): UserContext {
   const row = db
-    .prepare("SELECT org_id FROM users WHERE id = ?")
-    .get(userId) as { org_id: string | null } | undefined;
-  return row?.org_id ?? null;
+    .prepare("SELECT org_id, team_id FROM users WHERE id = ?")
+    .get(userId) as { org_id: string | null; team_id: string | null } | undefined;
+  return {
+    orgId: row?.org_id ?? null,
+    subteamId: row?.team_id ?? null,
+  };
 }
 
 /**
  * SQL fragment that constrains a memories query to the rows the caller
- * can read (own + team-shared). Use as `WHERE m.deleted_at IS NULL AND ${visibilitySql("m")}`
- * with the bound params [userId, orgId ?? ''].
+ * can read: their own + everything shared with the org + everything
+ * shared with their sub-team. Use as
+ * `WHERE m.deleted_at IS NULL AND ${visibilitySql("m")}` with the bound
+ * params [userId, orgId ?? '', subteamId ?? ''].
+ *
+ * The COALESCE-to-empty-string trick keeps the bound params positional
+ * even when a caller has no org or no sub-team — `'' = '<uuid>'` is
+ * always false, so missing memberships simply don't match anything.
  */
 function visibilitySql(alias: string): string {
-  return `(${alias}.user_id = ? OR ${alias}.shared_with_org_id = COALESCE(?, ''))`;
+  return (
+    `(${alias}.user_id = ?` +
+    ` OR ${alias}.shared_with_org_id = COALESCE(?, '')` +
+    ` OR ${alias}.shared_with_team_id = COALESCE(?, ''))`
+  );
 }
 
 // ---------------------------------------------------------------- backlinks
@@ -138,8 +171,9 @@ export function getBacklinks(
   userId: string,
   memoryId: string,
 ): GraphMemory[] {
-  const orgId = getUserTeamId(db, userId);
-  const teamArg = orgId ?? "";
+  const { orgId, subteamId } = getUserContext(db, userId);
+  const orgArg = orgId ?? "";
+  const subteamArg = subteamId ?? "";
   const seen = new Map<string, GraphMemory>();
 
   // Children via parent_memory_id (strongest signal).
@@ -151,7 +185,7 @@ export function getBacklinks(
          AND ${visibilitySql("m")}
        ORDER BY m.created_at ASC`,
     )
-    .all(memoryId, userId, teamArg) as MemoryRow[];
+    .all(memoryId, userId, orgArg, subteamArg) as MemoryRow[];
   for (const r of childRows) seen.set(r.id, rowToGraphMemory(r, "child"));
 
   // Content references: another memory's content mentions this id.
@@ -164,7 +198,7 @@ export function getBacklinks(
          AND m.deleted_at IS NULL
          AND ${visibilitySql("m")}`,
     )
-    .all(memoryId, `%${memoryId}%`, userId, teamArg) as MemoryRow[];
+    .all(memoryId, `%${memoryId}%`, userId, orgArg, subteamArg) as MemoryRow[];
   for (const r of contentRows) {
     if (!seen.has(r.id)) seen.set(r.id, rowToGraphMemory(r, "references"));
   }
@@ -180,7 +214,7 @@ export function getBacklinks(
          AND t.value = ?
          AND ${visibilitySql("m")}`,
     )
-    .all(memoryId, refTag, userId, teamArg) as MemoryRow[];
+    .all(memoryId, refTag, userId, orgArg, subteamArg) as MemoryRow[];
   for (const r of tagRows) {
     if (!seen.has(r.id)) seen.set(r.id, rowToGraphMemory(r, "references"));
   }
@@ -216,8 +250,9 @@ export function getGraphAround(
 ): GraphAround | null {
   const minSharedTags = opts.minSharedTags ?? 2;
   const topTagSimilar = opts.topTagSimilar ?? 5;
-  const orgId = getUserTeamId(db, userId);
-  const teamArg = orgId ?? "";
+  const { orgId, subteamId } = getUserContext(db, userId);
+  const orgArg = orgId ?? "";
+  const subteamArg = subteamId ?? "";
 
   const centerRow = db
     .prepare(
@@ -226,7 +261,7 @@ export function getGraphAround(
          AND m.deleted_at IS NULL
          AND ${visibilitySql("m")}`,
     )
-    .get(memoryId, userId, teamArg) as MemoryRow | undefined;
+    .get(memoryId, userId, orgArg, subteamArg) as MemoryRow | undefined;
   if (!centerRow) return null;
   const center = rowToGraphMemory(centerRow, "self");
 
@@ -240,7 +275,7 @@ export function getGraphAround(
            AND m.deleted_at IS NULL
            AND ${visibilitySql("m")}`,
       )
-      .get(centerRow.parent_memory_id, userId, teamArg) as MemoryRow | undefined;
+      .get(centerRow.parent_memory_id, userId, orgArg, subteamArg) as MemoryRow | undefined;
     if (parentRow) parent = rowToGraphMemory(parentRow, "parent");
   }
 
@@ -253,7 +288,7 @@ export function getGraphAround(
          AND ${visibilitySql("m")}
        ORDER BY m.created_at ASC`,
     )
-    .all(memoryId, userId, teamArg) as MemoryRow[];
+    .all(memoryId, userId, orgArg, subteamArg) as MemoryRow[];
   const children = childRows.map((r) => rowToGraphMemory(r, "child"));
 
   // Siblings: same parent (only meaningful if center is a child).
@@ -268,7 +303,7 @@ export function getGraphAround(
            AND ${visibilitySql("m")}
          ORDER BY m.created_at ASC`,
       )
-      .all(centerRow.parent_memory_id, memoryId, userId, teamArg) as MemoryRow[];
+      .all(centerRow.parent_memory_id, memoryId, userId, orgArg, subteamArg) as MemoryRow[];
     siblings = siblingRows.map((r) => rowToGraphMemory(r, "sibling"));
   }
 
@@ -290,9 +325,15 @@ export function getGraphAround(
          ORDER BY shared DESC, m.created_at DESC
          LIMIT ?`,
       )
-      .all(memoryId, userId, teamArg, tagsJson, minSharedTags, topTagSimilar) as Array<
-      MemoryRow & { shared: number }
-    >;
+      .all(
+        memoryId,
+        userId,
+        orgArg,
+        subteamArg,
+        tagsJson,
+        minSharedTags,
+        topTagSimilar,
+      ) as Array<MemoryRow & { shared: number }>;
     tag_similar = candidates.map((c) => ({
       ...rowToGraphMemory(c, "tag_similar"),
       shared_tag_count: c.shared,
@@ -312,7 +353,7 @@ export function getGraphAround(
          AND m.deleted_at IS NULL
          AND ${visibilitySql("m")}`,
     )
-    .all(memoryId, userId, teamArg) as MemoryRow[];
+    .all(memoryId, userId, orgArg, subteamArg) as MemoryRow[];
   const centerContent = (
     db.prepare(`SELECT content FROM memories WHERE id = ?`).get(memoryId) as
       | { content: string }
@@ -354,12 +395,14 @@ export function getTagCooccurrence(
     scopeClause = `m.user_id = ?`;
     scopeArgs = [opts.userId];
   } else {
-    if (!opts.orgId) {
-      // No team → empty result for team scope.
+    // 'team' scope = everything the user can see that isn't personal-
+    // only: org-wide-shared + their sub-team-shared, merged. Empty
+    // result if the user belongs to neither.
+    if (!opts.orgId && !opts.subteamId) {
       return { pairs: [], tagFrequencies: new Map() };
     }
-    scopeClause = `m.shared_with_org_id = ?`;
-    scopeArgs = [opts.orgId];
+    scopeClause = `(m.shared_with_org_id = ? OR m.shared_with_team_id = ?)`;
+    scopeArgs = [opts.orgId ?? "", opts.subteamId ?? ""];
   }
 
   // Per-tag frequency (how many memories carry each tag in scope).

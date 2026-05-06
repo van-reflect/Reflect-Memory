@@ -1462,35 +1462,49 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
       const user = getUserById(db, request.userId);
       const orgId = user?.org_id ?? null;
+      // team_id on users is the sub-team membership (legacy column
+      // name kept post-migration 026). One sub-team per user today.
+      const subteamId = user?.team_id ?? null;
       const sinceClause =
         days > 0
           ? `AND m.created_at >= '${new Date(Date.now() - days * 86400_000).toISOString()}'`
           : "";
 
-      // Visibility scope: personal = own only; team = team-shared only;
-      // both = own + team-shared. Use COALESCE so a no-team caller's
-      // team clause never matches.
+      // Visibility scope:
+      //   personal = own memories only
+      //   team     = everything the user can see that isn't personal-
+      //              only — org-wide-shared + their sub-team-shared
+      //   both     = own + everything they can see in any shared pool
+      // The COALESCE-to-empty-string trick lets a no-org / no-sub-team
+      // caller still bind the params positionally without matching
+      // anything (no UUID equals '').
       let scopeWhere: string;
       const scopeArgs: unknown[] = [];
       if (scope === "personal") {
         scopeWhere = `m.user_id = ?`;
         scopeArgs.push(request.userId);
       } else if (scope === "team") {
-        if (!orgId) {
+        if (!orgId && !subteamId) {
           return { nodes: [], edges: [], clusters: [], scope, days, max_nodes: maxNodes, truncated: false };
         }
-        scopeWhere = `m.shared_with_org_id = ?`;
-        scopeArgs.push(orgId);
+        scopeWhere = `(m.shared_with_org_id = COALESCE(?, '') OR m.shared_with_team_id = COALESCE(?, ''))`;
+        scopeArgs.push(orgId ?? "", subteamId ?? "");
       } else {
-        scopeWhere = `(m.user_id = ? OR m.shared_with_org_id = COALESCE(?, ''))`;
-        scopeArgs.push(request.userId, orgId ?? "");
+        scopeWhere =
+          `(m.user_id = ?` +
+          ` OR m.shared_with_org_id = COALESCE(?, '')` +
+          ` OR m.shared_with_team_id = COALESCE(?, ''))`;
+        scopeArgs.push(request.userId, orgId ?? "", subteamId ?? "");
       }
 
       // Pull memories. Newest first so when we hit max_nodes we keep the
       // most relevant. Includes thread root + reply count for sizing.
+      // shared_with_team_id is selected so the node `shared` flag covers
+      // sub-team-scoped rows too, not just org-wide.
       const memoryRows = db
         .prepare(
-          `SELECT m.id, m.title, m.tags, m.user_id, m.shared_with_org_id,
+          `SELECT m.id, m.title, m.tags, m.user_id,
+                  m.shared_with_org_id, m.shared_with_team_id,
                   m.parent_memory_id, m.created_at,
                   (SELECT COUNT(*) FROM memories c
                    WHERE c.parent_memory_id = m.id AND c.deleted_at IS NULL) AS reply_count
@@ -1507,6 +1521,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           tags: string;
           user_id: string;
           shared_with_org_id: string | null;
+          shared_with_team_id: string | null;
           parent_memory_id: string | null;
           created_at: string;
           reply_count: number;
@@ -1517,7 +1532,9 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const visibleIds = new Set(visible.map((m) => m.id));
 
       // Topic clusters (combined personal + team for "both" scope; just
-      // the requested scope otherwise). Drives node colors.
+      // the requested scope otherwise). Drives node colors. The team
+      // call now passes both orgId + subteamId so the cluster pool
+      // matches the new visibility rules.
       const personalCluster =
         scope !== "team"
           ? clusterTags(
@@ -1528,10 +1545,15 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
             )
           : [];
       const teamCluster =
-        scope !== "personal" && orgId
+        scope !== "personal" && (orgId || subteamId)
           ? clusterTags(
               ...((): [Array<{ tag_a: string; tag_b: string; count: number }>, Map<string, number>] => {
-                const c = getTagCooccurrence(db, { scope: "team", userId: request.userId, orgId });
+                const c = getTagCooccurrence(db, {
+                  scope: "team",
+                  userId: request.userId,
+                  orgId,
+                  subteamId,
+                });
                 return [c.pairs, c.tagFrequencies];
               })(),
             )
@@ -1592,7 +1614,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
           title: m.title,
           tags,
           author_id: m.user_id,
-          shared: m.shared_with_org_id !== null,
+          shared: m.shared_with_org_id !== null || m.shared_with_team_id !== null,
           is_thread_root: m.parent_memory_id === null && m.reply_count > 0,
           is_thread_child: m.parent_memory_id !== null,
           reply_count: m.reply_count,
