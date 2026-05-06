@@ -32,6 +32,19 @@ export interface CreateMemoryInput {
   origin: string;
   allowed_vendors: string[];
   memory_type?: MemoryType;
+  /**
+   * The caller's intended share scope for this write. Used by the
+   * dedup path so that two writes with different intended visibilities
+   * are treated as distinct memories — even when their title/content
+   * tokens are similar enough to otherwise merge.
+   *
+   * Without this, a follow-up write with a different scope would
+   * merge into an earlier memory and then have its scope silently
+   * flipped by the post-write share step (data-loss + visibility leak).
+   *
+   * Defaults to "personal" when omitted.
+   */
+  share_scope_intent?: "personal" | "org" | "team";
 }
 
 export interface UpdateMemoryInput {
@@ -177,11 +190,31 @@ function findSimilarMemory(
 ): MemoryRow | null {
   const cutoff = new Date(Date.now() - DEDUP_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
 
+  // Scope-aware dedup: only consider candidates whose CURRENT visibility
+  // matches the incoming write's INTENT. This prevents a same-shape
+  // follow-up with a different intended scope (e.g. T1=team then
+  // T2=org) from merging into the prior row and having its share
+  // scope silently flipped by the post-write share step.
+  let scopePredicate: string;
+  switch (input.share_scope_intent ?? "personal") {
+    case "team":
+      scopePredicate = " AND shared_with_team_id IS NOT NULL";
+      break;
+    case "org":
+      scopePredicate = " AND shared_with_org_id IS NOT NULL";
+      break;
+    case "personal":
+    default:
+      scopePredicate =
+        " AND shared_with_org_id IS NULL AND shared_with_team_id IS NULL";
+      break;
+  }
+
   const candidates = db
     .prepare(
       `SELECT ${COLUMNS}
        FROM memories
-       WHERE user_id = ? AND origin = ? AND deleted_at IS NULL AND created_at > ?
+       WHERE user_id = ? AND origin = ? AND deleted_at IS NULL AND created_at > ?${scopePredicate}
        ORDER BY created_at DESC
        LIMIT 50`,
     )
@@ -240,6 +273,10 @@ export function createMemory(
       `UPDATE memories SET title = ?, content = ?, tags = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
     ).run(input.title, input.content, tagsJson, now, similar.id, userId);
 
+    // Consistent response shape (issue #3): always surface share +
+    // parent fields, even on the merge path. Same-scope dedup means
+    // these reflect the existing memory's state and applyShareScope
+    // (when invoked) will refresh shared_at without changing scope.
     return {
       id: similar.id,
       title: input.title,
@@ -250,6 +287,10 @@ export function createMemory(
       memory_type: (similar.memory_type as MemoryType) ?? "semantic",
       created_at: similar.created_at,
       updated_at: now,
+      shared_with_org_id: similar.shared_with_org_id ?? null,
+      shared_with_team_id: similar.shared_with_team_id ?? null,
+      shared_at: similar.shared_at ?? null,
+      parent_memory_id: similar.parent_memory_id ?? null,
     };
   }
 
@@ -274,6 +315,10 @@ export function createMemory(
     memory_type: memoryType,
     created_at: now,
     updated_at: now,
+    shared_with_org_id: null,
+    shared_with_team_id: null,
+    shared_at: null,
+    parent_memory_id: null,
   };
 }
 

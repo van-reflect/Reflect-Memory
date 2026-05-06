@@ -2528,6 +2528,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         origin: request.authMethod === "dashboard" ? "dashboard" : "api",
         allowed_vendors: allowedVendors,
         memory_type: body.memory_type as MemoryType | undefined,
+        share_scope_intent: deriveShareScopeIntent(body),
       };
 
       const created = createMemory(db, request.userId, input);
@@ -2537,6 +2538,19 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       return memory;
     },
   );
+
+  // Derive the dedup-aware scope intent from request body. Mirrors the
+  // applyShareScope precedence so dedup and post-write share agree on
+  // what the caller asked for. Used by createMemory's findSimilarMemory
+  // to avoid collapsing two writes whose intended visibility differs.
+  function deriveShareScopeIntent(body: {
+    share_with_team?: boolean;
+    share_scope?: "org" | "team";
+  }): "personal" | "org" | "team" {
+    if (body.share_scope === "team") return "team";
+    if (body.share_scope === "org" || body.share_with_team === true) return "org";
+    return "personal";
+  }
 
   // Resolve the requested share scope and apply it to a freshly-created
   // memory. Returns the updated MemoryEntry on success, or null if no
@@ -2634,6 +2648,7 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         origin,
         allowed_vendors: body.allowed_vendors,
         memory_type: body.memory_type as MemoryType | undefined,
+        share_scope_intent: deriveShareScopeIntent(body),
       };
 
       const created = createMemory(db, request.userId, input);

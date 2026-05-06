@@ -40,9 +40,16 @@ export interface UserSummary {
   role: string | null;
   plan: string | null;
   org_id: string | null;
+  /** Org name. Field name is legacy ("team_name" pre-orgs/teams v1) and
+   *  kept for response-shape stability — clients still read it. */
   team_name: string | null;
   org_role: string | null;
   team_member_count: number;
+  /** Sub-team membership inside the org (null when the user isn't on
+   *  any sub-team yet). Surfaced so an LLM can decide between
+   *  share_scope='team' vs 'org' without a probe write. */
+  subteam_id: string | null;
+  subteam_name: string | null;
 }
 
 export interface BriefingTotals {
@@ -119,7 +126,7 @@ function daysAgoIso(days: number): string {
 function loadUserSummary(db: Database.Database, userId: string): UserSummary {
   const user = db
     .prepare(
-      `SELECT id, email, first_name, last_name, role, plan, org_id, org_role
+      `SELECT id, email, first_name, last_name, role, plan, org_id, org_role, team_id
        FROM users WHERE id = ?`,
     )
     .get(userId) as
@@ -132,6 +139,7 @@ function loadUserSummary(db: Database.Database, userId: string): UserSummary {
         plan: string | null;
         org_id: string | null;
         org_role: string | null;
+        team_id: string | null;
       }
     | undefined;
 
@@ -147,21 +155,31 @@ function loadUserSummary(db: Database.Database, userId: string): UserSummary {
       team_name: null,
       org_role: null,
       team_member_count: 0,
+      subteam_id: null,
+      subteam_name: null,
     };
   }
 
   let orgName: string | null = null;
   let teamMemberCount = 0;
   if (user.org_id) {
-    const team = db
+    const org = db
       .prepare(`SELECT name FROM orgs WHERE id = ?`)
       .get(user.org_id) as { name: string } | undefined;
-    orgName = team?.name ?? null;
+    orgName = org?.name ?? null;
     teamMemberCount = (
       db.prepare(`SELECT COUNT(*) AS n FROM users WHERE org_id = ?`).get(user.org_id) as {
         n: number;
       }
     ).n;
+  }
+
+  let subteamName: string | null = null;
+  if (user.team_id) {
+    const sub = db
+      .prepare(`SELECT name FROM teams WHERE id = ?`)
+      .get(user.team_id) as { name: string } | undefined;
+    subteamName = sub?.name ?? null;
   }
 
   return {
@@ -175,6 +193,8 @@ function loadUserSummary(db: Database.Database, userId: string): UserSummary {
     team_name: orgName,
     org_role: user.org_role,
     team_member_count: teamMemberCount,
+    subteam_id: user.team_id,
+    subteam_name: subteamName,
   };
 }
 
@@ -537,13 +557,19 @@ function formatUserLine(user: UserSummary): string {
     [user.first_name, user.last_name].filter(Boolean).join(" ") ||
     user.email ||
     "(unknown user)";
-  const teamPart = user.team_name
-    ? ` · team **${user.team_name}** (${user.team_member_count} ${
+  // "org" is the post-orgs+teams-v1 label; older briefings said "team"
+  // and meant the same thing. Sub-team membership (if any) is appended
+  // so an LLM can pick share_scope without probing.
+  const orgPart = user.team_name
+    ? ` · org **${user.team_name}** (${user.team_member_count} ${
         user.team_member_count === 1 ? "member" : "members"
       }, role: ${user.org_role ?? "member"})`
     : "";
+  const subteamPart = user.subteam_name
+    ? ` · sub-team **${user.subteam_name}**`
+    : "";
   const rolePart = user.role && user.role !== "user" ? ` · role: ${user.role}` : "";
-  return `**${displayName}**${user.email ? ` (${user.email})` : ""}${teamPart}${rolePart}`;
+  return `**${displayName}**${user.email ? ` (${user.email})` : ""}${orgPart}${subteamPart}${rolePart}`;
 }
 
 /**

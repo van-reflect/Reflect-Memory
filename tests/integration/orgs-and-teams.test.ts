@@ -264,6 +264,110 @@ describe("share_scope param on POST /memories", () => {
     expect(r.json.shared_with_team_id).toBeFalsy();
   });
 
+  // Issue #1 regression. Two writes with the same shape but different
+  // intended scopes must NOT collapse via the dedup path — the prior
+  // bug overwrote T1's team scope with T2's org scope (silent
+  // visibility leak + data loss). Scope-aware findSimilarMemory means
+  // they get distinct rows.
+  it("does NOT dedup-merge two writes when their share_scope differs (issue #1)", async () => {
+    const teamId = seededTeamIds[0];
+    await api("POST", `/orgs/${orgId}/teams/${teamId}/members`, {
+      body: { user_id: ownerUserId },
+    });
+
+    const sharedTitlePrefix = "QA scope-flip regression";
+    const sharedBody =
+      "Two consecutive write_memory calls with similar title and body but different share_scope must each produce their own row.";
+
+    const t1 = await api<MemoryResp>("POST", "/memories", {
+      body: {
+        title: `${sharedTitlePrefix} T1`,
+        content: `${sharedBody} (T1 picks team)`,
+        tags: ["qa-scope-flip", "smoke"],
+        share_scope: "team",
+      },
+    });
+    expect(t1.status).toBe(201);
+    if (t1.json.id) seededMemoryIds.push(t1.json.id);
+    expect(t1.json.shared_with_team_id).toBe(teamId);
+    expect(t1.json.shared_with_org_id).toBeFalsy();
+
+    const t2 = await api<MemoryResp>("POST", "/memories", {
+      body: {
+        title: `${sharedTitlePrefix} T2`,
+        content: `${sharedBody} (T2 picks org)`,
+        tags: ["qa-scope-flip", "smoke"],
+        share_scope: "org",
+      },
+    });
+    expect(t2.status).toBe(201);
+    if (t2.json.id) seededMemoryIds.push(t2.json.id);
+    expect(t2.json.shared_with_org_id).toBe(orgId);
+    expect(t2.json.shared_with_team_id).toBeFalsy();
+
+    expect(t2.json.id).not.toBe(t1.json.id);
+
+    // Re-read T1 by id to confirm its scope was NOT mutated by T2.
+    const after = await api<MemoryResp>("GET", `/memories/${t1.json.id}`);
+    expect(after.status).toBe(200);
+    expect(after.json.shared_with_team_id).toBe(teamId);
+    expect(after.json.shared_with_org_id).toBeFalsy();
+  });
+
+  // Same-scope writes SHOULD still dedup — that's the intended behavior.
+  // This test guards against an over-correction of the issue #1 fix.
+  it("DOES dedup-merge two writes when share_scope matches (preserves intended dedup)", async () => {
+    const tag = uniqueTag("ss-dedup");
+    const t1 = await api<MemoryResp>("POST", "/memories", {
+      body: {
+        title: `dedup baseline ${tag}`,
+        content: `same-scope dedup test for ${tag}`,
+        tags: [tag, "v1"],
+        share_scope: "org",
+      },
+    });
+    expect(t1.status).toBe(201);
+    if (t1.json.id) seededMemoryIds.push(t1.json.id);
+
+    const t2 = await api<MemoryResp>("POST", "/memories", {
+      body: {
+        title: `dedup baseline ${tag}`,
+        content: `same-scope dedup test for ${tag} (slight tweak)`,
+        tags: [tag, "v2"],
+        share_scope: "org",
+      },
+    });
+    expect(t2.status).toBe(201);
+    expect(t2.json.id).toBe(t1.json.id);
+    expect(t2.json.shared_with_org_id).toBe(orgId);
+  });
+
+  // Issue #3 regression. All POST /memories responses must include
+  // shared_with_org_id, shared_with_team_id, shared_at, parent_memory_id —
+  // null when not set, populated otherwise. Pre-fix, personal writes
+  // omitted these keys entirely and clients couldn't reliably read
+  // response.shared_with_org_id === null.
+  it("returns a stable shape for personal writes (issue #3)", async () => {
+    const tag = uniqueTag("shape");
+    const r = await api<MemoryResp>("POST", "/memories", {
+      body: {
+        title: `shape ${tag}`,
+        content: `body for ${tag}`,
+        tags: [tag],
+      },
+    });
+    expect(r.status).toBe(201);
+    if (r.json.id) seededMemoryIds.push(r.json.id);
+    expect(r.json).toHaveProperty("shared_with_org_id");
+    expect(r.json).toHaveProperty("shared_with_team_id");
+    expect(r.json).toHaveProperty("shared_at");
+    expect(r.json).toHaveProperty("parent_memory_id");
+    expect(r.json.shared_with_org_id).toBeNull();
+    expect(r.json.shared_with_team_id).toBeNull();
+    expect(r.json.shared_at).toBeNull();
+    expect(r.json.parent_memory_id).toBeNull();
+  });
+
   it("share_scope='team' silently falls back to personal when caller has no team", async () => {
     const { dbPath } = getTestServer();
     const db = new Database(dbPath);

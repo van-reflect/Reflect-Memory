@@ -363,6 +363,8 @@ describe("formatBriefingAsMarkdown", () => {
         team_name: "Reflect",
         org_role: "owner",
         team_member_count: 2,
+        subteam_id: null,
+        subteam_name: null,
         ...overrides.user,
       },
       totals: {
@@ -394,12 +396,39 @@ describe("formatBriefingAsMarkdown", () => {
     };
   }
 
-  it("includes user identity with team membership", () => {
+  it("includes user identity with org membership (post orgs+teams v1)", () => {
     const md = formatBriefingAsMarkdown(makeBriefing());
     expect(md).toContain("Tamer Test");
     expect(md).toContain("ts@example.com");
-    expect(md).toContain("team **Reflect**");
+    // Post orgs+teams v1: prose says "org **{name}**" not "team".
+    expect(md).toContain("org **Reflect**");
+    expect(md).not.toContain("team **Reflect**");
     expect(md).toContain("role: admin");
+  });
+
+  // Issue #2b regression: an LLM picking share_scope='team' needs to
+  // see which sub-team it'd land in without a probe write.
+  it("surfaces sub-team membership on the user identity line", () => {
+    const md = formatBriefingAsMarkdown(
+      makeBriefing({
+        user: {
+          id: "u1",
+          email: "ts@example.com",
+          first_name: "Tamer",
+          last_name: "Test",
+          role: "admin",
+          plan: "team",
+          org_id: "t1",
+          team_name: "Reflect",
+          org_role: "owner",
+          team_member_count: 2,
+          subteam_id: "st-eng",
+          subteam_name: "Engineering",
+        },
+      }),
+    );
+    expect(md).toContain("org **Reflect**");
+    expect(md).toContain("sub-team **Engineering**");
   });
 
   it("renders tag counts in inline code", () => {
@@ -422,6 +451,8 @@ describe("formatBriefingAsMarkdown", () => {
           team_name: null,
           org_role: null,
           team_member_count: 0,
+          subteam_id: null,
+          subteam_name: null,
         },
       }),
     );
