@@ -322,3 +322,103 @@ describe("POST /orgs/:id/members/:uid/role — promote/demote", () => {
     expect(r.status).toBe(400);
   });
 });
+
+describe("GET /orgs/:id/teams/:tid/memories — sub-team feed", () => {
+  // Uses a freshly-created team so we don't fight cross-test state.
+  let isolatedTeamId: string;
+  const teamScopedMemoryIds: string[] = [];
+
+  beforeAll(async () => {
+    const r = await api<TeamRow>("POST", `/orgs/${orgId}/teams`, {
+      body: { name: `team-feed-isolated-${uniqueTag("t")}` },
+    });
+    expect(r.status).toBe(201);
+    isolatedTeamId = r.json.id;
+    seededTeamIds.push(isolatedTeamId);
+    // Move the owner onto this team so subsequent share_scope='team'
+    // writes from the same caller route here.
+    await api("POST", `/orgs/${orgId}/teams/${isolatedTeamId}/members`, {
+      body: { user_id: ownerUserId },
+    });
+  });
+
+  // Two clearly-distinct titles/bodies to avoid createMemory's
+  // Jaccard-similarity dedup merging them (DEDUP_WINDOW_HOURS).
+  const widgetTitle = "Widget review meeting notes";
+  const widgetContent = "Comprehensive review of widget design patterns and trade-offs.";
+  const runbookTitle = "Operations runbook for production deploys";
+  const runbookContent = "Standard procedure for shipping changes and rolling back if needed.";
+
+  it("returns team-scoped memories shared via share_scope='team'", async () => {
+    const a = await api<MemoryResp>("POST", "/memories", {
+      body: {
+        title: widgetTitle,
+        content: widgetContent,
+        tags: ["widgets", "design"],
+        share_scope: "team",
+      },
+    });
+    expect(a.status).toBe(201);
+    expect(a.json.shared_with_team_id).toBe(isolatedTeamId);
+    if (a.json.id) teamScopedMemoryIds.push(a.json.id);
+
+    const b = await api<MemoryResp>("POST", "/memories", {
+      body: {
+        title: runbookTitle,
+        content: runbookContent,
+        tags: ["operations", "deploy"],
+        share_scope: "team",
+      },
+    });
+    expect(b.status).toBe(201);
+    expect(b.json.shared_with_team_id).toBe(isolatedTeamId);
+    if (b.json.id) teamScopedMemoryIds.push(b.json.id);
+
+    const r = await api<{ memories: { id: string; title: string }[]; total: number }>(
+      "GET",
+      `/orgs/${orgId}/teams/${isolatedTeamId}/memories`,
+    );
+    expect(r.status).toBe(200);
+    expect(r.json.total).toBe(2);
+    const titles = r.json.memories.map((m) => m.title);
+    expect(titles).toContain(widgetTitle);
+    expect(titles).toContain(runbookTitle);
+  });
+
+  it("?term= filters across title/content/tags", async () => {
+    const r = await api<{ memories: { title: string }[]; term?: string }>(
+      "GET",
+      `/orgs/${orgId}/teams/${isolatedTeamId}/memories?term=widget`,
+    );
+    expect(r.status).toBe(200);
+    expect(r.json.term).toBe("widget");
+    const titles = r.json.memories.map((m) => m.title);
+    expect(titles).toContain(widgetTitle);
+    expect(titles).not.toContain(runbookTitle);
+  });
+
+  it("404s when the team doesn't belong to the org", async () => {
+    const r = await api<{ error: string }>(
+      "GET",
+      `/orgs/${orgId}/teams/${randomUUID()}/memories`,
+    );
+    expect(r.status).toBe(404);
+  });
+
+  afterAll(() => {
+    if (teamScopedMemoryIds.length === 0) return;
+    const { dbPath } = getTestServer();
+    const db = new Database(dbPath);
+    try {
+      const placeholders = teamScopedMemoryIds.map(() => "?").join(",");
+      db.prepare(`DELETE FROM memory_versions WHERE memory_id IN (${placeholders})`).run(
+        ...teamScopedMemoryIds,
+      );
+      db.prepare(`DELETE FROM memories WHERE id IN (${placeholders})`).run(
+        ...teamScopedMemoryIds,
+      );
+    } finally {
+      db.close();
+    }
+  });
+});

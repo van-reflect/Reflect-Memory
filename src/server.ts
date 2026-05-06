@@ -117,6 +117,10 @@ import {
   shareMemoryToTeam,
   unshareMemory,
   listOrgMemories,
+  listTeamMemories,
+  countTeamMemories,
+  searchTeamMemories,
+  countSearchTeamMemories,
   countOrgMemories,
   searchOrgMemories,
   countSearchOrgMemories,
@@ -4918,6 +4922,45 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
 
       const memories = listOrgMemories(db, orgId, pagination);
       const total = countOrgMemories(db, orgId);
+      return { memories, total };
+    },
+  );
+
+  // GET /orgs/:id/teams/:tid/memories — sub-team-shared memories.
+  // Mirrors /orgs/:id/memories on shared_with_team_id. Any org member can
+  // read (sub-team membership isn't required to view a team's pool —
+  // that decision matches the dashboard team-picker dropdown UX, where
+  // an admin browsing teams expects to see what's shared in each).
+  // ?term= for case-insensitive search across title/content/tags/author.
+  server.get(
+    "/orgs/:id/teams/:tid/memories",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { id: orgId, tid: teamId } = request.params as { id: string; tid: string };
+      const user = getUserById(db, request.userId);
+      if (!user || user.org_id !== orgId) {
+        return reply.code(403).send({ error: "Not a member of this org" });
+      }
+      const team = getTeam(db, teamId);
+      if (!team || team.org_id !== orgId) {
+        return reply.code(404).send({ error: "Team not found in this org" });
+      }
+
+      const qs = request.query as { limit?: string; offset?: string; term?: string };
+      const pagination: PaginationOptions = {
+        limit: qs.limit ? parseInt(qs.limit, 10) : 50,
+        offset: qs.offset ? parseInt(qs.offset, 10) : 0,
+      };
+
+      const term = qs.term?.trim() ?? "";
+      if (term.length > 0) {
+        const memories = searchTeamMemories(db, teamId, term, pagination);
+        const total = countSearchTeamMemories(db, teamId, term);
+        return { memories, total, term };
+      }
+
+      const memories = listTeamMemories(db, teamId, pagination);
+      const total = countTeamMemories(db, teamId);
       return { memories, total };
     },
   );
