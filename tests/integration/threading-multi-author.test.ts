@@ -31,7 +31,7 @@ interface MemoryResponse {
   content: string;
   tags: string[];
   parent_memory_id?: string | null;
-  shared_with_team_id?: string | null;
+  shared_with_org_id?: string | null;
   shared_at?: string | null;
   deleted_at?: string | null;
   user_id?: string;
@@ -42,7 +42,7 @@ interface ThreadResponse {
   children: MemoryResponse[];
 }
 
-let teamId: string;
+let orgId: string;
 let outsideTeamId: string;
 let ownerUserId: string;
 let vanUserId: string;
@@ -60,29 +60,29 @@ beforeAll(() => {
       .get(ownerEmail) as { id: string } | undefined;
     ownerUserId = ownerRow!.id;
 
-    teamId = randomUUID();
+    orgId = randomUUID();
     outsideTeamId = randomUUID();
     const now = new Date().toISOString();
 
     db.prepare(
-      `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at)
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
        VALUES (?, ?, ?, 'team', ?, ?)`,
-    ).run(teamId, "Multi-Author-Team", ownerUserId, now, now);
+    ).run(orgId, "Multi-Author-Team", ownerUserId, now, now);
     db.prepare(
-      `UPDATE users SET team_id = ?, team_role = 'owner' WHERE id = ?`,
-    ).run(teamId, ownerUserId);
+      `UPDATE users SET org_id = ?, org_role = 'owner' WHERE id = ?`,
+    ).run(orgId, ownerUserId);
 
     // Provision Van: same team as owner.
     vanUserId = randomUUID();
     db.prepare(
-      `INSERT INTO users (id, email, created_at, updated_at, team_id, team_role)
+      `INSERT INTO users (id, email, created_at, updated_at, org_id, org_role)
        VALUES (?, ?, ?, ?, ?, 'member')`,
     ).run(
       vanUserId,
       `van-${vanUserId.slice(0, 8)}@reflectmemory.com`,
       now,
       now,
-      teamId,
+      orgId,
     );
     vanApiKey = generateApiKey(db, vanUserId, "van-test-key").key;
 
@@ -101,11 +101,11 @@ beforeAll(() => {
       now,
     );
     db.prepare(
-      `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at)
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
        VALUES (?, ?, ?, 'team', ?, ?)`,
     ).run(outsideTeamId, "Outside-Team", outsiderUserId, now, now);
     db.prepare(
-      `UPDATE users SET team_id = ?, team_role = 'owner' WHERE id = ?`,
+      `UPDATE users SET org_id = ?, org_role = 'owner' WHERE id = ?`,
     ).run(outsideTeamId, outsiderUserId);
     outsiderApiKey = generateApiKey(db, outsiderUserId, "outsider-test-key").key;
   } finally {
@@ -153,13 +153,13 @@ afterAll(() => {
       vanUserId,
       outsiderUserId,
     );
-    // Clear team back-refs first (FK on users.team_id → teams.id), then
+    // Clear team back-refs first (FK on users.org_id → teams.id), then
     // delete teams (which removes the teams.owner_id → users.id FK), THEN
     // delete users.
     db.prepare(
-      `UPDATE users SET team_id = NULL, team_role = NULL WHERE id IN (?, ?, ?)`,
+      `UPDATE users SET org_id = NULL, org_role = NULL WHERE id IN (?, ?, ?)`,
     ).run(ownerUserId, vanUserId, outsiderUserId);
-    db.prepare(`DELETE FROM teams WHERE id IN (?, ?)`).run(teamId, outsideTeamId);
+    db.prepare(`DELETE FROM orgs WHERE id IN (?, ?)`).run(orgId, outsideTeamId);
     db.prepare(`DELETE FROM users WHERE id IN (?, ?)`).run(vanUserId, outsiderUserId);
   } finally {
     db.close();
@@ -209,7 +209,7 @@ describe("multi-author threading: write-child permission", () => {
     expect(r.status).toBe(201);
     expect(r.json.parent_memory_id).toBe(parent.id);
     // Inheritance: child is auto-shared with the same team.
-    expect(r.json.shared_with_team_id).toBe(teamId);
+    expect(r.json.shared_with_org_id).toBe(orgId);
     expect(r.json.shared_at).toBeTruthy();
   });
 
@@ -307,7 +307,7 @@ describe("multi-author threading: cascade share + unshare", () => {
     const parent = await ownerCreatesParent(`mt-cas-unshare-${Date.now()}`);
     await ownerShares(parent.id);
     const vansReply = await vanCreatesChild(parent.id, "vans-reply-pre-unshare");
-    expect(vansReply.json.shared_with_team_id).toBe(teamId);
+    expect(vansReply.json.shared_with_org_id).toBe(orgId);
 
     const unshare = await api("POST", `/memories/${parent.id}/unshare`);
     expect(unshare.status).toBe(200);
@@ -318,12 +318,12 @@ describe("multi-author threading: cascade share + unshare", () => {
     try {
       const row = db
         .prepare(
-          "SELECT shared_with_team_id, shared_at FROM memories WHERE id = ?",
+          "SELECT shared_with_org_id, shared_at FROM memories WHERE id = ?",
         )
         .get(vansReply.json.id) as
-        | { shared_with_team_id: string | null; shared_at: string | null }
+        | { shared_with_org_id: string | null; shared_at: string | null }
         | undefined;
-      expect(row?.shared_with_team_id).toBeNull();
+      expect(row?.shared_with_org_id).toBeNull();
       expect(row?.shared_at).toBeNull();
     } finally {
       db.close();
@@ -344,9 +344,9 @@ describe("multi-author threading: cascade share + unshare", () => {
     const db = new Database(dbPath);
     try {
       const row = db
-        .prepare("SELECT shared_with_team_id FROM memories WHERE id = ?")
-        .get(vansReply.json.id) as { shared_with_team_id: string | null };
-      expect(row.shared_with_team_id).toBe(teamId);
+        .prepare("SELECT shared_with_org_id FROM memories WHERE id = ?")
+        .get(vansReply.json.id) as { shared_with_org_id: string | null };
+      expect(row.shared_with_org_id).toBe(orgId);
     } finally {
       db.close();
     }

@@ -48,7 +48,7 @@ interface StatusResponse {
     slack_team_id: string;
     slack_team_name: string;
     bot_user_id: string;
-    reflect_team_id: string | null;
+    reflect_org_id: string | null;
     reflect_user_id: string | null;
     installed_at: string;
     uninstalled_at: string | null;

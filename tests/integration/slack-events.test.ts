@@ -115,7 +115,7 @@ describe("POST /slack/events — event_callback ack", () => {
   it("returns 200 {ok:true} for a well-formed event_callback (handler runs async)", async () => {
     const { status, body } = await postEvent({
       type: "event_callback",
-      team_id: "T-nonexistent",
+      org_id: "T-nonexistent",
       api_app_id: "A-test",
       event_id: `Ev${randomUUID()}`,
       event: {
@@ -154,7 +154,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
   it("ignores bot_message subtype without DB lookup", () => {
     const r = processSlackEvent(dummyDb, {
       type: "event_callback",
-      team_id: "T-x",
+      org_id: "T-x",
       event: {
         type: "message",
         subtype: "bot_message",
@@ -172,7 +172,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
     for (const subtype of ["message_changed", "message_deleted"]) {
       const r = processSlackEvent(dummyDb, {
         type: "event_callback",
-        team_id: "T-x",
+        org_id: "T-x",
         event: {
           type: "message",
           subtype,
@@ -189,7 +189,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
   it("ignores public-channel message without app_mention", () => {
     const r = processSlackEvent(dummyDb, {
       type: "event_callback",
-      team_id: "T-x",
+      org_id: "T-x",
       event: {
         type: "message",
         channel_type: "channel",
@@ -205,7 +205,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
   it("ignores incomplete event payloads (missing user/channel/text)", () => {
     const r = processSlackEvent(dummyDb, {
       type: "event_callback",
-      team_id: "T-x",
+      org_id: "T-x",
       event: {
         type: "app_mention",
         channel: "C-x",
@@ -218,7 +218,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
   it("ignores self-app messages (api_app_id matches event.app_id)", () => {
     const r = processSlackEvent(dummyDb, {
       type: "event_callback",
-      team_id: "T-x",
+      org_id: "T-x",
       api_app_id: "A-self",
       event: {
         type: "app_mention",

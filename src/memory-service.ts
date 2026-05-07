@@ -14,6 +14,9 @@ export interface MemoryEntry {
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
+  /** Org-scope share. Mutually exclusive with shared_with_team_id. */
+  shared_with_org_id?: string | null;
+  /** Team-scope (sub-team) share. Mutually exclusive with shared_with_org_id. */
   shared_with_team_id?: string | null;
   shared_at?: string | null;
   /** Present when this memory is a reply / child of another. Top-level
@@ -29,6 +32,19 @@ export interface CreateMemoryInput {
   origin: string;
   allowed_vendors: string[];
   memory_type?: MemoryType;
+  /**
+   * The caller's intended share scope for this write. Used by the
+   * dedup path so that two writes with different intended visibilities
+   * are treated as distinct memories — even when their title/content
+   * tokens are similar enough to otherwise merge.
+   *
+   * Without this, a follow-up write with a different scope would
+   * merge into an earlier memory and then have its scope silently
+   * flipped by the post-write share step (data-loss + visibility leak).
+   *
+   * Defaults to "personal" when omitted.
+   */
+  share_scope_intent?: "personal" | "org" | "team";
 }
 
 export interface UpdateMemoryInput {
@@ -73,6 +89,7 @@ interface MemoryRow {
   created_at: string;
   updated_at: string;
   deleted_at?: string | null;
+  shared_with_org_id?: string | null;
   shared_with_team_id?: string | null;
   shared_at?: string | null;
   parent_memory_id?: string | null;
@@ -99,13 +116,14 @@ function rowToMemory(row: MemoryRow): MemoryEntry {
     created_at: row.created_at,
     updated_at: row.updated_at,
     deleted_at: row.deleted_at ?? undefined,
+    shared_with_org_id: row.shared_with_org_id ?? null,
     shared_with_team_id: row.shared_with_team_id ?? null,
     shared_at: row.shared_at ?? null,
     parent_memory_id: row.parent_memory_id ?? null,
   };
 }
 
-const MEMORY_COLUMNS = ["id", "user_id", "title", "content", "tags", "origin", "allowed_vendors", "memory_type", "created_at", "updated_at", "deleted_at", "shared_with_team_id", "shared_at", "parent_memory_id"] as const;
+const MEMORY_COLUMNS = ["id", "user_id", "title", "content", "tags", "origin", "allowed_vendors", "memory_type", "created_at", "updated_at", "deleted_at", "shared_with_org_id", "shared_with_team_id", "shared_at", "parent_memory_id"] as const;
 const COLUMNS = MEMORY_COLUMNS.join(", ");
 const COLUMNS_ALIASED = MEMORY_COLUMNS.map(c => `m.${c}`).join(", ");
 
@@ -172,11 +190,31 @@ function findSimilarMemory(
 ): MemoryRow | null {
   const cutoff = new Date(Date.now() - DEDUP_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
 
+  // Scope-aware dedup: only consider candidates whose CURRENT visibility
+  // matches the incoming write's INTENT. This prevents a same-shape
+  // follow-up with a different intended scope (e.g. T1=team then
+  // T2=org) from merging into the prior row and having its share
+  // scope silently flipped by the post-write share step.
+  let scopePredicate: string;
+  switch (input.share_scope_intent ?? "personal") {
+    case "team":
+      scopePredicate = " AND shared_with_team_id IS NOT NULL";
+      break;
+    case "org":
+      scopePredicate = " AND shared_with_org_id IS NOT NULL";
+      break;
+    case "personal":
+    default:
+      scopePredicate =
+        " AND shared_with_org_id IS NULL AND shared_with_team_id IS NULL";
+      break;
+  }
+
   const candidates = db
     .prepare(
       `SELECT ${COLUMNS}
        FROM memories
-       WHERE user_id = ? AND origin = ? AND deleted_at IS NULL AND created_at > ?
+       WHERE user_id = ? AND origin = ? AND deleted_at IS NULL AND created_at > ?${scopePredicate}
        ORDER BY created_at DESC
        LIMIT 50`,
     )
@@ -235,6 +273,10 @@ export function createMemory(
       `UPDATE memories SET title = ?, content = ?, tags = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
     ).run(input.title, input.content, tagsJson, now, similar.id, userId);
 
+    // Consistent response shape (issue #3): always surface share +
+    // parent fields, even on the merge path. Same-scope dedup means
+    // these reflect the existing memory's state and applyShareScope
+    // (when invoked) will refresh shared_at without changing scope.
     return {
       id: similar.id,
       title: input.title,
@@ -245,6 +287,10 @@ export function createMemory(
       memory_type: (similar.memory_type as MemoryType) ?? "semantic",
       created_at: similar.created_at,
       updated_at: now,
+      shared_with_org_id: similar.shared_with_org_id ?? null,
+      shared_with_team_id: similar.shared_with_team_id ?? null,
+      shared_at: similar.shared_at ?? null,
+      parent_memory_id: similar.parent_memory_id ?? null,
     };
   }
 
@@ -269,6 +315,10 @@ export function createMemory(
     memory_type: memoryType,
     created_at: now,
     updated_at: now,
+    shared_with_org_id: null,
+    shared_with_team_id: null,
+    shared_at: null,
+    parent_memory_id: null,
   };
 }
 
@@ -306,8 +356,8 @@ export function readMemoryWithTeamAccess(
          AND (
            user_id = ?
            OR (
-             shared_with_team_id IS NOT NULL
-             AND shared_with_team_id = (SELECT team_id FROM users WHERE id = ?)
+             shared_with_org_id IS NOT NULL
+             AND shared_with_org_id = (SELECT org_id FROM users WHERE id = ?)
            )
          )`,
     )
@@ -775,15 +825,15 @@ export class ThreadingError extends Error {
   }
 }
 
-/** Resolve a user's team_id (null if not on a team). Internal helper. */
+/** Resolve a user's org_id (null if not on a team). Internal helper. */
 function getUserTeamIdInternal(
   db: Database.Database,
   userId: string,
 ): string | null {
   const row = db
-    .prepare("SELECT team_id FROM users WHERE id = ?")
-    .get(userId) as { team_id: string | null } | undefined;
-  return row?.team_id ?? null;
+    .prepare("SELECT org_id FROM users WHERE id = ?")
+    .get(userId) as { org_id: string | null } | undefined;
+  return row?.org_id ?? null;
 }
 
 /**
@@ -804,7 +854,7 @@ function getUserTeamIdInternal(
  * Behavior:
  *   - No similar-memory dedup (unlike createMemory). A reply shouldn't
  *     silently merge with an unrelated top-level memory.
- *   - Child inherits the parent's `shared_with_team_id` (access
+ *   - Child inherits the parent's `shared_with_org_id` (access
  *     inheritance — if parent is in the team pool, so is the child).
  *   - Child is owned by the CALLER, not by the parent's owner.
  *
@@ -818,7 +868,7 @@ export function createChildMemory(
 ): MemoryEntry {
   const parent = db
     .prepare(
-      `SELECT id, user_id, parent_memory_id, deleted_at, shared_with_team_id
+      `SELECT id, user_id, parent_memory_id, deleted_at, shared_with_org_id
        FROM memories WHERE id = ?`,
     )
     .get(parentId) as
@@ -827,7 +877,7 @@ export function createChildMemory(
         user_id: string;
         parent_memory_id: string | null;
         deleted_at: string | null;
-        shared_with_team_id: string | null;
+        shared_with_org_id: string | null;
       }
     | undefined;
 
@@ -838,9 +888,9 @@ export function createChildMemory(
     // Allowed iff parent is shared with a team the caller belongs to.
     const callerTeamId = getUserTeamIdInternal(db, userId);
     const sharedWithCallerTeam =
-      parent.shared_with_team_id !== null &&
+      parent.shared_with_org_id !== null &&
       callerTeamId !== null &&
-      parent.shared_with_team_id === callerTeamId;
+      parent.shared_with_org_id === callerTeamId;
     if (!sharedWithCallerTeam) {
       throw new ThreadingError(
         "Parent memory belongs to another user and is not shared with your team",
@@ -867,7 +917,7 @@ export function createChildMemory(
   db.prepare(
     `INSERT INTO memories
       (id, user_id, title, content, tags, origin, allowed_vendors, memory_type,
-       created_at, updated_at, shared_with_team_id, shared_at, parent_memory_id)
+       created_at, updated_at, shared_with_org_id, shared_at, parent_memory_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
@@ -880,8 +930,8 @@ export function createChildMemory(
     memoryType,
     now,
     now,
-    parent.shared_with_team_id,
-    parent.shared_with_team_id ? now : null,
+    parent.shared_with_org_id,
+    parent.shared_with_org_id ? now : null,
     parentId,
   );
 
@@ -896,8 +946,8 @@ export function createChildMemory(
     created_at: now,
     updated_at: now,
     deleted_at: null,
-    shared_with_team_id: parent.shared_with_team_id,
-    shared_at: parent.shared_with_team_id ? now : null,
+    shared_with_org_id: parent.shared_with_org_id,
+    shared_at: parent.shared_with_org_id ? now : null,
     parent_memory_id: parentId,
   };
 }
@@ -912,7 +962,7 @@ export function createChildMemory(
  *   - Otherwise → empty list.
  *
  * The caller is expected to have already verified read access on the parent
- * (e.g. via readMemoryById or shared_with_team_id check). This function does
+ * (e.g. via readMemoryById or shared_with_org_id check). This function does
  * its own check too as defense-in-depth.
  */
 export function listChildren(
@@ -922,18 +972,18 @@ export function listChildren(
 ): MemoryEntry[] {
   const parent = db
     .prepare(
-      `SELECT user_id, shared_with_team_id FROM memories WHERE id = ?`,
+      `SELECT user_id, shared_with_org_id FROM memories WHERE id = ?`,
     )
     .get(parentId) as
-    | { user_id: string; shared_with_team_id: string | null }
+    | { user_id: string; shared_with_org_id: string | null }
     | undefined;
   if (!parent) return [];
 
   let visible = parent.user_id === userId;
-  if (!visible && parent.shared_with_team_id) {
+  if (!visible && parent.shared_with_org_id) {
     const callerTeamId = getUserTeamIdInternal(db, userId);
     visible =
-      callerTeamId !== null && parent.shared_with_team_id === callerTeamId;
+      callerTeamId !== null && parent.shared_with_org_id === callerTeamId;
   }
   if (!visible) return [];
 
@@ -1075,6 +1125,38 @@ export function cascadeHardDelete(
 export function cascadeShare(
   db: Database.Database,
   parentId: string,
+  orgId: string,
+): string[] {
+  const now = new Date().toISOString();
+  const childIds = db
+    .prepare(
+      `SELECT id FROM memories
+       WHERE parent_memory_id = ?
+         AND deleted_at IS NULL
+         AND (shared_with_org_id IS NULL OR shared_with_org_id != ?)`,
+    )
+    .all(parentId, orgId)
+    .map((r) => (r as { id: string }).id);
+
+  for (const id of childIds) {
+    db.prepare(
+      `UPDATE memories
+       SET shared_with_org_id = ?, shared_with_team_id = NULL,
+           shared_at = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(orgId, now, now, id);
+  }
+  return childIds;
+}
+
+/**
+ * Cascade-share at TEAM scope. Mirrors cascadeShare for org but applies
+ * shared_with_team_id (and clears any prior org scope so the
+ * mutually-exclusive invariant holds across the whole thread).
+ */
+export function cascadeShareToTeam(
+  db: Database.Database,
+  parentId: string,
   teamId: string,
 ): string[] {
   const now = new Date().toISOString();
@@ -1090,7 +1172,9 @@ export function cascadeShare(
 
   for (const id of childIds) {
     db.prepare(
-      `UPDATE memories SET shared_with_team_id = ?, shared_at = ?, updated_at = ?
+      `UPDATE memories
+       SET shared_with_team_id = ?, shared_with_org_id = NULL,
+           shared_at = ?, updated_at = ?
        WHERE id = ?`,
     ).run(teamId, now, now, id);
   }
@@ -1110,17 +1194,22 @@ export function cascadeUnshare(
   parentId: string,
 ): string[] {
   const now = new Date().toISOString();
+  // Clears whichever scope is set on each child (org OR team — they're
+  // mutually exclusive so at most one is populated).
   const childIds = db
     .prepare(
       `SELECT id FROM memories
-       WHERE parent_memory_id = ? AND shared_with_team_id IS NOT NULL`,
+       WHERE parent_memory_id = ?
+         AND (shared_with_org_id IS NOT NULL OR shared_with_team_id IS NOT NULL)`,
     )
     .all(parentId)
     .map((r) => (r as { id: string }).id);
 
   for (const id of childIds) {
     db.prepare(
-      `UPDATE memories SET shared_with_team_id = NULL, shared_at = NULL, updated_at = ?
+      `UPDATE memories
+       SET shared_with_org_id = NULL, shared_with_team_id = NULL,
+           shared_at = NULL, updated_at = ?
        WHERE id = ?`,
     ).run(now, id);
   }
@@ -1131,6 +1220,37 @@ export function cascadeUnshare(
 // Team memory functions
 // ---------------------------------------------------------------------------
 
+/**
+ * Share a memory at the ORG scope. Mutually exclusive with team scope —
+ * if the memory was team-shared, the team scope is cleared as part of
+ * the same UPDATE so we never end up with both fields set (per D2 in
+ * docs/eng-plan-orgs-and-teams-v1.md).
+ */
+export function shareMemoryToOrg(
+  db: Database.Database,
+  memoryId: string,
+  userId: string,
+  orgId: string,
+): MemoryEntry | null {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE memories
+       SET shared_with_org_id = ?, shared_with_team_id = NULL,
+           shared_at = ?, updated_at = ?
+       WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
+    )
+    .run(orgId, now, now, memoryId, userId);
+  if (result.changes === 0) return null;
+  return readMemoryById(db, userId, memoryId);
+}
+
+/**
+ * Share a memory at the TEAM scope. Mutually exclusive with org scope —
+ * promoting from team to org clears team_id; demoting from org to team
+ * clears org_id. Caller must have verified the user is a member of the
+ * given team (or the team is in the user's org).
+ */
 export function shareMemoryToTeam(
   db: Database.Database,
   memoryId: string,
@@ -1140,7 +1260,9 @@ export function shareMemoryToTeam(
   const now = new Date().toISOString();
   const result = db
     .prepare(
-      `UPDATE memories SET shared_with_team_id = ?, shared_at = ?, updated_at = ?
+      `UPDATE memories
+       SET shared_with_team_id = ?, shared_with_org_id = NULL,
+           shared_at = ?, updated_at = ?
        WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
     )
     .run(teamId, now, now, memoryId, userId);
@@ -1148,6 +1270,10 @@ export function shareMemoryToTeam(
   return readMemoryById(db, userId, memoryId);
 }
 
+/**
+ * Clear ANY share scope on a memory (whether org or team). Used by the
+ * dashboard's Unshare button + when a memory is being deleted.
+ */
 export function unshareMemory(
   db: Database.Database,
   memoryId: string,
@@ -1156,7 +1282,9 @@ export function unshareMemory(
   const now = new Date().toISOString();
   const result = db
     .prepare(
-      `UPDATE memories SET shared_with_team_id = NULL, shared_at = NULL, updated_at = ?
+      `UPDATE memories
+       SET shared_with_org_id = NULL, shared_with_team_id = NULL,
+           shared_at = NULL, updated_at = ?
        WHERE id = ? AND user_id = ? AND deleted_at IS NULL`,
     )
     .run(now, memoryId, userId);
@@ -1171,6 +1299,56 @@ export interface TeamMemoryEntry extends MemoryEntry {
   shared_at: string | null;
 }
 
+export function listOrgMemories(
+  db: Database.Database,
+  orgId: string,
+  pagination?: PaginationOptions,
+): TeamMemoryEntry[] {
+  const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
+  const rows = db
+    .prepare(
+      `SELECT ${COLUMNS_ALIASED}, u.email AS author_email, u.first_name AS author_first_name,
+              u.last_name AS author_last_name, m.shared_at
+       FROM memories m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.shared_with_org_id = ? AND m.deleted_at IS NULL
+       ORDER BY m.shared_at DESC, m.created_at DESC${pagSql}`,
+    )
+    .all(orgId, ...pagParams) as (MemoryRow & {
+      author_email: string;
+      author_first_name: string | null;
+      author_last_name: string | null;
+      shared_at: string | null;
+    })[];
+
+  return rows.map((row) => ({
+    ...rowToMemory(row),
+    author_email: row.author_email,
+    author_first_name: row.author_first_name,
+    author_last_name: row.author_last_name,
+    shared_at: row.shared_at,
+  }));
+}
+
+export function countOrgMemories(
+  db: Database.Database,
+  orgId: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM memories
+       WHERE deleted_at IS NULL
+         AND user_id IN (SELECT id FROM users WHERE org_id = ?)`,
+    )
+    .get(orgId) as { cnt: number };
+  return row.cnt;
+}
+
+/**
+ * List sub-team-shared memories. Mirrors listOrgMemories but on
+ * shared_with_team_id. Returns the same enriched shape (author + shared_at)
+ * so the dashboard can pipe through one renderer.
+ */
 export function listTeamMemories(
   db: Database.Database,
   teamId: string,
@@ -1209,22 +1387,16 @@ export function countTeamMemories(
   const row = db
     .prepare(
       `SELECT COUNT(*) as cnt FROM memories
-       WHERE deleted_at IS NULL
-         AND user_id IN (SELECT id FROM users WHERE team_id = ?)`,
+       WHERE shared_with_team_id = ? AND deleted_at IS NULL`,
     )
     .get(teamId) as { cnt: number };
   return row.cnt;
 }
 
 /**
- * Full-text-ish search across the Team Shared pool. Case-insensitive LIKE
- * across title, content, tags (JSON TEXT column, substring match), and
- * author identity (email, first_name, last_name). Matches listTeamMemories
- * column + ordering contract so the dashboard can pipe results directly
- * through the same renderer.
- *
- * Trim and reject empty terms at the caller; this function assumes a
- * non-empty term.
+ * Full-text-ish search across the sub-team-shared pool. Mirrors
+ * searchOrgMemories on shared_with_team_id. Same match axes (title,
+ * content, tags, author identity), same case-insensitivity, same shape.
  */
 export function searchTeamMemories(
   db: Database.Database,
@@ -1276,7 +1448,6 @@ export function searchTeamMemories(
   }));
 }
 
-/** Count matches for the same filter as searchTeamMemories. */
 export function countSearchTeamMemories(
   db: Database.Database,
   teamId: string,
@@ -1299,6 +1470,94 @@ export function countSearchTeamMemories(
          )`,
     )
     .get(teamId, likeTerm, likeTerm, likeTerm, likeTerm, likeTerm, likeTerm) as {
+      cnt: number;
+    };
+  return row.cnt;
+}
+
+/**
+ * Full-text-ish search across the Team Shared pool. Case-insensitive LIKE
+ * across title, content, tags (JSON TEXT column, substring match), and
+ * author identity (email, first_name, last_name). Matches listOrgMemories
+ * column + ordering contract so the dashboard can pipe results directly
+ * through the same renderer.
+ *
+ * Trim and reject empty terms at the caller; this function assumes a
+ * non-empty term.
+ */
+export function searchOrgMemories(
+  db: Database.Database,
+  orgId: string,
+  term: string,
+  pagination?: PaginationOptions,
+): TeamMemoryEntry[] {
+  const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
+  const likeTerm = `%${escapeLike(term)}%`;
+  const rows = db
+    .prepare(
+      `SELECT ${COLUMNS_ALIASED}, u.email AS author_email, u.first_name AS author_first_name,
+              u.last_name AS author_last_name, m.shared_at
+       FROM memories m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.shared_with_org_id = ? AND m.deleted_at IS NULL
+         AND (
+              m.title LIKE ? ESCAPE '\\'
+           OR m.content LIKE ? ESCAPE '\\'
+           OR m.tags LIKE ? ESCAPE '\\'
+           OR u.email LIKE ? ESCAPE '\\'
+           OR u.first_name LIKE ? ESCAPE '\\'
+           OR u.last_name LIKE ? ESCAPE '\\'
+         )
+       ORDER BY m.shared_at DESC, m.created_at DESC${pagSql}`,
+    )
+    .all(
+      orgId,
+      likeTerm,
+      likeTerm,
+      likeTerm,
+      likeTerm,
+      likeTerm,
+      likeTerm,
+      ...pagParams,
+    ) as (MemoryRow & {
+      author_email: string;
+      author_first_name: string | null;
+      author_last_name: string | null;
+      shared_at: string | null;
+    })[];
+
+  return rows.map((row) => ({
+    ...rowToMemory(row),
+    author_email: row.author_email,
+    author_first_name: row.author_first_name,
+    author_last_name: row.author_last_name,
+    shared_at: row.shared_at,
+  }));
+}
+
+/** Count matches for the same filter as searchOrgMemories. */
+export function countSearchOrgMemories(
+  db: Database.Database,
+  orgId: string,
+  term: string,
+): number {
+  const likeTerm = `%${escapeLike(term)}%`;
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt
+       FROM memories m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.shared_with_org_id = ? AND m.deleted_at IS NULL
+         AND (
+              m.title LIKE ? ESCAPE '\\'
+           OR m.content LIKE ? ESCAPE '\\'
+           OR m.tags LIKE ? ESCAPE '\\'
+           OR u.email LIKE ? ESCAPE '\\'
+           OR u.first_name LIKE ? ESCAPE '\\'
+           OR u.last_name LIKE ? ESCAPE '\\'
+         )`,
+    )
+    .get(orgId, likeTerm, likeTerm, likeTerm, likeTerm, likeTerm, likeTerm) as {
       cnt: number;
     };
   return row.cnt;

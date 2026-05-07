@@ -20,13 +20,13 @@ import { api, getTestServer, uniqueTag, withAgentKey } from "../helpers";
 interface MemoryResponse {
   id: string;
   title: string;
-  shared_with_team_id: string | null;
+  shared_with_org_id: string | null;
   shared_at: string | null;
   origin: string;
 }
 
 let ownerUserId: string;
-let teamId: string;
+let orgId: string;
 const trackedMemoryIds: string[] = [];
 
 beforeAll(() => {
@@ -38,15 +38,15 @@ beforeAll(() => {
       .get(ownerEmail) as { id: string } | undefined;
     ownerUserId = row!.id;
 
-    teamId = randomUUID();
+    orgId = randomUUID();
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at)
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
        VALUES (?, ?, ?, 'team', ?, ?)`,
-    ).run(teamId, "ShareOnWrite-Test-Team", ownerUserId, now, now);
+    ).run(orgId, "ShareOnWrite-Test-Team", ownerUserId, now, now);
     db.prepare(
-      `UPDATE users SET team_id = ?, team_role = 'owner' WHERE id = ?`,
-    ).run(teamId, ownerUserId);
+      `UPDATE users SET org_id = ?, org_role = 'owner' WHERE id = ?`,
+    ).run(orgId, ownerUserId);
   } finally {
     db.close();
   }
@@ -65,10 +65,10 @@ afterAll(() => {
         ...trackedMemoryIds,
       );
     }
-    db.prepare("UPDATE users SET team_id = NULL, team_role = NULL WHERE id = ?").run(
+    db.prepare("UPDATE users SET org_id = NULL, org_role = NULL WHERE id = ?").run(
       ownerUserId,
     );
-    db.prepare("DELETE FROM teams WHERE id = ?").run(teamId);
+    db.prepare("DELETE FROM orgs WHERE id = ?").run(orgId);
   } finally {
     db.close();
   }
@@ -89,7 +89,7 @@ describe("POST /agent/memories — share_with_team flag", () => {
     });
     expect(r.status).toBe(201);
     if (r.json.id) trackedMemoryIds.push(r.json.id);
-    expect(r.json.shared_with_team_id).toBe(teamId);
+    expect(r.json.shared_with_org_id).toBe(orgId);
     expect(r.json.shared_at).toBeTruthy();
     expect(r.json.origin).toBe("claude");
   });
@@ -111,7 +111,7 @@ describe("POST /agent/memories — share_with_team flag", () => {
     // createMemory's hand-rolled return omits unset team fields; toBeFalsy
     // captures both undefined (fresh row) and null (re-read row) — same
     // pattern as tests/integration/threading.test.ts.
-    expect(r.json.shared_with_team_id).toBeFalsy();
+    expect(r.json.shared_with_org_id).toBeFalsy();
     expect(r.json.shared_at).toBeFalsy();
   });
 
@@ -128,7 +128,7 @@ describe("POST /agent/memories — share_with_team flag", () => {
     });
     expect(r.status).toBe(201);
     if (r.json.id) trackedMemoryIds.push(r.json.id);
-    expect(r.json.shared_with_team_id).toBeFalsy();
+    expect(r.json.shared_with_org_id).toBeFalsy();
   });
 
   it("works the same way for the cursor agent key (parity with claude)", async () => {
@@ -145,7 +145,7 @@ describe("POST /agent/memories — share_with_team flag", () => {
     });
     expect(r.status).toBe(201);
     if (r.json.id) trackedMemoryIds.push(r.json.id);
-    expect(r.json.shared_with_team_id).toBe(teamId);
+    expect(r.json.shared_with_org_id).toBe(orgId);
     expect(r.json.origin).toBe("cursor");
   });
 });
@@ -163,7 +163,7 @@ describe("POST /memories — share_with_team flag (user path)", () => {
     });
     expect(r.status).toBe(201);
     if (r.json.id) trackedMemoryIds.push(r.json.id);
-    expect(r.json.shared_with_team_id).toBe(teamId);
+    expect(r.json.shared_with_org_id).toBe(orgId);
     expect(r.json.shared_at).toBeTruthy();
   });
 
@@ -178,7 +178,7 @@ describe("POST /memories — share_with_team flag (user path)", () => {
     });
     expect(r.status).toBe(201);
     if (r.json.id) trackedMemoryIds.push(r.json.id);
-    expect(r.json.shared_with_team_id).toBeFalsy();
+    expect(r.json.shared_with_org_id).toBeFalsy();
   });
 });
 
@@ -188,8 +188,8 @@ describe("share_with_team — graceful when caller is not on a team", () => {
     const db = new Database(dbPath);
     try {
       // Temporarily detach the owner from the team so the share path
-      // hits the "no team_id" branch in the handler.
-      db.prepare("UPDATE users SET team_id = NULL, team_role = NULL WHERE id = ?").run(
+      // hits the "no org_id" branch in the handler.
+      db.prepare("UPDATE users SET org_id = NULL, org_role = NULL WHERE id = ?").run(
         ownerUserId,
       );
     } finally {
@@ -210,15 +210,15 @@ describe("share_with_team — graceful when caller is not on a team", () => {
       });
       expect(r.status).toBe(201);
       if (r.json.id) trackedMemoryIds.push(r.json.id);
-      expect(r.json.shared_with_team_id).toBeFalsy();
+      expect(r.json.shared_with_org_id).toBeFalsy();
     } finally {
       // Re-attach so the rest of the suite (in-file beforeAll/afterAll)
       // sees the same team membership.
       const db2 = new Database(dbPath);
       try {
         db2.prepare(
-          "UPDATE users SET team_id = ?, team_role = 'owner' WHERE id = ?",
-        ).run(teamId, ownerUserId);
+          "UPDATE users SET org_id = ?, org_role = 'owner' WHERE id = ?",
+        ).run(orgId, ownerUserId);
       } finally {
         db2.close();
       }

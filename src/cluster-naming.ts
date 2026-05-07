@@ -35,13 +35,13 @@ const STALE_AFTER_MS = 24 * 60 * 60 * 1000; // 24h
 
 /**
  * Render a stable scope key. Personal scope is just `personal`; team
- * scope is `team:<team_id>` so different teams have separate cache rows
+ * scope is `team:<org_id>` so different teams have separate cache rows
  * for the same user.
  */
-function scopeKey(scope: "personal" | "team", teamId: string | null): string {
+function scopeKey(scope: "personal" | "team", orgId: string | null): string {
   if (scope === "personal") return "personal";
-  if (!teamId) return "team:none";
-  return `team:${teamId}`;
+  if (!orgId) return "team:none";
+  return `team:${orgId}`;
 }
 
 interface CachedRow {
@@ -151,7 +151,7 @@ function getSampleTitles(
   db: Database.Database,
   userId: string,
   scope: "personal" | "team",
-  teamId: string | null,
+  orgId: string | null,
   cluster: TagCluster,
   limit: number,
 ): string[] {
@@ -161,9 +161,9 @@ function getSampleTitles(
     scopeClause = "m.user_id = ?";
     scopeArgs = [userId];
   } else {
-    if (!teamId) return [];
-    scopeClause = "m.shared_with_team_id = ?";
-    scopeArgs = [teamId];
+    if (!orgId) return [];
+    scopeClause = "m.shared_with_org_id = ?";
+    scopeArgs = [orgId];
   }
 
   const tagsJson = JSON.stringify(cluster.tags);
@@ -232,12 +232,12 @@ export async function nameClusters(
   db: Database.Database,
   userId: string,
   scope: "personal" | "team",
-  teamId: string | null,
+  orgId: string | null,
   clusters: TagCluster[],
   opts: NameClustersOptions = {},
 ): Promise<NamedCluster[]> {
   if (clusters.length === 0) return [];
-  const scopeStr = scopeKey(scope, teamId);
+  const scopeStr = scopeKey(scope, orgId);
   const cached = loadCachedClusters(db, userId, scopeStr);
 
   const apiKey = opts.anthropicKey ?? process.env.ANTHROPIC_API_KEY;
@@ -264,7 +264,7 @@ export async function nameClusters(
         return { ...cluster, ...f, freshly_named: true };
       }
       try {
-        const titles = getSampleTitles(db, userId, scope, teamId, cluster, samples);
+        const titles = getSampleTitles(db, userId, scope, orgId, cluster, samples);
         const nd = await nameOneCluster(anthropic, cluster, titles);
         upsertCachedCluster(db, userId, scopeStr, cluster, nd.name, nd.description);
         return { ...cluster, ...nd, freshly_named: true };

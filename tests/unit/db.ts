@@ -50,21 +50,21 @@ export function seedUser(
     email: string;
     plan: string;
     role: string;
-    teamId: string | null;
+    orgId: string | null;
   }> = {},
 ): SeededUser {
   const id = randomUUID();
   const email = overrides.email ?? `u-${id.slice(0, 8)}@test.local`;
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO users (id, email, role, plan, team_id, created_at, updated_at)
+    `INSERT INTO users (id, email, role, plan, org_id, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     email,
     overrides.role ?? "user",
     overrides.plan ?? "free",
-    overrides.teamId ?? null,
+    overrides.orgId ?? null,
     now,
     now,
   );

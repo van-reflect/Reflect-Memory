@@ -42,7 +42,7 @@ interface SlackWorkspaceRow {
   id: string;
   slack_team_id: string;
   slack_team_name: string;
-  reflect_team_id: string | null;
+  reflect_org_id: string | null;
   reflect_user_id: string | null;
   bot_user_id: string;
   bot_token_encrypted: Buffer;
@@ -59,7 +59,7 @@ function rowToWorkspace(row: SlackWorkspaceRow): SlackWorkspace {
     id: row.id,
     slackTeamId: row.slack_team_id,
     slackTeamName: row.slack_team_name,
-    reflectTeamId: row.reflect_team_id,
+    reflectTeamId: row.reflect_org_id,
     reflectUserId: row.reflect_user_id,
     botUserId: row.bot_user_id,
     installedByUserId: row.installed_by_user_id,
@@ -116,7 +116,7 @@ export function upsertSlackWorkspace(
     workspaceId = existing.id;
     db.prepare(
       `UPDATE slack_workspaces
-       SET slack_team_name = ?, reflect_team_id = ?, reflect_user_id = ?,
+       SET slack_team_name = ?, reflect_org_id = ?, reflect_user_id = ?,
            bot_user_id = ?, bot_token_encrypted = ?, bot_token_nonce = ?,
            installed_by_user_id = ?, installed_at = ?, uninstalled_at = NULL,
            updated_at = ?
@@ -140,7 +140,7 @@ export function upsertSlackWorkspace(
       metadata: {
         slack_team_id: options.slackTeamId,
         slack_team_name: options.slackTeamName,
-        reflect_team_id: options.reflectTeamId,
+        reflect_org_id: options.reflectTeamId,
         reflect_user_id: options.reflectUserId,
       },
     });
@@ -149,7 +149,7 @@ export function upsertSlackWorkspace(
     isNew = true;
     db.prepare(
       `INSERT INTO slack_workspaces (
-        id, slack_team_id, slack_team_name, reflect_team_id, reflect_user_id,
+        id, slack_team_id, slack_team_name, reflect_org_id, reflect_user_id,
         bot_user_id, bot_token_encrypted, bot_token_nonce,
         installed_by_user_id, installed_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -177,7 +177,7 @@ export function upsertSlackWorkspace(
       metadata: {
         slack_team_id: options.slackTeamId,
         slack_team_name: options.slackTeamName,
-        reflect_team_id: options.reflectTeamId,
+        reflect_org_id: options.reflectTeamId,
         reflect_user_id: options.reflectUserId,
       },
     });
@@ -201,7 +201,7 @@ export function getActiveWorkspaceForTeam(
   const row = db
     .prepare(
       `SELECT * FROM slack_workspaces
-       WHERE reflect_team_id = ? AND uninstalled_at IS NULL
+       WHERE reflect_org_id = ? AND uninstalled_at IS NULL
        ORDER BY installed_at DESC LIMIT 1`,
     )
     .get(reflectTeamId) as SlackWorkspaceRow | undefined;

@@ -23,7 +23,7 @@ interface MemoryResponse {
   content: string;
   tags: string[];
   parent_memory_id?: string | null;
-  shared_with_team_id?: string | null;
+  shared_with_org_id?: string | null;
   allowed_vendors?: string[];
 }
 

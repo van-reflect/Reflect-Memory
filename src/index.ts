@@ -199,6 +199,51 @@ if (tableExists.count === 0) {
   const schemaPath = resolve(__dirname, "..", "schema.sql");
   const schemaSql = readFileSync(schemaPath, "utf-8");
   db.exec(schemaSql);
+  // Fresh-DB seed: schema.sql encodes the latest schema (post-all-migrations).
+  // Pre-mark every historical migration as applied so the per-migration boot
+  // checks below short-circuit. Without this, historical migrations replay
+  // their CREATE TABLE / ALTER / CREATE INDEX statements against the new
+  // shape — and any time schema.sql diverges from those (renamed columns,
+  // table layout change), they collide. List below MUST stay in sync with
+  // the migration constants further down this file.
+  const seededAt = new Date().toISOString();
+  db.exec(`CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`);
+  // Migrations whose schema is already encoded in schema.sql. These get
+  // pre-marked so they don't try to ALTER / CREATE on top of the new shape
+  // (which would either be a no-op or, after migration 026's renames, a
+  // hard error referencing columns that no longer exist).
+  //
+  // Migrations NOT in this list (012/013/014/018) create tables that live
+  // in their respective `.ts` files (audit-service.ts, oauth tables, etc.)
+  // and aren't part of schema.sql; they're left to run normally on fresh
+  // DBs since their CREATE TABLE statements use IF NOT EXISTS and are
+  // idempotent.
+  const seededMigrations = [
+    "001_consolidate_owner_memories",
+    "002_idx_memories_user_created",
+    "003_relabel_api_origin_to_cursor",
+    "004_waitlist_and_early_access",
+    "005_v1_users_columns",
+    "006_v1_api_keys",
+    "007_v1_usage_tables",
+    "008_add_memory_type",
+    "009_memory_versions",
+    "010_unique_version_number",
+    "011_bulk_trash_ci_test_memories",
+    "016_admin_plan_for_owner",
+    "017_reset_phantom_reads",
+    "019_teams_and_shared_namespace",
+    "020_expand_plan_check_constraint",
+    "021_memory_threading_parent_id",
+    "022_tag_cluster_cache",
+    "023_llm_keys",
+    "024_slack_workspaces",
+    "025_slack_conversation_state",
+    "026_orgs_and_teams_v1",
+  ];
+  const insertMigration = db.prepare(`INSERT OR IGNORE INTO _migrations (name, applied_at) VALUES (?, ?)`);
+  for (const name of seededMigrations) insertMigration.run(name, seededAt);
+  console.log(`[migration] Seeded fresh DB from schema.sql; pre-marked ${seededMigrations.length} historical migrations as applied`);
 } else {
   // Migrate existing databases: add origin and allowed_vendors if missing.
   const hasOrigin = db
@@ -834,6 +879,154 @@ if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(slackConvoStateM
     slackConvoStateMigration,
     new Date().toISOString(),
   );
+}
+
+// 026 — Orgs + Teams (v1). Two-level hierarchy: an "org" owns N "teams".
+// Today's `teams` rows ARE the orgs of tomorrow — same data, semantic
+// upgrade. New `teams` table is initially empty per org; admins create
+// teams later. Memories shared at today's team level become org-shared.
+//
+// What this migration does (single tx via runMigrationWithHooks):
+//   1. Rename existing `teams` → `orgs` (SQLite cascades FK references in
+//      users / memories / team_invites / slack_workspaces / llm_keys).
+//   2. Create new `teams` table with `org_id` FK + UNIQUE(org_id, name).
+//   3. Rebuild `users`: rename team_id→org_id and team_role→org_role,
+//      widen org_role CHECK to include 'admin', add new team_id (FK to
+//      new teams). No team_role column on users — per-team admin is
+//      not in v1; org admins manage all team aspects.
+//   4. memories: rename shared_with_team_id → shared_with_org_id; add
+//      new shared_with_team_id (FK to new teams).
+//   5. team_invites → org_invites; rename team_id → org_id; add
+//      target_team_id (optional pre-assignment when invite is accepted).
+//   6. slack_workspaces.reflect_team_id → reflect_org_id (semantic
+//      rename, same FK target now that teams was renamed to orgs).
+//      slack_team_id (Slack's own workspace ID) is unchanged.
+//   7. llm_keys.team_id → org_id (same).
+//
+// Existing data preserved 1-to-1: today's team owners become org owners,
+// today's team members become org members, today's shared memories
+// become org-shared. New `teams` rows are created later by admins.
+//
+// Rollout: see docs/eng-plan-orgs-and-teams-v1.md
+const orgsAndTeamsMigration = "026_orgs_and_teams_v1";
+if (!db.prepare(`SELECT 1 FROM _migrations WHERE name = ?`).get(orgsAndTeamsMigration)) {
+  console.log("[migration:026] BEGIN orgs+teams migration");
+  // PRAGMA foreign_keys must be toggled OUTSIDE of any transaction (it's a
+  // no-op while a tx is open). Mirrors the migration 020 pattern. Without
+  // this, ALTER TABLE RENAME of `teams` → `orgs` fails inside the tx with
+  // SQLITE_CONSTRAINT_TRIGGER on dev/prod DBs that have rows in users /
+  // memories / team_invites / slack_workspaces / llm_keys referencing
+  // `teams(id)` — the deferred FK check at commit time blows up even
+  // though the rename auto-cascades the references in the schema.
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.transaction(() => {
+    console.log("[migration:026] step 1: rename teams -> orgs");
+    // Step 1: rename teams → orgs. SQLite (3.25+) auto-updates the foreign-
+    // key references in other tables (users.team_id, memories.shared_with_team_id,
+    // team_invites.team_id, slack_workspaces.reflect_team_id, llm_keys.team_id).
+    // The columns keep their old NAMES on those other tables; only the
+    // referenced table changes from `teams` to `orgs`. Steps 4–7 rename
+    // those columns.
+    db.exec(`ALTER TABLE teams RENAME TO orgs`);
+
+    // Step 2: create the new (sub-unit) teams table. STRICT tables enforce
+    // type checking. UNIQUE(org_id, name) keeps team names unique within
+    // an org while allowing the same name across different orgs.
+    db.exec(`
+      CREATE TABLE teams (
+        id          TEXT NOT NULL PRIMARY KEY,
+        org_id      TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        UNIQUE (org_id, name)
+      ) STRICT;
+      CREATE INDEX idx_teams_org_id ON teams(org_id);
+    `);
+
+    // Step 3: rebuild users to widen the org_role CHECK constraint AND
+    // rename team_id → org_id, team_role → org_role, AND add the new
+    // team_id (FK to the new teams table). FKs are already disabled
+    // (toggled outside the outer tx, see top of this migration block).
+    {
+      db.exec(`
+        CREATE TABLE users_new (
+          id                  TEXT NOT NULL PRIMARY KEY,
+          clerk_id            TEXT UNIQUE,
+          email               TEXT NOT NULL UNIQUE,
+          role                TEXT NOT NULL DEFAULT 'user'
+                              CHECK(role IN ('admin', 'private-alpha', 'user')),
+          stripe_customer_id  TEXT UNIQUE,
+          plan                TEXT NOT NULL DEFAULT 'free'
+                              CHECK(plan IN ('free', 'builder', 'pro', 'team', 'admin')),
+          org_id              TEXT REFERENCES orgs(id),
+          org_role            TEXT DEFAULT NULL
+                              CHECK(org_role IS NULL OR org_role IN ('owner', 'admin', 'member')),
+          team_id             TEXT REFERENCES teams(id),
+          first_name          TEXT DEFAULT NULL,
+          last_name           TEXT DEFAULT NULL,
+          created_at          TEXT NOT NULL,
+          updated_at          TEXT NOT NULL
+        ) STRICT;
+      `);
+
+      // Map old → new: team_id → org_id, team_role → org_role.
+      // Existing values 'owner' and 'member' are valid in the widened
+      // CHECK, no transformation needed. team_id (the new column) is NULL
+      // for everyone post-migration; admins assign teams later.
+      db.exec(`
+        INSERT INTO users_new (
+          id, clerk_id, email, role, stripe_customer_id, plan,
+          org_id, org_role,
+          first_name, last_name, created_at, updated_at
+        )
+        SELECT
+          id, clerk_id, email, role, stripe_customer_id, plan,
+          team_id, team_role,
+          first_name, last_name, created_at, updated_at
+        FROM users
+      `);
+      db.exec(`DROP TABLE users`);
+      db.exec(`ALTER TABLE users_new RENAME TO users`);
+      db.exec(`CREATE INDEX idx_users_email ON users(email)`);
+      db.exec(`CREATE INDEX idx_users_clerk_id ON users(clerk_id)`);
+    }
+
+    // Step 4: memories — rename shared_with_team_id → shared_with_org_id
+    // (FK target was already auto-updated to orgs by step 1). Then add
+    // the new shared_with_team_id (FK to the new teams table).
+    db.exec(`ALTER TABLE memories RENAME COLUMN shared_with_team_id TO shared_with_org_id`);
+    db.exec(`ALTER TABLE memories ADD COLUMN shared_with_team_id TEXT REFERENCES teams(id)`);
+
+    // Step 5: team_invites → org_invites + column rename + target_team_id
+    db.exec(`ALTER TABLE team_invites RENAME TO org_invites`);
+    db.exec(`ALTER TABLE org_invites RENAME COLUMN team_id TO org_id`);
+    db.exec(`ALTER TABLE org_invites ADD COLUMN target_team_id TEXT REFERENCES teams(id)`);
+
+    // Step 6: slack_workspaces.reflect_team_id → reflect_org_id; reindex.
+    // Note: slack_team_id (Slack's workspace ID from their API) is unchanged.
+    db.exec(`ALTER TABLE slack_workspaces RENAME COLUMN reflect_team_id TO reflect_org_id`);
+    db.exec(`DROP INDEX IF EXISTS idx_slack_workspaces_team`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_slack_workspaces_org ON slack_workspaces(reflect_org_id)`);
+
+    // Step 7: llm_keys.team_id → org_id; reindex.
+    db.exec(`ALTER TABLE llm_keys RENAME COLUMN team_id TO org_id`);
+    db.exec(`DROP INDEX IF EXISTS idx_llm_keys_team_provider`);
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_keys_org_provider ON llm_keys(org_id, provider) WHERE org_id IS NOT NULL`);
+
+    // Mark the migration as applied. Done inside the same tx so a
+    // partial-failure leaves _migrations clean and the next boot re-tries
+    // from the top.
+    db.prepare(`INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`).run(
+      orgsAndTeamsMigration,
+      new Date().toISOString(),
+    );
+  })();
+  // Re-enable FKs before any subsequent code runs. Done after the tx
+  // commits so that the FKs are validated lazily on subsequent statements
+  // (the migration has left the schema FK-consistent).
+  db.exec("PRAGMA foreign_keys = ON");
+  console.log("[migration] Created orgs/teams hierarchy. Existing teams are now orgs; teams table is empty until admins create teams.");
 }
 
 // Primary owner (RM_OWNER_EMAIL) anchors orphan consolidation and the legacy

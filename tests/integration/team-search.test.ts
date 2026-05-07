@@ -1,7 +1,7 @@
 // Team Shared search integration tests.
 // Provisions a team in the test DB, drops the primary test user onto it,
 // seeds a handful of shared memories (mix of authors, tags, bodies), then
-// exercises GET /teams/:id/memories?term=... across the four match axes
+// exercises GET /orgs/:id/memories?term=... across the four match axes
 // the ticket asks for: title, content, tags, author name.
 
 import Database from "better-sqlite3";
@@ -26,7 +26,7 @@ interface ListResponse {
   term?: string;
 }
 
-let teamId: string;
+let orgId: string;
 let teammateUserId: string;
 let ownerUserId: string;
 const seededMemoryIds: string[] = [];
@@ -42,22 +42,22 @@ beforeAll(() => {
     )?.id!;
     expect(ownerUserId).toBeTruthy();
 
-    teamId = randomUUID();
+    orgId = randomUUID();
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at)
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
        VALUES (?, ?, ?, 'team', ?, ?)`,
-    ).run(teamId, "Search-Test-Team", ownerUserId, now, now);
+    ).run(orgId, "Search-Test-Team", ownerUserId, now, now);
 
     db.prepare(
-      `UPDATE users SET team_id = ?, team_role = 'owner', first_name = 'Olivia', last_name = 'Owner' WHERE id = ?`,
-    ).run(teamId, ownerUserId);
+      `UPDATE users SET org_id = ?, org_role = 'owner', first_name = 'Olivia', last_name = 'Owner' WHERE id = ?`,
+    ).run(orgId, ownerUserId);
 
     teammateUserId = randomUUID();
     db.prepare(
-      `INSERT INTO users (id, email, role, plan, team_id, team_role, first_name, last_name, created_at, updated_at)
+      `INSERT INTO users (id, email, role, plan, org_id, org_role, first_name, last_name, created_at, updated_at)
        VALUES (?, ?, 'user', 'team', ?, 'member', 'Tammy', 'Teammate', ?, ?)`,
-    ).run(teammateUserId, "tammy-search@test.local", teamId, now, now);
+    ).run(teammateUserId, "tammy-search@test.local", orgId, now, now);
 
     interface Seed {
       author: string;
@@ -97,7 +97,7 @@ beforeAll(() => {
       db.prepare(
         `INSERT INTO memories
           (id, user_id, title, content, tags, origin, allowed_vendors,
-           created_at, updated_at, shared_with_team_id, shared_at)
+           created_at, updated_at, shared_with_org_id, shared_at)
          VALUES (?, ?, ?, ?, ?, 'api', '["*"]', ?, ?, ?, ?)`,
       ).run(
         id,
@@ -107,7 +107,7 @@ beforeAll(() => {
         JSON.stringify(s.tags),
         now,
         now,
-        teamId,
+        orgId,
         now,
       );
       seededMemoryIds.push(id);
@@ -128,25 +128,25 @@ afterAll(() => {
       );
     }
     db.prepare("DELETE FROM users WHERE id = ?").run(teammateUserId);
-    db.prepare("UPDATE users SET team_id = NULL, team_role = NULL WHERE id = ?").run(
+    db.prepare("UPDATE users SET org_id = NULL, org_role = NULL WHERE id = ?").run(
       ownerUserId,
     );
-    db.prepare("DELETE FROM teams WHERE id = ?").run(teamId);
+    db.prepare("DELETE FROM orgs WHERE id = ?").run(orgId);
   } finally {
     db.close();
   }
 });
 
-describe("GET /teams/:id/memories (search)", () => {
+describe("GET /orgs/:id/memories (search)", () => {
   it("returns the full pool when no term is provided", async () => {
-    const r = await api<ListResponse>("GET", `/teams/${teamId}/memories`);
+    const r = await api<ListResponse>("GET", `/orgs/${orgId}/memories`);
     expect(r.status).toBe(200);
     expect(r.json.memories.length).toBe(seededMemoryIds.length);
     expect(r.json.term).toBeUndefined();
   });
 
   it("matches on title (case-insensitive)", async () => {
-    const r = await api<ListResponse>("GET", `/teams/${teamId}/memories?term=STRIPE`);
+    const r = await api<ListResponse>("GET", `/orgs/${orgId}/memories?term=STRIPE`);
     expect(r.status).toBe(200);
     expect(r.json.term).toBe("STRIPE");
     expect(r.json.memories.map((m) => m.title)).toEqual([
@@ -156,7 +156,7 @@ describe("GET /teams/:id/memories (search)", () => {
   });
 
   it("matches on content body", async () => {
-    const r = await api<ListResponse>("GET", `/teams/${teamId}/memories?term=tailwind`);
+    const r = await api<ListResponse>("GET", `/orgs/${orgId}/memories?term=tailwind`);
     expect(r.status).toBe(200);
     expect(r.json.memories.map((m) => m.title)).toEqual(["Frontend bundle audit"]);
   });
@@ -164,14 +164,14 @@ describe("GET /teams/:id/memories (search)", () => {
   it("matches on tags (substring)", async () => {
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${teamId}/memories?term=performance`,
+      `/orgs/${orgId}/memories?term=performance`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories.map((m) => m.title)).toEqual(["Frontend bundle audit"]);
   });
 
   it("matches on author first name", async () => {
-    const r = await api<ListResponse>("GET", `/teams/${teamId}/memories?term=Tammy`);
+    const r = await api<ListResponse>("GET", `/orgs/${orgId}/memories?term=Tammy`);
     expect(r.status).toBe(200);
     const titles = r.json.memories.map((m) => m.title).sort();
     expect(titles).toEqual(["Frontend bundle audit", "Unrelated scratch note"].sort());
@@ -180,7 +180,7 @@ describe("GET /teams/:id/memories (search)", () => {
   it("matches on author email fragment", async () => {
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${teamId}/memories?term=tammy-search`,
+      `/orgs/${orgId}/memories?term=tammy-search`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories.length).toBe(2);
@@ -189,7 +189,7 @@ describe("GET /teams/:id/memories (search)", () => {
   it("returns empty set (not an error) when nothing matches", async () => {
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${teamId}/memories?term=xyzzy-no-match-expected`,
+      `/orgs/${orgId}/memories?term=xyzzy-no-match-expected`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories).toEqual([]);
@@ -199,7 +199,7 @@ describe("GET /teams/:id/memories (search)", () => {
   it("whitespace-only term is treated as no-term (full list)", async () => {
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${teamId}/memories?term=${encodeURIComponent("   ")}`,
+      `/orgs/${orgId}/memories?term=${encodeURIComponent("   ")}`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories.length).toBe(seededMemoryIds.length);
@@ -212,7 +212,7 @@ describe("GET /teams/:id/memories (search)", () => {
     // that contain a literal "%".
     const r = await api<ListResponse>(
       "GET",
-      `/teams/${teamId}/memories?term=${encodeURIComponent("%")}`,
+      `/orgs/${orgId}/memories?term=${encodeURIComponent("%")}`,
     );
     expect(r.status).toBe(200);
     expect(r.json.memories.length).toBe(1);

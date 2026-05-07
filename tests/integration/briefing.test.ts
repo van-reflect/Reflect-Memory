@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { api, getTestServer, withAgentKey } from "../helpers";
 
 interface BriefingResponse {
-  user: { id: string; email: string | null; team_id: string | null };
+  user: { id: string; email: string | null; org_id: string | null };
   totals: {
     personal_memories: number;
     personal_memories_shared: number;
@@ -28,7 +28,7 @@ interface BriefingResponse {
 }
 
 let ownerUserId: string;
-let teamId: string;
+let orgId: string;
 const seededMemoryIds: string[] = [];
 let parentId: string;
 
@@ -43,22 +43,22 @@ beforeAll(() => {
     ).id;
 
     // Team scaffold so team_tags + team-pool totals are exercised
-    teamId = randomUUID();
+    orgId = randomUUID();
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at)
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
        VALUES (?, ?, ?, 'team', ?, ?)`,
-    ).run(teamId, "Briefing-Test-Team", ownerUserId, now, now);
+    ).run(orgId, "Briefing-Test-Team", ownerUserId, now, now);
     db.prepare(
-      `UPDATE users SET team_id = ?, team_role = 'owner' WHERE id = ?`,
-    ).run(teamId, ownerUserId);
+      `UPDATE users SET org_id = ?, org_role = 'owner' WHERE id = ?`,
+    ).run(orgId, ownerUserId);
 
     function seed(tags: string[], opts: { shared?: boolean; parent?: string } = {}) {
       const id = randomUUID();
       db.prepare(
         `INSERT INTO memories
           (id, user_id, title, content, tags, origin, allowed_vendors,
-           memory_type, created_at, updated_at, shared_with_team_id,
+           memory_type, created_at, updated_at, shared_with_org_id,
            shared_at, parent_memory_id)
          VALUES (?, ?, ?, ?, ?, 'api', '["*"]', 'semantic', ?, ?, ?, ?, ?)`,
       ).run(
@@ -69,7 +69,7 @@ beforeAll(() => {
         JSON.stringify(tags),
         now,
         now,
-        opts.shared ? teamId : null,
+        opts.shared ? orgId : null,
         opts.shared ? now : null,
         opts.parent ?? null,
       );
@@ -102,10 +102,10 @@ afterAll(() => {
         ...seededMemoryIds,
       );
     }
-    db.prepare(`UPDATE users SET team_id = NULL, team_role = NULL WHERE id = ?`).run(
+    db.prepare(`UPDATE users SET org_id = NULL, org_role = NULL WHERE id = ?`).run(
       ownerUserId,
     );
-    db.prepare(`DELETE FROM teams WHERE id = ?`).run(teamId);
+    db.prepare(`DELETE FROM orgs WHERE id = ?`).run(orgId);
   } finally {
     db.close();
   }
@@ -118,7 +118,7 @@ describe("GET /briefing (json)", () => {
 
     // User
     expect(r.json.user.id).toBe(ownerUserId);
-    expect(r.json.user.team_id).toBe(teamId);
+    expect(r.json.user.org_id).toBe(orgId);
 
     // Totals should reflect our seed data (plus whatever else is in the DB)
     expect(r.json.totals.personal_memories).toBeGreaterThanOrEqual(6);

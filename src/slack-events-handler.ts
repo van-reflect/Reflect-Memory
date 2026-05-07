@@ -32,7 +32,7 @@ import {
 
 export interface SlackEventEnvelope {
   type: string;
-  team_id?: string;
+  org_id?: string;
   api_app_id?: string;
   event?: {
     type?: string;
@@ -73,7 +73,7 @@ export function processSlackEvent(
   if (body.type === "url_verification") {
     return { kind: "url_verification", challenge: body.challenge ?? "" };
   }
-  if (body.type !== "event_callback" || !body.event || !body.team_id) {
+  if (body.type !== "event_callback" || !body.event || !body.org_id) {
     return { kind: "ignored", reason: `unhandled top-level type: ${body.type}` };
   }
 
@@ -103,7 +103,7 @@ export function processSlackEvent(
 
   // Fire-and-forget the async handler. Errors logged via onAsyncError so we
   // never throw past the route handler.
-  const handler = handleUserMessage(db, body.team_id, {
+  const handler = handleUserMessage(db, body.org_id, {
     slackUserId: inner.user,
     channel: inner.channel,
     text: inner.text,
@@ -184,8 +184,8 @@ async function handleUserMessage(
   // Resolve which scope the LLM key lives under: prefer the workspace's
   // bound team key (if any), else the workspace's solo user key.
   const llmKeyScope = workspace.reflectTeamId
-    ? { teamId: workspace.reflectTeamId, userId: null }
-    : { teamId: null, userId: workspace.reflectUserId ?? resolution.reflectUserId };
+    ? { orgId: workspace.reflectTeamId, userId: null }
+    : { orgId: null, userId: workspace.reflectUserId ?? resolution.reflectUserId };
   const apiKey = (() => {
     try {
       return getLlmKeyPlaintext(db, llmKeyScope, "anthropic");

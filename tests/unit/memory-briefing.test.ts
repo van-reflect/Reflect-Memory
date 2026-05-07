@@ -29,16 +29,16 @@ function seedTeam(
   ownerId: string,
   name = "Unit-Test-Team",
 ): string {
-  const teamId = randomUUID();
+  const orgId = randomUUID();
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO teams (id, name, owner_id, plan, created_at, updated_at)
+    `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
      VALUES (?, ?, ?, 'team', ?, ?)`,
-  ).run(teamId, name, ownerId, now, now);
+  ).run(orgId, name, ownerId, now, now);
   db.prepare(
-    `UPDATE users SET team_id = ?, team_role = 'owner', first_name = 'Test', last_name = 'Owner' WHERE id = ?`,
-  ).run(teamId, ownerId);
-  return teamId;
+    `UPDATE users SET org_id = ?, org_role = 'owner', first_name = 'Test', last_name = 'Owner' WHERE id = ?`,
+  ).run(orgId, ownerId);
+  return orgId;
 }
 
 function seedMemory(
@@ -52,7 +52,7 @@ function seedMemory(
     `INSERT INTO memories
       (id, user_id, title, content, tags, origin, allowed_vendors,
        memory_type, created_at, updated_at, deleted_at,
-       shared_with_team_id, shared_at, parent_memory_id)
+       shared_with_org_id, shared_at, parent_memory_id)
      VALUES (?, ?, ?, ?, ?, 'api', '["*"]', 'semantic', ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
@@ -89,7 +89,7 @@ describe("buildMemoryBriefing — user + totals", () => {
     expect(b.user.id).toBe(user.id);
     expect(b.user.email).toBe("tamer@test.local");
     expect(b.user.first_name).toBe("Tamer");
-    expect(b.user.team_id).toBeNull();
+    expect(b.user.org_id).toBeNull();
     expect(b.user.team_member_count).toBe(0);
   });
 
@@ -102,33 +102,33 @@ describe("buildMemoryBriefing — user + totals", () => {
 
   it("populates team name + member count when user is on a team", async () => {
     const owner = seedUser(env.db);
-    const teamId = seedTeam(env.db, owner.id, "Reflect");
+    const orgId = seedTeam(env.db, owner.id, "Reflect");
     const teammate = seedUser(env.db);
     env.db.prepare(
-      `UPDATE users SET team_id = ?, team_role = 'member' WHERE id = ?`,
-    ).run(teamId, teammate.id);
+      `UPDATE users SET org_id = ?, org_role = 'member' WHERE id = ?`,
+    ).run(orgId, teammate.id);
 
     const b = buildMemoryBriefing(env.db, owner.id);
-    expect(b.user.team_id).toBe(teamId);
+    expect(b.user.org_id).toBe(orgId);
     expect(b.user.team_name).toBe("Reflect");
-    expect(b.user.team_role).toBe("owner");
+    expect(b.user.org_role).toBe("owner");
     expect(b.user.team_member_count).toBe(2);
   });
 
   it("counts personal / shared / team-pool correctly, excluding trash", async () => {
     const owner = seedUser(env.db);
-    const teamId = seedTeam(env.db, owner.id);
+    const orgId = seedTeam(env.db, owner.id);
     const teammate = seedUser(env.db);
     env.db.prepare(
-      `UPDATE users SET team_id = ?, team_role = 'member' WHERE id = ?`,
-    ).run(teamId, teammate.id);
+      `UPDATE users SET org_id = ?, org_role = 'member' WHERE id = ?`,
+    ).run(orgId, teammate.id);
 
     seedMemory(env.db, owner.id);
-    seedMemory(env.db, owner.id, { sharedToTeam: teamId });
+    seedMemory(env.db, owner.id, { sharedToTeam: orgId });
     seedMemory(env.db, owner.id, {
       deletedAt: new Date().toISOString(), // trashed, should not count
     });
-    seedMemory(env.db, teammate.id, { sharedToTeam: teamId });
+    seedMemory(env.db, teammate.id, { sharedToTeam: orgId });
 
     const b = buildMemoryBriefing(env.db, owner.id);
     expect(b.totals.personal_memories).toBe(2); // 2 live personal, 1 trashed
@@ -184,21 +184,21 @@ describe("buildMemoryBriefing — team tags", () => {
 
   it("includes team-shared memories from every member, excluding trash", async () => {
     const owner = seedUser(env.db);
-    const teamId = seedTeam(env.db, owner.id);
+    const orgId = seedTeam(env.db, owner.id);
     const teammate = seedUser(env.db);
-    env.db.prepare(`UPDATE users SET team_id = ? WHERE id = ?`).run(
-      teamId,
+    env.db.prepare(`UPDATE users SET org_id = ? WHERE id = ?`).run(
+      orgId,
       teammate.id,
     );
 
-    seedMemory(env.db, owner.id, { tags: ["eng", "resolved"], sharedToTeam: teamId });
-    seedMemory(env.db, teammate.id, { tags: ["eng", "shipped"], sharedToTeam: teamId });
+    seedMemory(env.db, owner.id, { tags: ["eng", "resolved"], sharedToTeam: orgId });
+    seedMemory(env.db, teammate.id, { tags: ["eng", "shipped"], sharedToTeam: orgId });
     seedMemory(env.db, teammate.id, {
       tags: ["personal-only"], // NOT shared; should not appear in team tags
     });
     seedMemory(env.db, owner.id, {
       tags: ["trash-only"],
-      sharedToTeam: teamId,
+      sharedToTeam: orgId,
       deletedAt: new Date().toISOString(),
     });
 
@@ -226,15 +226,15 @@ describe("buildMemoryBriefing — recent tags", () => {
 
   it("unions personal + team-shared memories in the window", async () => {
     const owner = seedUser(env.db);
-    const teamId = seedTeam(env.db, owner.id);
+    const orgId = seedTeam(env.db, owner.id);
     const teammate = seedUser(env.db);
-    env.db.prepare(`UPDATE users SET team_id = ? WHERE id = ?`).run(teamId, teammate.id);
+    env.db.prepare(`UPDATE users SET org_id = ? WHERE id = ?`).run(orgId, teammate.id);
 
     const now = new Date().toISOString();
     seedMemory(env.db, owner.id, { tags: ["personal-recent"], createdAt: now });
     seedMemory(env.db, teammate.id, {
       tags: ["team-recent"],
-      sharedToTeam: teamId,
+      sharedToTeam: orgId,
       createdAt: now,
     });
 
@@ -275,9 +275,9 @@ describe("buildMemoryBriefing — active threads", () => {
 
   it("reports shared_with_team when the parent is shared", async () => {
     const user = seedUser(env.db);
-    const teamId = seedTeam(env.db, user.id);
-    const parent = seedMemory(env.db, user.id, { sharedToTeam: teamId });
-    seedMemory(env.db, user.id, { parent, sharedToTeam: teamId });
+    const orgId = seedTeam(env.db, user.id);
+    const parent = seedMemory(env.db, user.id, { sharedToTeam: orgId });
+    seedMemory(env.db, user.id, { parent, sharedToTeam: orgId });
     const b = buildMemoryBriefing(env.db, user.id);
     expect(b.active_threads[0].shared_with_team).toBe(true);
   });
@@ -359,10 +359,12 @@ describe("formatBriefingAsMarkdown", () => {
         last_name: "Test",
         role: "admin",
         plan: "team",
-        team_id: "t1",
+        org_id: "t1",
         team_name: "Reflect",
-        team_role: "owner",
+        org_role: "owner",
         team_member_count: 2,
+        subteam_id: null,
+        subteam_name: null,
         ...overrides.user,
       },
       totals: {
@@ -394,12 +396,39 @@ describe("formatBriefingAsMarkdown", () => {
     };
   }
 
-  it("includes user identity with team membership", () => {
+  it("includes user identity with org membership (post orgs+teams v1)", () => {
     const md = formatBriefingAsMarkdown(makeBriefing());
     expect(md).toContain("Tamer Test");
     expect(md).toContain("ts@example.com");
-    expect(md).toContain("team **Reflect**");
+    // Post orgs+teams v1: prose says "org **{name}**" not "team".
+    expect(md).toContain("org **Reflect**");
+    expect(md).not.toContain("team **Reflect**");
     expect(md).toContain("role: admin");
+  });
+
+  // Issue #2b regression: an LLM picking share_scope='team' needs to
+  // see which sub-team it'd land in without a probe write.
+  it("surfaces sub-team membership on the user identity line", () => {
+    const md = formatBriefingAsMarkdown(
+      makeBriefing({
+        user: {
+          id: "u1",
+          email: "ts@example.com",
+          first_name: "Tamer",
+          last_name: "Test",
+          role: "admin",
+          plan: "team",
+          org_id: "t1",
+          team_name: "Reflect",
+          org_role: "owner",
+          team_member_count: 2,
+          subteam_id: "st-eng",
+          subteam_name: "Engineering",
+        },
+      }),
+    );
+    expect(md).toContain("org **Reflect**");
+    expect(md).toContain("sub-team **Engineering**");
   });
 
   it("renders tag counts in inline code", () => {
@@ -418,10 +447,12 @@ describe("formatBriefingAsMarkdown", () => {
           last_name: null,
           role: "user",
           plan: "free",
-          team_id: null,
+          org_id: null,
           team_name: null,
-          team_role: null,
+          org_role: null,
           team_member_count: 0,
+          subteam_id: null,
+          subteam_name: null,
         },
       }),
     );

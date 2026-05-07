@@ -19,7 +19,7 @@ export type ResolveResult =
 interface UserRow {
   id: string;
   email: string | null;
-  team_id: string | null;
+  org_id: string | null;
   first_name: string | null;
   last_name: string | null;
 }
@@ -65,7 +65,7 @@ export async function resolveSlackUserToReflectUser(
 
   const matches = db
     .prepare(
-      `SELECT id, email, team_id, first_name, last_name FROM users WHERE LOWER(email) = ? LIMIT 5`,
+      `SELECT id, email, org_id, first_name, last_name FROM users WHERE LOWER(email) = ? LIMIT 5`,
     )
     .all(email) as UserRow[];
 
@@ -88,7 +88,7 @@ export async function resolveSlackUserToReflectUser(
   // Workspace is bound to either a Reflect team or a solo Reflect user. The
   // candidate must be on that team / be that user.
   if (workspace.reflectTeamId) {
-    if (candidate.team_id !== workspace.reflectTeamId) {
+    if (candidate.org_id !== workspace.reflectTeamId) {
       return {
         ok: false,
         email,
