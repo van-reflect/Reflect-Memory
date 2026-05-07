@@ -342,10 +342,8 @@ paths:
       x-openai-isConsequential: true
       summary: Reply to an existing memory (write a child / threaded follow-up)
       description: >
-        Create a memory as a reply (child) of an existing parent — for
-        resolutions, follow-ups, or status updates. Threads are one level deep
-        (no replies-to-replies). Children inherit the parent's team sharing.
-        Returns 404 if parent missing, 400 if parent is a child or in trash.
+        Create a reply under an existing parent memory. Threads are one level
+        deep. Children inherit the parent's team sharing.
       parameters:
         - name: id
           in: path
@@ -417,10 +415,9 @@ paths:
       x-openai-isConsequential: false
       summary: Read a memory and all its replies (full thread)
       description: >
-        Returns a parent memory plus every non-trashed reply in chronological
-        order. Accepts either the parent's id or any child's id — the response
-        is always rooted at the parent. Use this to see the full discussion or
-        resolution history before replying, updating, or creating a new entry.
+        Returns a parent memory plus all non-trashed replies in chronological
+        order. Pass either the parent's id or any child's id. Call before
+        replying or updating to see prior history.
       parameters:
         - name: id
           in: path
@@ -921,10 +918,9 @@ paths:
       x-openai-isConsequential: false
       summary: Condensed snapshot of the user's memory state (call FIRST in a session)
       description: >
-        Returns a session briefing: identity, team membership, totals
-        (personal/shared/team), top tag indexes, recent activity, open threads,
-        and tagging conventions. Call FIRST in a session (or for a fresh
-        snapshot) so you know what topics exist and what conventions to follow.
+        Returns a session briefing: identity, team membership, totals, top
+        tags, recent activity, open threads, and tagging conventions. Call
+        FIRST in a session so you know what topics and conventions exist.
       parameters:
         - name: format
           in: query
