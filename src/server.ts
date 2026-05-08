@@ -4583,10 +4583,14 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       const { token } = request.params as { token: string };
       const invite = db
         .prepare(
+          // Post-migration 026: org_invites.org_id references orgs.id,
+          // not the sub-units `teams` table. Pre-rename pass missed
+          // this single join — caught when verifying the invite flow
+          // for a new client onboarding.
           `SELECT ti.id, ti.org_id, ti.email, ti.status, ti.expires_at, ti.invited_by,
-                  t.name AS team_name, u.first_name AS inviter_first, u.last_name AS inviter_last, u.email AS inviter_email
+                  o.name AS team_name, u.first_name AS inviter_first, u.last_name AS inviter_last, u.email AS inviter_email
            FROM org_invites ti
-           JOIN teams t ON t.id = ti.org_id
+           JOIN orgs o ON o.id = ti.org_id
            JOIN users u ON u.id = ti.invited_by
            WHERE ti.token = ?`,
         )
