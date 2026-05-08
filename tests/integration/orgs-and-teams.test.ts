@@ -3,7 +3,7 @@
 // /orgs/:id/teams/* endpoints + share_scope on POST /memories.
 
 import Database from "better-sqlite3";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { api, getTestServer, uniqueTag } from "../helpers";
 
@@ -524,5 +524,128 @@ describe("GET /orgs/:id/teams/:tid/memories — sub-team feed", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+// Invite + join flow. Caught a real bug post-prod-cutover: the
+// GET /orgs/invite/:token query was joining org_invites to the new
+// `teams` (sub-units) table instead of `orgs` after the migration 026
+// rename pass — so every invite preview 404'd. This test guards the
+// whole onboarding loop a new client goes through (invite → preview →
+// accept).
+describe("Org invite + join flow", () => {
+  let inviteToken: string;
+  let inviteeUserId: string;
+  let inviteeEmail: string;
+  let inviteeApiKey: string;
+
+  beforeAll(() => {
+    const { dbPath } = getTestServer();
+    const db = new Database(dbPath);
+    try {
+      inviteeUserId = randomUUID();
+      inviteeEmail = `invitee-${uniqueTag("u")}@example.test`;
+      // Mirror the prod key-creation path: rm_live_ prefix (enforced by
+      // authenticateApiKey) + sha256 hash of the raw key.
+      inviteeApiKey = `rm_live_${randomBytes(16).toString("hex")}`;
+      const inviteeKeyHash = createHash("sha256").update(inviteeApiKey).digest("hex");
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO users (id, email, role, plan, created_at, updated_at)
+         VALUES (?, ?, 'user', 'free', ?, ?)`,
+      ).run(inviteeUserId, inviteeEmail, now, now);
+      db.prepare(
+        `INSERT INTO api_keys (id, user_id, key_hash, key_prefix, label, created_at)
+         VALUES (?, ?, ?, ?, 'invite-test', ?)`,
+      ).run(randomUUID(), inviteeUserId, inviteeKeyHash, inviteeApiKey.slice(0, 12), now);
+    } finally {
+      db.close();
+    }
+  });
+
+  afterAll(() => {
+    const { dbPath } = getTestServer();
+    const db = new Database(dbPath);
+    try {
+      db.prepare(`DELETE FROM org_invites WHERE org_id = ?`).run(orgId);
+      db.prepare(`DELETE FROM api_keys WHERE user_id = ?`).run(inviteeUserId);
+      db.prepare(`DELETE FROM users WHERE id = ?`).run(inviteeUserId);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("creates an invite as the org owner", async () => {
+    const targetEmail = `${uniqueTag("invitee")}@example.test`;
+    const r = await api<{ invites: { email: string; token: string; status: string }[] }>(
+      "POST",
+      `/orgs/${orgId}/invite`,
+      { body: { emails: [targetEmail] } },
+    );
+    expect(r.status).toBe(200);
+    expect(r.json.invites).toHaveLength(1);
+    expect(r.json.invites[0].status).toBe("invited");
+    expect(r.json.invites[0].token).toBeTruthy();
+    inviteToken = r.json.invites[0].token;
+  });
+
+  it("GET /orgs/invite/:token returns the org name + inviter (REGRESSION: joins orgs, not teams)", async () => {
+    const r = await api<{
+      team_name: string;
+      inviter_name: string;
+      status: string;
+      email: string | null;
+    }>("GET", `/orgs/invite/${inviteToken}`);
+    expect(r.status).toBe(200);
+    // The org name is "OrgsAndTeams-Test-Org" from the top-level beforeAll.
+    expect(r.json.team_name).toBe("OrgsAndTeams-Test-Org");
+    expect(r.json.status).toBe("pending");
+    expect(r.json.inviter_name).toBeTruthy();
+  });
+
+  it("GET /orgs/invite/:token 404s on an unknown token", async () => {
+    const r = await api<{ error: string }>("GET", `/orgs/invite/not-a-real-token`);
+    expect(r.status).toBe(404);
+  });
+
+  it("POST /orgs/join attaches the invitee to the org", async () => {
+    const r = await api<{ org_id: string; team_name: string; role: string }>(
+      "POST",
+      `/orgs/join`,
+      {
+        body: { token: inviteToken, first_name: "Test", last_name: "Invitee" },
+        token: inviteeApiKey,
+      },
+    );
+    expect(r.status).toBe(200);
+    expect(r.json.org_id).toBe(orgId);
+    expect(r.json.role).toBe("member");
+
+    // Confirm in DB: user is now in the org with role=member, and the
+    // invite status flipped to accepted.
+    const { dbPath } = getTestServer();
+    const db = new Database(dbPath);
+    try {
+      const u = db
+        .prepare(`SELECT org_id, org_role FROM users WHERE id = ?`)
+        .get(inviteeUserId) as { org_id: string; org_role: string };
+      expect(u.org_id).toBe(orgId);
+      expect(u.org_role).toBe("member");
+      const i = db
+        .prepare(`SELECT status FROM org_invites WHERE token = ?`)
+        .get(inviteToken) as { status: string };
+      expect(i.status).toBe("accepted");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("POST /orgs/join 400s when reusing an accepted token", async () => {
+    const r = await api<{ error: string }>(
+      "POST",
+      `/orgs/join`,
+      { body: { token: inviteToken }, token: inviteeApiKey },
+    );
+    expect(r.status).toBe(400);
   });
 });
