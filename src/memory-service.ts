@@ -675,24 +675,97 @@ export function listMemorySummaries(
 }
 
 /** Full replacement update. Origin is immutable. Snapshots current state before writing. */
+/**
+ * Result of an update attempt. Used by the route layer to decide whether
+ * to emit a `memory.cross_author_update` audit event in addition to the
+ * regular `memory.updated` event.
+ */
+export interface UpdateMemoryResult {
+  memory: MemoryEntry;
+  /** True iff the caller is not the original author of the memory.
+   *  The route layer should record an audit event in that case so we
+   *  retain a paper trail of who edited whose memory. */
+  cross_author: boolean;
+  /** Original author's user_id, preserved across the update. */
+  original_author: string;
+  /** Scope under which the caller had write access — used for audit
+   *  metadata only. "self" = caller is the author; "org"/"team" = the
+   *  memory was shared with the caller's org or sub-team. */
+  access_scope: "self" | "org" | "team";
+}
+
+/**
+ * Update a memory. Author-or-team-member permission model:
+ *   - Caller is the original author → always allowed.
+ *   - Memory is org-shared and caller is on that org → allowed.
+ *   - Memory is sub-team-shared and caller is on that sub-team → allowed.
+ *   - Otherwise → null (looks like a 404; we don't leak existence).
+ *
+ * The original `user_id` (author) is preserved on update — a teammate
+ * editing a shared memory does not change its authorship. The
+ * `memory_versions` snapshot records who made each change via the
+ * audit_events trail (see route layer's cross_author_update emit).
+ *
+ * Note: soft/hard delete + restore intentionally stay author-only.
+ * Update is reversible via memory_versions; delete is not (or much
+ * harder). The asymmetry is deliberate.
+ */
 export function updateMemory(
   db: Database.Database,
   userId: string,
   memoryId: string,
   input: UpdateMemoryInput,
-): MemoryEntry | null {
+): UpdateMemoryResult | null {
   const txn = db.transaction(() => {
     const now = new Date().toISOString();
     const tagsJson = JSON.stringify(input.tags);
     const allowedVendorsJson = JSON.stringify(input.allowed_vendors);
 
     const current = db
-      .prepare(`SELECT * FROM memories WHERE id = ? AND user_id = ? AND deleted_at IS NULL`)
-      .get(memoryId, userId) as MemoryRow | undefined;
+      .prepare(`SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL`)
+      .get(memoryId) as MemoryRow | undefined;
 
     if (!current) return null;
 
-    // Snapshot current state before mutation
+    // Permission check: author OR member of the org/team this memory is
+    // shared with. We resolve the caller's org/team membership in the
+    // same query rather than a separate lookup so authorization stays
+    // a single round-trip.
+    let access_scope: "self" | "org" | "team";
+    if (current.user_id === userId) {
+      access_scope = "self";
+    } else if (current.shared_with_org_id) {
+      const callerOrg = (
+        db.prepare(`SELECT org_id FROM users WHERE id = ?`).get(userId) as
+          | { org_id: string | null }
+          | undefined
+      )?.org_id;
+      if (callerOrg && callerOrg === current.shared_with_org_id) {
+        access_scope = "org";
+      } else {
+        return null;
+      }
+    } else if (current.shared_with_team_id) {
+      const callerTeam = (
+        db.prepare(`SELECT team_id FROM users WHERE id = ?`).get(userId) as
+          | { team_id: string | null }
+          | undefined
+      )?.team_id;
+      if (callerTeam && callerTeam === current.shared_with_team_id) {
+        access_scope = "team";
+      } else {
+        return null;
+      }
+    } else {
+      // Personal memory, caller is not the author — no access.
+      return null;
+    }
+
+    // Snapshot pre-mutation state. user_id on the version row records
+    // the EDITOR (so a future "who changed what" view can attribute the
+    // change), while the parent memory's user_id stays the original
+    // author. This matches the existing version-row semantics where
+    // user_id has always meant "who saved this snapshot".
     const maxVersion = db
       .prepare(`SELECT COALESCE(MAX(version_number), 0) as max_ver FROM memory_versions WHERE memory_id = ?`)
       .get(memoryId) as { max_ver: number };
@@ -706,16 +779,31 @@ export function updateMemory(
       maxVersion.max_ver + 1, now,
     );
 
+    // UPDATE no longer scoped by user_id — that was the bug. We
+    // already verified access above; the WHERE clause now just
+    // re-checks deleted_at to avoid racing with a soft-delete.
     const result = db
       .prepare(
         `UPDATE memories
          SET title = ?, content = ?, tags = ?, allowed_vendors = ?, updated_at = ?
-         WHERE id = ? AND user_id = ?`,
+         WHERE id = ? AND deleted_at IS NULL`,
       )
-      .run(input.title, input.content, tagsJson, allowedVendorsJson, now, memoryId, userId);
+      .run(input.title, input.content, tagsJson, allowedVendorsJson, now, memoryId);
 
     if (result.changes === 0) return null;
-    return readMemoryById(db, userId, memoryId);
+
+    // Read back via the author's user_id so the returned MemoryEntry
+    // reflects what the original author would see. (For team-edits the
+    // shape is identical regardless of whose user_id we read with.)
+    const refreshed = readMemoryById(db, current.user_id, memoryId);
+    if (!refreshed) return null;
+
+    return {
+      memory: refreshed,
+      cross_author: current.user_id !== userId,
+      original_author: current.user_id,
+      access_scope,
+    } satisfies UpdateMemoryResult;
   });
 
   return txn();

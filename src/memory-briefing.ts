@@ -630,6 +630,12 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
       "or `write_memory` with the prior memory's full UUID in the content body.",
   );
   lines.push(
+    "- **Updating an org or sub-team memory authored by a teammate is now allowed.** " +
+      "Use `update_memory` to reconcile shared canonical docs in place; the audit trail " +
+      "records who edited what. Authorship on the parent row stays with the original author. " +
+      "(Personal memories and delete operations remain author-only.)",
+  );
+  lines.push(
     "- **If the new memory is fresh + unrelated**, go ahead with `write_memory` — but match the tag vocabulary " +
       "from the topic clusters below (don't invent ad-hoc tags).",
   );

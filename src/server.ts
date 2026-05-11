@@ -2852,18 +2852,33 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         return { error: vendorErr };
       }
 
-      const memory = updateMemory(db, request.userId, id, {
+      const result = updateMemory(db, request.userId, id, {
         title: body.title,
         content: body.content,
         tags: body.tags,
         allowed_vendors: body.allowed_vendors,
       });
-      if (!memory) {
+      if (!result) {
         reply.code(404);
         return { error: "Memory not found" };
       }
-      emitMemoryEvent("memory.updated", request.userId, memory.id);
-      return memory;
+      emitMemoryEvent("memory.updated", request.userId, result.memory.id);
+      if (result.cross_author) {
+        recordAuditEvent(db, {
+          userId: request.userId,
+          eventType: "memory.cross_author_update",
+          severity: "info",
+          authMethod: request.authMethod ?? null,
+          vendor: request.vendor ?? null,
+          path: request.url,
+          metadata: {
+            memory_id: result.memory.id,
+            original_author: result.original_author,
+            access_scope: result.access_scope,
+          },
+        });
+      }
+      return result.memory;
     },
   );
 
@@ -3283,13 +3298,28 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
         allowed_vendors: body.allowed_vendors,
       };
 
-      const memory = updateMemory(db, request.userId, id, input);
-      if (!memory) {
+      const result = updateMemory(db, request.userId, id, input);
+      if (!result) {
         reply.code(404);
         return { error: "Memory not found" };
       }
-      emitMemoryEvent("memory.updated", request.userId, memory.id);
-      return memory;
+      emitMemoryEvent("memory.updated", request.userId, result.memory.id);
+      if (result.cross_author) {
+        recordAuditEvent(db, {
+          userId: request.userId,
+          eventType: "memory.cross_author_update",
+          severity: "info",
+          authMethod: request.authMethod ?? null,
+          vendor: request.vendor ?? null,
+          path: request.url,
+          metadata: {
+            memory_id: result.memory.id,
+            original_author: result.original_author,
+            access_scope: result.access_scope,
+          },
+        });
+      }
+      return result.memory;
     },
   );
 
