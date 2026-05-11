@@ -286,16 +286,16 @@ async function createMcpServerWithTools(
     },
     { title: "Update Memory", destructiveHint: true },
     async ({ id, title, content, tags, allowed_vendors }) => {
-      const updated = updateMemory(db, userId, id, {
+      const result = updateMemory(db, userId, id, {
         title,
         content,
         tags,
         allowed_vendors,
       });
-      if (!updated) {
-        return { content: [{ type: "text", text: "Memory not found, deleted, or you don't own it." }], isError: true };
+      if (!result) {
+        return { content: [{ type: "text", text: "Memory not found, deleted, or you don't have access (must be the author OR a member of the org/sub-team it's shared with)." }], isError: true };
       }
-      return { content: [{ type: "text", text: JSON.stringify(updated, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(result.memory, null, 2) }] };
     },
   );
 

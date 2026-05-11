@@ -649,3 +649,169 @@ describe("Org invite + join flow", () => {
     expect(r.status).toBe(400);
   });
 });
+
+// Issue cf5b250d regression: cross-author edit on team-shared memories.
+// The invitee from the join flow is now a member of `orgId` and shares
+// it with the test owner. They should be able to edit each other's
+// org-shared memories, and we should record audit events on those edits.
+describe("PUT /memories/:id — cross-author updates on org-shared memories (cf5b250d)", () => {
+  let memoryByOwner: string;
+  let inviteeUserIdLocal: string;
+  let inviteeApiKeyLocal: string;
+
+  beforeAll(async () => {
+    // Seed a fresh teammate already in the org. We don't reuse the
+    // invitee from the prior describe block because that block runs
+    // afterAll cleanup at file-end ordering that's tricky to depend on.
+    const { dbPath } = getTestServer();
+    const db = new Database(dbPath);
+    try {
+      inviteeUserIdLocal = randomUUID();
+      inviteeApiKeyLocal = `rm_live_${randomBytes(16).toString("hex")}`;
+      const inviteeKeyHash = createHash("sha256").update(inviteeApiKeyLocal).digest("hex");
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO users (id, email, role, plan, org_id, org_role, created_at, updated_at)
+         VALUES (?, ?, 'user', 'team', ?, 'member', ?, ?)`,
+      ).run(inviteeUserIdLocal, `cross-author-${uniqueTag("u")}@example.test`, orgId, now, now);
+      db.prepare(
+        `INSERT INTO api_keys (id, user_id, key_hash, key_prefix, label, created_at)
+         VALUES (?, ?, ?, ?, 'cross-author-test', ?)`,
+      ).run(randomUUID(), inviteeUserIdLocal, inviteeKeyHash, inviteeApiKeyLocal.slice(0, 12), now);
+    } finally {
+      db.close();
+    }
+
+    // Owner writes a memory and shares it to the org.
+    const created = await api<MemoryResp & { id: string }>("POST", "/memories", {
+      body: {
+        title: "Canonical decision: ICP positioning",
+        content: "Initial author-written decision.",
+        tags: ["canonical", "icp", "cross-author-test"],
+        share_scope: "org",
+      },
+    });
+    expect(created.status).toBe(201);
+    memoryByOwner = created.json.id;
+    seededMemoryIds.push(memoryByOwner);
+  });
+
+  afterAll(() => {
+    const { dbPath } = getTestServer();
+    const db = new Database(dbPath);
+    try {
+      // ON DELETE RESTRICT on memory_versions.user_id + usage_events
+      // means we have to clear those rows before the user row.
+      db.prepare(`DELETE FROM memory_versions WHERE user_id = ?`).run(inviteeUserIdLocal);
+      db.prepare(`DELETE FROM usage_events WHERE user_id = ?`).run(inviteeUserIdLocal);
+      db.prepare(`DELETE FROM monthly_usage WHERE user_id = ?`).run(inviteeUserIdLocal);
+      db.prepare(`DELETE FROM api_keys WHERE user_id = ?`).run(inviteeUserIdLocal);
+      db.prepare(`DELETE FROM audit_events WHERE user_id = ?`).run(inviteeUserIdLocal);
+      db.prepare(`DELETE FROM users WHERE id = ?`).run(inviteeUserIdLocal);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("teammate can update an org-shared memory authored by the owner", async () => {
+    const r = await api<MemoryResp & { id: string; title: string }>(
+      "PUT",
+      `/memories/${memoryByOwner}`,
+      {
+        token: inviteeApiKeyLocal,
+        body: {
+          title: "Canonical decision: ICP positioning — two-motion GTM (teammate edit)",
+          content: "Reconciled by a teammate.",
+          tags: ["canonical", "icp", "cross-author-test", "two-motion"],
+          allowed_vendors: ["*"],
+        },
+      },
+    );
+    expect(r.status).toBe(200);
+    expect(r.json.title).toBe(
+      "Canonical decision: ICP positioning — two-motion GTM (teammate edit)",
+    );
+
+    // Authorship preserved on the parent row.
+    const { dbPath } = getTestServer();
+    const db = new Database(dbPath);
+    try {
+      const row = db
+        .prepare(`SELECT user_id FROM memories WHERE id = ?`)
+        .get(memoryByOwner) as { user_id: string };
+      expect(row.user_id).toBe(ownerUserId);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("emits memory.cross_author_update audit event on the cross-author edit", async () => {
+    const { dbPath } = getTestServer();
+    const db = new Database(dbPath);
+    try {
+      const audit = db
+        .prepare(
+          `SELECT user_id, event_type, metadata FROM audit_events
+           WHERE event_type = 'memory.cross_author_update' AND user_id = ?
+           ORDER BY created_at DESC LIMIT 1`,
+        )
+        .get(inviteeUserIdLocal) as { user_id: string; event_type: string; metadata: string };
+      expect(audit).toBeDefined();
+      const meta = JSON.parse(audit.metadata) as {
+        memory_id: string;
+        original_author: string;
+        access_scope: string;
+      };
+      expect(meta.memory_id).toBe(memoryByOwner);
+      expect(meta.original_author).toBe(ownerUserId);
+      expect(meta.access_scope).toBe("org");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does NOT emit cross_author_update when the author updates their own memory", async () => {
+    // Owner edits their own memory — should fire memory.updated but
+    // NOT memory.cross_author_update.
+    const { dbPath } = getTestServer();
+    const db = new Database(dbPath);
+    let beforeCount: number;
+    try {
+      beforeCount = (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM audit_events
+             WHERE event_type = 'memory.cross_author_update' AND user_id = ?`,
+          )
+          .get(ownerUserId) as { n: number }
+      ).n;
+    } finally {
+      db.close();
+    }
+
+    const r = await api<MemoryResp>("PUT", `/memories/${memoryByOwner}`, {
+      body: {
+        title: "Canonical decision: ICP positioning — author re-edit",
+        content: "Author reconciles after teammate edit.",
+        tags: ["canonical", "icp", "cross-author-test"],
+        allowed_vendors: ["*"],
+      },
+    });
+    expect(r.status).toBe(200);
+
+    const db2 = new Database(dbPath);
+    try {
+      const afterCount = (
+        db2
+          .prepare(
+            `SELECT COUNT(*) AS n FROM audit_events
+             WHERE event_type = 'memory.cross_author_update' AND user_id = ?`,
+          )
+          .get(ownerUserId) as { n: number }
+      ).n;
+      expect(afterCount).toBe(beforeCount);
+    } finally {
+      db2.close();
+    }
+  });
+});

@@ -6,6 +6,7 @@
 // each test gets its own DB and exercises one path.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
 import {
   CONTENT_SIMILARITY_THRESHOLD,
   DEDUP_WINDOW_HOURS,
@@ -330,7 +331,7 @@ describe("updateMemory", () => {
     expect(afterVersions[0]?.title).toBe("alpha bravo charlie");
   });
 
-  it("returns null when memory does not belong to user", () => {
+  it("returns null when personal memory does not belong to user", () => {
     const m = createMemory(h.db, userId, {
       title: "alpha bravo charlie",
       content: "delta echo foxtrot golf",
@@ -346,6 +347,144 @@ describe("updateMemory", () => {
       allowed_vendors: ["*"],
     });
     expect(result).toBeNull();
+  });
+
+  // Issue cf5b250d regression: any team member should be able to update
+  // an org-shared memory, not just the original author.
+  it("allows org members to update org-shared memories authored by a teammate (cf5b250d)", () => {
+    const orgId = randomUUID();
+    const now = new Date().toISOString();
+    h.db.prepare(
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
+       VALUES (?, 'Test Org', ?, 'team', ?, ?)`,
+    ).run(orgId, userId, now, now);
+    h.db.prepare(`UPDATE users SET org_id = ?, org_role = 'owner' WHERE id = ?`).run(orgId, userId);
+
+    const teammate = seedUser(h.db, { orgId });
+    h.db.prepare(`UPDATE users SET org_role = 'member' WHERE id = ?`).run(teammate.id);
+
+    // Author writes the memory, then shares to org.
+    const m = createMemory(h.db, userId, {
+      title: "Canonical ICP doc",
+      content: "Original content from author.",
+      tags: ["canonical", "icp"],
+      origin: "user",
+      allowed_vendors: ["*"],
+    });
+    h.db.prepare(
+      `UPDATE memories SET shared_with_org_id = ?, shared_at = ? WHERE id = ?`,
+    ).run(orgId, now, m.id);
+
+    // Teammate (different user) updates it.
+    const result = updateMemory(h.db, teammate.id, m.id, {
+      title: "Canonical ICP doc — two-motion GTM",
+      content: "Updated content from a teammate.",
+      tags: ["canonical", "icp", "two-motion"],
+      allowed_vendors: ["*"],
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.cross_author).toBe(true);
+    expect(result?.original_author).toBe(userId);
+    expect(result?.access_scope).toBe("org");
+    expect(result?.memory.title).toBe("Canonical ICP doc — two-motion GTM");
+    // Authorship preserved on parent row.
+    const refreshed = h.db
+      .prepare(`SELECT user_id FROM memories WHERE id = ?`)
+      .get(m.id) as { user_id: string };
+    expect(refreshed.user_id).toBe(userId);
+  });
+
+  it("allows sub-team members to update sub-team-shared memories (cf5b250d)", () => {
+    const orgId = randomUUID();
+    const teamId = randomUUID();
+    const now = new Date().toISOString();
+    h.db.prepare(
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
+       VALUES (?, 'Test Org', ?, 'team', ?, ?)`,
+    ).run(orgId, userId, now, now);
+    h.db.prepare(
+      `INSERT INTO teams (id, org_id, name, created_at, updated_at) VALUES (?, ?, 'Engineering', ?, ?)`,
+    ).run(teamId, orgId, now, now);
+    h.db.prepare(
+      `UPDATE users SET org_id = ?, org_role = 'admin', team_id = ? WHERE id = ?`,
+    ).run(orgId, teamId, userId);
+
+    const teammate = seedUser(h.db, { orgId });
+    h.db.prepare(`UPDATE users SET team_id = ? WHERE id = ?`).run(teamId, teammate.id);
+
+    const m = createMemory(h.db, userId, {
+      title: "Engineering decision: SQLite for v0",
+      content: "Original rationale.",
+      tags: ["decision", "architecture"],
+      origin: "user",
+      allowed_vendors: ["*"],
+    });
+    h.db.prepare(
+      `UPDATE memories SET shared_with_team_id = ?, shared_at = ? WHERE id = ?`,
+    ).run(teamId, now, m.id);
+
+    const result = updateMemory(h.db, teammate.id, m.id, {
+      title: "Engineering decision: SQLite for v0 — extended notes",
+      content: "Teammate-added clarifications.",
+      tags: ["decision", "architecture"],
+      allowed_vendors: ["*"],
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.cross_author).toBe(true);
+    expect(result?.access_scope).toBe("team");
+  });
+
+  it("returns null when caller is on a DIFFERENT org than the org-shared memory", () => {
+    const orgA = randomUUID();
+    const orgB = randomUUID();
+    const now = new Date().toISOString();
+    h.db.prepare(
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
+       VALUES (?, 'Org A', ?, 'team', ?, ?), (?, 'Org B', ?, 'team', ?, ?)`,
+    ).run(orgA, userId, now, now, orgB, userId, now, now);
+    h.db.prepare(`UPDATE users SET org_id = ? WHERE id = ?`).run(orgA, userId);
+
+    const outsider = seedUser(h.db, { orgId: orgB });
+
+    const m = createMemory(h.db, userId, {
+      title: "alpha bravo charlie",
+      content: "delta echo foxtrot golf",
+      tags: [],
+      origin: "user",
+      allowed_vendors: ["*"],
+    });
+    h.db.prepare(
+      `UPDATE memories SET shared_with_org_id = ?, shared_at = ? WHERE id = ?`,
+    ).run(orgA, now, m.id);
+
+    const result = updateMemory(h.db, outsider.id, m.id, {
+      title: "hijack from another org",
+      content: "should not work",
+      tags: [],
+      allowed_vendors: ["*"],
+    });
+    expect(result).toBeNull();
+  });
+
+  it("reports cross_author=false when the author updates their own memory", () => {
+    const m = createMemory(h.db, userId, {
+      title: "alpha bravo charlie",
+      content: "delta echo foxtrot golf",
+      tags: [],
+      origin: "user",
+      allowed_vendors: ["*"],
+    });
+    const result = updateMemory(h.db, userId, m.id, {
+      title: "self-edit",
+      content: "self-edit content",
+      tags: [],
+      allowed_vendors: ["*"],
+    });
+    expect(result?.cross_author).toBe(false);
+    expect(result?.original_author).toBe(userId);
+    expect(result?.access_scope).toBe("self");
   });
 });
 

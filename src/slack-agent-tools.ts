@@ -456,14 +456,14 @@ export function buildAgentTools(ctx: AgentToolContext): AgentTools {
               error: "Memory not found, or you don't own it. Use write_child_memory to reply on a teammate's memory instead.",
             });
           }
-          const updated = updateMemory(db, reflectUserId, id, {
+          const result = updateMemory(db, reflectUserId, id, {
             title,
             content,
             tags,
             allowed_vendors: existing.allowed_vendors,
           });
-          if (!updated) return JSON.stringify({ error: "Update failed" });
-          return JSON.stringify({ ok: true, memory: trimMemoryForLlm(updated) });
+          if (!result) return JSON.stringify({ error: "Update failed" });
+          return JSON.stringify({ ok: true, memory: trimMemoryForLlm(result.memory) });
         }
         case "share_memory": {
           const id = String(input.id ?? "").trim();
