@@ -16,6 +16,7 @@ import type {
   OAuthClientInformationFull,
   OAuthTokenRevocationRequest,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 // ---------------------------------------------------------------------------
 // Schema creation (called from index.ts migration)
@@ -515,14 +516,20 @@ export class ReflectOAuthProvider implements OAuthServerProvider {
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
+    // Throw InvalidTokenError (not plain Error) so the SDK's bearer-auth
+    // middleware returns a proper 401 with WWW-Authenticate header.
+    // Plain Errors get wrapped as ServerError → 500, which prevents
+    // OAuth clients (Cursor on darwin/arm64 hit this on 2026-05-13)
+    // from auto-refreshing expired tokens. Per OAuth 2.0 Bearer Token
+    // Usage spec, an unknown or expired token must produce 401, not 500.
     const row = this.db
       .prepare(`SELECT * FROM oauth_tokens WHERE token = ? AND token_type = 'access'`)
       .get(token) as Record<string, string> | undefined;
 
-    if (!row) throw new Error("Invalid access token");
+    if (!row) throw new InvalidTokenError("Invalid access token");
     if (row.expires_at && new Date(row.expires_at) < new Date()) {
       this.db.prepare(`DELETE FROM oauth_tokens WHERE token = ?`).run(token);
-      throw new Error("Access token expired");
+      throw new InvalidTokenError("Access token expired");
     }
 
     return {
