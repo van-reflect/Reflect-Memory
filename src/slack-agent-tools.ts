@@ -287,12 +287,17 @@ export function buildAgentTools(ctx: AgentToolContext): AgentTools {
           const term = String(input.term ?? "").trim();
           if (!term) return JSON.stringify({ error: "term is required" });
           const limit = clampLimit(input.limit, 10);
+          // Slack agent searches across everything the user can read
+          // (personal + org + sub-team) — mirrors the MCP discovery
+          // tools so a Slack question about a teammate's shared note
+          // returns it instead of silently returning empty.
           const memories = listMemories(
             db,
             reflectUserId,
             { by: "search", term },
             SLACK_VENDOR,
             { limit },
+            "all",
           );
           return JSON.stringify({
             count: memories.length,
@@ -307,6 +312,7 @@ export function buildAgentTools(ctx: AgentToolContext): AgentTools {
             { by: "all" },
             SLACK_VENDOR,
             { limit },
+            "all",
           );
           return JSON.stringify({
             count: memories.length,
@@ -325,6 +331,7 @@ export function buildAgentTools(ctx: AgentToolContext): AgentTools {
             { by: "tags", tags },
             SLACK_VENDOR,
             { limit },
+            "all",
           );
           return JSON.stringify({
             count: memories.length,
