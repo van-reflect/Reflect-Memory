@@ -2511,9 +2511,28 @@ export async function createServer(config: ServerConfig): Promise<FastifyInstanc
       }
 
       const result = processSlackEvent(db, envelope, {
-        onAsyncError: (err) =>
-          request.log.error({ err }, "[slack-events] async handler error"),
+        onAsyncError: (err) => {
+          // request.log is a no-op (Fastify created without logger config),
+          // so route async-handler crashes go to console.error so they
+          // actually surface in journalctl. This is the diagnostic that
+          // surfaced the silent-failure pattern in the May 7 retro and
+          // again in the May 13 investigation.
+          console.error("[slack-events] async handler error:", err);
+          request.log.error({ err }, "[slack-events] async handler error");
+        },
       });
+
+      // Surface the synchronous classification too so we can see why an
+      // event was ignored. Most events Slack sends are noise (channel
+      // joins, message_changed echoes); knowing which path each one
+      // takes tells us whether a real user message is being filtered.
+      console.log(
+        `[slack-events] kind=${result.kind}` +
+          ("reason" in result ? ` reason=${result.reason}` : "") +
+          ` event_type=${envelope.event?.type ?? "none"}` +
+          ` channel_type=${envelope.event?.channel_type ?? "none"}` +
+          ` event_id=${envelope.event_id ?? "none"}`,
+      );
 
       if (result.kind === "url_verification") {
         return { challenge: result.challenge };
