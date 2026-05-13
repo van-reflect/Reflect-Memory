@@ -32,7 +32,16 @@ import {
 
 export interface SlackEventEnvelope {
   type: string;
-  org_id?: string;
+  /**
+   * Slack's workspace ID (T0xxxx...). This is Slack's wire-protocol
+   * field; it has NOTHING to do with our internal `org_id` /
+   * `team_id` columns. The orgs+teams Phase 1 rename pass (commit
+   * 5bd3efe) accidentally renamed this to `org_id`, which made
+   * `body.team_id` undefined for every inbound Slack event and silently
+   * filtered every real user message as `ignored`. Restored to match
+   * the actual Slack envelope schema.
+   */
+  team_id?: string;
   api_app_id?: string;
   event?: {
     type?: string;
@@ -73,7 +82,7 @@ export function processSlackEvent(
   if (body.type === "url_verification") {
     return { kind: "url_verification", challenge: body.challenge ?? "" };
   }
-  if (body.type !== "event_callback" || !body.event || !body.org_id) {
+  if (body.type !== "event_callback" || !body.event || !body.team_id) {
     return { kind: "ignored", reason: `unhandled top-level type: ${body.type}` };
   }
 
@@ -103,7 +112,7 @@ export function processSlackEvent(
 
   // Fire-and-forget the async handler. Errors logged via onAsyncError so we
   // never throw past the route handler.
-  const handler = handleUserMessage(db, body.org_id, {
+  const handler = handleUserMessage(db, body.team_id, {
     slackUserId: inner.user,
     channel: inner.channel,
     text: inner.text,

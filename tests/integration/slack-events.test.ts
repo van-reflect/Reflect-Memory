@@ -115,7 +115,7 @@ describe("POST /slack/events — event_callback ack", () => {
   it("returns 200 {ok:true} for a well-formed event_callback (handler runs async)", async () => {
     const { status, body } = await postEvent({
       type: "event_callback",
-      org_id: "T-nonexistent",
+      team_id: "T-nonexistent",
       api_app_id: "A-test",
       event_id: `Ev${randomUUID()}`,
       event: {
@@ -146,6 +146,63 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
     expect(r).toEqual({ kind: "url_verification", challenge: "abc" });
   });
 
+  // REGRESSION: The orgs+teams Phase 1 rename pass (commit 5bd3efe)
+  // accidentally renamed the wire-protocol field `team_id` to `org_id`
+  // on the SlackEventEnvelope, treating Slack's workspace ID as if it
+  // were our internal team_id column. Slack still sends `team_id`, so
+  // the renamed code read `body.team_id` as undefined and ignored
+  // every real user message for 6 days (May 7 → May 13 2026) before
+  // anyone noticed. The fix restored the wire field name.
+  //
+  // This test pins both directions:
+  //   1. A real Slack-shaped envelope (with `team_id`) must NOT be
+  //      filtered as "ignored at the top-level type" — it should
+  //      progress to the `ack` path (the async handler that does the
+  //      DB work runs separately and is allowed to fail later).
+  //   2. An envelope using the WRONG field name (`org_id` only, no
+  //      `team_id`) must be filtered, proving the field-name check
+  //      is the precise gate.
+  it("accepts the Slack wire field `team_id` (regression: not `org_id`)", () => {
+    const r = processSlackEvent(dummyDb, {
+      type: "event_callback",
+      team_id: "T-real",
+      api_app_id: "A-test",
+      event_id: "Ev-real",
+      event: {
+        type: "app_mention",
+        user: "U-real",
+        text: "<@U-bot> hello",
+        channel: "C-real",
+        channel_type: "channel",
+        ts: "111.222",
+      },
+    });
+    // ack means the synchronous filter passed; the async handler runs
+    // separately. The dummyDb sentinel WOULD crash on access, so we
+    // only assert the kind here — the async crash is intentionally
+    // out of scope for this synchronous-filter test.
+    expect(r.kind).toBe("ack");
+  });
+
+  it("ignores envelopes that use `org_id` instead of `team_id` (the bug shape)", () => {
+    const r = processSlackEvent(dummyDb, {
+      // intentionally wrong shape — the pre-fix code accepted this and
+      // silently dropped it; the post-fix code correctly ignores it.
+      type: "event_callback",
+      // @ts-expect-error -- testing the negative path on purpose
+      org_id: "T-x",
+      event: {
+        type: "app_mention",
+        user: "U-x",
+        text: "hi",
+        channel: "C-x",
+        channel_type: "channel",
+        ts: "111.222",
+      },
+    });
+    expect(r.kind).toBe("ignored");
+  });
+
   it("ignores top-level types we don't handle", () => {
     const r = processSlackEvent(dummyDb, { type: "block_actions" });
     expect(r.kind).toBe("ignored");
@@ -154,7 +211,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
   it("ignores bot_message subtype without DB lookup", () => {
     const r = processSlackEvent(dummyDb, {
       type: "event_callback",
-      org_id: "T-x",
+      team_id: "T-x",
       event: {
         type: "message",
         subtype: "bot_message",
@@ -172,7 +229,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
     for (const subtype of ["message_changed", "message_deleted"]) {
       const r = processSlackEvent(dummyDb, {
         type: "event_callback",
-        org_id: "T-x",
+        team_id: "T-x",
         event: {
           type: "message",
           subtype,
@@ -189,7 +246,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
   it("ignores public-channel message without app_mention", () => {
     const r = processSlackEvent(dummyDb, {
       type: "event_callback",
-      org_id: "T-x",
+      team_id: "T-x",
       event: {
         type: "message",
         channel_type: "channel",
@@ -205,7 +262,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
   it("ignores incomplete event payloads (missing user/channel/text)", () => {
     const r = processSlackEvent(dummyDb, {
       type: "event_callback",
-      org_id: "T-x",
+      team_id: "T-x",
       event: {
         type: "app_mention",
         channel: "C-x",
@@ -218,7 +275,7 @@ describe("processSlackEvent (unit) — synchronous decisions", () => {
   it("ignores self-app messages (api_app_id matches event.app_id)", () => {
     const r = processSlackEvent(dummyDb, {
       type: "event_callback",
-      org_id: "T-x",
+      team_id: "T-x",
       api_app_id: "A-self",
       event: {
         type: "app_mention",
