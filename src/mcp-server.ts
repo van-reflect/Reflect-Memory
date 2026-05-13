@@ -794,12 +794,29 @@ export function startMcpServer(config: McpServerConfig, port: number): void {
       // 1. Dashboard-generated per-user API keys (rm_live_*)
       const apiKeyAuth = authenticateApiKey(db, token);
       if (apiKeyAuth) {
+        // Resolve vendor from the key's label so memories written via a key
+        // labeled "Cursor (Quick setup)" show origin: "cursor" in the dashboard
+        // instead of the generic "apikey" string.
+        const keyRow = db
+          .prepare(`SELECT label FROM api_keys WHERE id = ?`)
+          .get(apiKeyAuth.keyId) as { label: string } | undefined;
+        const keyLabel = (keyRow?.label ?? "").toLowerCase();
+        const LABEL_VENDOR_MAP: Record<string, string> = {
+          cursor: "cursor",
+          claude: "claude",
+          chatgpt: "chatgpt",
+          gemini: "gemini",
+          grok: "grok",
+          n8n: "n8n",
+        };
+        const derivedVendor =
+          Object.keys(LABEL_VENDOR_MAP).find((k) => keyLabel.includes(k)) ?? "apikey";
         return {
           token,
           clientId: `apikey_${apiKeyAuth.keyId}`,
           scopes: ["mcp:read", "mcp:write"],
           expiresAt: Math.floor(Date.now() / 1000) + 86400,
-          extra: { vendor: "apikey", userId: apiKeyAuth.userId, isLegacy: false },
+          extra: { vendor: derivedVendor, userId: apiKeyAuth.userId, isLegacy: false },
         };
       }
 
