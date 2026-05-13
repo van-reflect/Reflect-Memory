@@ -649,6 +649,9 @@ export function formatBriefingAsMarkdown(b: MemoryBriefing): string {
         "(\"save this for the team\", \"share with the org\", \"team note\", \"add to org shared\", etc.). " +
         "Otherwise leave it unset — the user can always share later via the dashboard or `share_memory`. " +
         "Use `read_org_memories` for the broad pool (org-wide), `read_team_memories` for the sub-team pool. " +
+        "**Discovery tools** (`search_memories`, `browse_memories`, `get_memories_by_tag`) search across " +
+        "personal + org + sub-team by default, so a single search will surface everything you can read; " +
+        "narrow with `scope: 'personal'|'org'|'team'` only when you explicitly want one slice. " +
         "Legacy: the older boolean `share_with_team=true` still works as an alias for `share_scope='org'`. " +
         "When in doubt, default to personal.",
     );

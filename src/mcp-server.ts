@@ -24,6 +24,7 @@ import {
   listMemorySummaries,
   createMemory,
   readMemoryById,
+  readMemoryWithTeamAccess,
   updateMemory,
   softDeleteMemory,
   countMemories,
@@ -87,11 +88,11 @@ async function createMcpServerWithTools(
 
   mcp.tool(
     "read_memories",
-    "Get the most recent memories. Returns full content. Use limit to control how many.",
+    "Get the most recent memories the user can read (personal + org + sub-team). Returns full content. Use limit to control how many.",
     { limit: z.number().min(1).max(50).default(10).describe("Max memories to return (1-50)") },
     { title: "Read Memories", readOnlyHint: true },
     async ({ limit }) => {
-      const memories = listMemories(db, userId, { by: "all" }, vendor, { limit });
+      const memories = listMemories(db, userId, { by: "all" }, vendor, { limit }, "all");
       return {
         content: [{ type: "text", text: JSON.stringify(memories, null, 2) }],
       };
@@ -127,11 +128,15 @@ async function createMcpServerWithTools(
 
   mcp.tool(
     "get_memory_by_id",
-    "Retrieve a single memory by its UUID. Returns full content.",
+    "Retrieve a single memory by its UUID. Returns full content. Resolves to memories the user can read: personal, org-shared, or sub-team-shared.",
     { id: z.string().describe("The memory UUID") },
     { title: "Get Memory by ID", readOnlyHint: true },
     async ({ id }) => {
-      const memory = readMemoryById(db, userId, id);
+      // Use the team-aware lookup so a memory shared to the user's
+      // org or sub-team (but authored by a teammate) is reachable by
+      // id. Without this, an LLM that just searched and got back a
+      // teammate's shared memory ID would 404 on the follow-up read.
+      const memory = readMemoryWithTeamAccess(db, userId, id);
       if (!memory || memory.deleted_at) {
         return { content: [{ type: "text", text: "Memory not found" }], isError: true };
       }
@@ -145,12 +150,12 @@ async function createMcpServerWithTools(
 
   mcp.tool(
     "get_latest_memory",
-    "Get the single most recent memory, ordered by created_at. Optional tag filter.",
+    "Get the single most recent memory the user can read (personal + org + sub-team), ordered by created_at. Optional tag filter.",
     { tag: z.string().optional().describe("Optional tag to filter by") },
     { title: "Get Latest Memory", readOnlyHint: true },
     async ({ tag }) => {
       const filter = tag ? { by: "tags" as const, tags: [tag] } : { by: "all" as const };
-      const memories = listMemories(db, userId, filter, vendor, { limit: 1 });
+      const memories = listMemories(db, userId, filter, vendor, { limit: 1 }, "all");
       if (memories.length === 0) {
         return { content: [{ type: "text", text: tag ? `No memories with tag "${tag}"` : "No memories found" }], isError: true };
       }
@@ -158,21 +163,44 @@ async function createMcpServerWithTools(
     },
   );
 
+  // Shared scope arg used by discovery tools so an LLM can choose
+  // between "everything I can see" (default), the caller's own personal
+  // pool, the org-shared pool, or the sub-team-shared pool. Default is
+  // "all" because that matches the user's intuitive expectation that
+  // "search my memories" / "browse memories" covers everything they
+  // can read in the dashboard — including notes a teammate shared
+  // with the org or sub-team.
+  const SCOPE_DESCRIPTION =
+    "Visibility scope. 'all' (default) returns personal + org-shared + sub-team-shared memories the user can read. 'personal' = only memories the user authored. 'org' = only memories shared with the user's org (any author). 'team' = only memories shared with the user's sub-team (any author).";
+  const scopeArg = z
+    .enum(["personal", "org", "team", "all"])
+    .default("all")
+    .describe(SCOPE_DESCRIPTION);
+
   mcp.tool(
     "browse_memories",
-    "Browse memory summaries (title, tags, dates - no content). Use to discover what exists before reading specific ones.",
+    "Browse memory summaries (title, tags, dates - no content). Use to discover what exists before reading specific ones. " +
+      "Searches everything the user can read by default (personal + org + sub-team); pass `scope` to narrow.",
     {
       limit: z.number().min(1).max(200).default(50).describe("Max results"),
       offset: z.number().min(0).default(0).describe("Skip this many results"),
+      scope: scopeArg,
     },
     { title: "Browse Memories", readOnlyHint: true },
-    async ({ limit, offset }) => {
-      const summaries = listMemorySummaries(db, userId, { by: "all" }, vendor, { limit, offset });
-      const total = countMemories(db, userId, { by: "all" }, vendor);
+    async ({ limit, offset, scope }) => {
+      const summaries = listMemorySummaries(
+        db,
+        userId,
+        { by: "all" },
+        vendor,
+        { limit, offset },
+        scope,
+      );
+      const total = countMemories(db, userId, { by: "all" }, vendor, scope);
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({ memories: summaries, total, limit, offset, has_more: offset + summaries.length < total }, null, 2),
+          text: JSON.stringify({ memories: summaries, total, limit, offset, scope, has_more: offset + summaries.length < total }, null, 2),
         }],
       };
     },
@@ -180,34 +208,45 @@ async function createMcpServerWithTools(
 
   mcp.tool(
     "search_memories",
-    "Search memories by text in title or content. Returns full content.",
+    "Search memories by text in title or content. Returns full content. " +
+      "Searches everything the user can read by default (personal + org + sub-team); pass `scope` to narrow.",
     {
       term: z.string().min(1).describe("Search term"),
       limit: z.number().min(1).max(50).default(10).describe("Max results"),
+      scope: scopeArg,
     },
     { title: "Search Memories", readOnlyHint: true },
-    async ({ term, limit }) => {
-      const memories = listMemories(db, userId, { by: "search", term }, vendor, { limit });
+    async ({ term, limit, scope }) => {
+      const memories = listMemories(db, userId, { by: "search", term }, vendor, { limit }, scope);
       return { content: [{ type: "text", text: JSON.stringify(memories, null, 2) }] };
     },
   );
 
   mcp.tool(
     "get_memories_by_tag",
-    "Get full-body memories filtered by tags. Returns memories matching ANY of the given tags.",
+    "Get full-body memories filtered by tags. Returns memories matching ANY of the given tags. " +
+      "Searches everything the user can read by default (personal + org + sub-team); pass `scope` to narrow.",
     {
       tags: z.array(z.string()).min(1).describe("Tags to filter by"),
       limit: z.number().min(1).max(100).default(20).describe("Max results"),
       offset: z.number().min(0).default(0).describe("Skip this many"),
+      scope: scopeArg,
     },
     { title: "Get Memories by Tag", readOnlyHint: true },
-    async ({ tags, limit, offset }) => {
-      const memories = listMemories(db, userId, { by: "tags", tags }, vendor, { limit, offset });
-      const total = countMemories(db, userId, { by: "tags", tags }, vendor);
+    async ({ tags, limit, offset, scope }) => {
+      const memories = listMemories(
+        db,
+        userId,
+        { by: "tags", tags },
+        vendor,
+        { limit, offset },
+        scope,
+      );
+      const total = countMemories(db, userId, { by: "tags", tags }, vendor, scope);
       return {
         content: [{
           type: "text",
-          text: JSON.stringify({ memories, total, limit, offset, has_more: offset + memories.length < total }, null, 2),
+          text: JSON.stringify({ memories, total, limit, offset, scope, has_more: offset + memories.length < total }, null, 2),
         }],
       };
     },

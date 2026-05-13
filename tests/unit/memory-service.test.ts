@@ -513,3 +513,215 @@ describe("emptyTrash", () => {
     expect(listMemories(h.db, userId, { by: "trashed" }, null)).toHaveLength(0);
   });
 });
+
+// Scope-aware listing — regression coverage for the bug where MCP
+// discovery tools (browse/search/by-tag) silently filtered to
+// personal-only and missed memories shared into the user's org or
+// sub-team. The fix added a `scope` parameter to listMemories /
+// listMemorySummaries / countMemories that defaults to "personal" for
+// backward compat with existing call sites but accepts "org", "team",
+// or "all".
+describe("listMemories — scope filter", () => {
+  let orgId: string;
+  let teamId: string;
+  let authorId: string;
+  let viewerId: string;
+
+  beforeEach(() => {
+    orgId = randomUUID();
+    teamId = randomUUID();
+    const now = new Date().toISOString();
+
+    h.db.prepare(
+      `INSERT INTO orgs (id, name, owner_id, plan, created_at, updated_at)
+       VALUES (?, 'Scope-Test-Org', ?, 'team', ?, ?)`,
+    ).run(orgId, userId, now, now);
+    h.db.prepare(
+      `INSERT INTO teams (id, org_id, name, created_at, updated_at)
+       VALUES (?, ?, 'engineering', ?, ?)`,
+    ).run(teamId, orgId, now, now);
+
+    // userId from outer scope is the author. They're on org + team.
+    h.db.prepare(
+      `UPDATE users SET org_id = ?, team_id = ?, org_role = 'owner', updated_at = ?
+       WHERE id = ?`,
+    ).run(orgId, teamId, now, userId);
+    authorId = userId;
+
+    // Second user (viewer): same org + same sub-team, but authored
+    // none of the test memories. Used to verify scope filters return
+    // memories authored by *teammates* — not just self.
+    const viewer = seedUser(h.db, { orgId });
+    viewerId = viewer.id;
+    h.db.prepare(
+      `UPDATE users SET team_id = ?, org_role = 'member', updated_at = ?
+       WHERE id = ?`,
+    ).run(teamId, now, viewerId);
+  });
+
+  function seedAuthorMemoryWithSharing(
+    title: string,
+    sharing: "personal" | "org" | "team",
+  ): string {
+    const m = createMemory(h.db, authorId, {
+      title,
+      content: `body for ${title}`,
+      tags: ["scope-test"],
+      origin: "user",
+      allowed_vendors: ["*"],
+    });
+    if (sharing === "org") {
+      h.db.prepare(
+        `UPDATE memories SET shared_with_org_id = ?, shared_at = ? WHERE id = ?`,
+      ).run(orgId, new Date().toISOString(), m.id);
+    } else if (sharing === "team") {
+      h.db.prepare(
+        `UPDATE memories SET shared_with_team_id = ?, shared_at = ? WHERE id = ?`,
+      ).run(teamId, new Date().toISOString(), m.id);
+    }
+    return m.id;
+  }
+
+  it("default scope (personal) returns only the caller's authored memories — no org/team-shared", () => {
+    seedAuthorMemoryWithSharing("alpha personal one", "personal");
+    seedAuthorMemoryWithSharing("alpha shared org one", "org");
+    seedAuthorMemoryWithSharing("alpha shared team one", "team");
+
+    // Viewer is on the same org + team but authored nothing. Default
+    // (personal) scope should return zero — this is the legacy
+    // behavior that the new arg preserves for non-MCP call sites.
+    const results = listMemories(h.db, viewerId, { by: "all" }, null);
+    expect(results).toHaveLength(0);
+
+    expect(countMemories(h.db, viewerId, { by: "all" }, null)).toBe(0);
+  });
+
+  it("scope=org returns memories shared with the caller's org (any author), excludes personal + sub-team", () => {
+    seedAuthorMemoryWithSharing("alpha personal one", "personal");
+    const orgMemId = seedAuthorMemoryWithSharing("alpha shared org one", "org");
+    seedAuthorMemoryWithSharing("alpha shared team one", "team");
+
+    const results = listMemories(h.db, viewerId, { by: "all" }, null, undefined, "org");
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe(orgMemId);
+    expect(results[0].shared_with_org_id).toBe(orgId);
+
+    expect(countMemories(h.db, viewerId, { by: "all" }, null, "org")).toBe(1);
+  });
+
+  it("scope=team returns memories shared with the caller's sub-team (any author), excludes personal + org", () => {
+    seedAuthorMemoryWithSharing("alpha personal one", "personal");
+    seedAuthorMemoryWithSharing("alpha shared org one", "org");
+    const teamMemId = seedAuthorMemoryWithSharing("alpha shared team one", "team");
+
+    const results = listMemories(h.db, viewerId, { by: "all" }, null, undefined, "team");
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe(teamMemId);
+    expect(results[0].shared_with_team_id).toBe(teamId);
+
+    expect(countMemories(h.db, viewerId, { by: "all" }, null, "team")).toBe(1);
+  });
+
+  it("scope=all returns the union of personal + org + sub-team — the bug-fix scope", () => {
+    // Viewer (other user) authors a personal memory AND can see two
+    // shared memories the author seeded. scope=all should surface
+    // all three.
+    const viewerOwnMemId = createMemory(h.db, viewerId, {
+      title: "viewers own personal note",
+      content: "private to viewer",
+      tags: ["viewer-only"],
+      origin: "user",
+      allowed_vendors: ["*"],
+    }).id;
+    seedAuthorMemoryWithSharing("alpha personal one", "personal"); // authored by author, not viewer
+    const orgMemId = seedAuthorMemoryWithSharing("alpha shared org one", "org");
+    const teamMemId = seedAuthorMemoryWithSharing("alpha shared team one", "team");
+
+    const results = listMemories(h.db, viewerId, { by: "all" }, null, undefined, "all");
+    const ids = results.map((m) => m.id).sort();
+    expect(ids).toEqual([viewerOwnMemId, orgMemId, teamMemId].sort());
+
+    expect(countMemories(h.db, viewerId, { by: "all" }, null, "all")).toBe(3);
+  });
+
+  it("scope=all + by=search filters to matching shared memories — the MCP search_memories path", () => {
+    seedAuthorMemoryWithSharing("alpha shared org match", "org");
+    seedAuthorMemoryWithSharing("zulu shared team nomatch", "team");
+
+    const hits = listMemories(
+      h.db,
+      viewerId,
+      { by: "search", term: "alpha" },
+      null,
+      undefined,
+      "all",
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0].title).toBe("alpha shared org match");
+  });
+
+  it("scope=all + by=tags filters to matching shared memories — the MCP get_memories_by_tag path", () => {
+    const m1 = createMemory(h.db, authorId, {
+      title: "alpha tagged one",
+      content: "body alpha tagged one",
+      tags: ["incident-2026-q2", "scope-test"],
+      origin: "user",
+      allowed_vendors: ["*"],
+    });
+    h.db.prepare(
+      `UPDATE memories SET shared_with_org_id = ?, shared_at = ? WHERE id = ?`,
+    ).run(orgId, new Date().toISOString(), m1.id);
+
+    const m2 = createMemory(h.db, authorId, {
+      title: "bravo tagged team",
+      content: "body bravo tagged team",
+      tags: ["incident-2026-q2", "scope-test"],
+      origin: "user",
+      allowed_vendors: ["*"],
+    });
+    h.db.prepare(
+      `UPDATE memories SET shared_with_team_id = ?, shared_at = ? WHERE id = ?`,
+    ).run(teamId, new Date().toISOString(), m2.id);
+
+    const hits = listMemories(
+      h.db,
+      viewerId,
+      { by: "tags", tags: ["incident-2026-q2"] },
+      null,
+      undefined,
+      "all",
+    );
+    const ids = hits.map((m) => m.id).sort();
+    expect(ids).toEqual([m1.id, m2.id].sort());
+  });
+
+  it("trash scope override: scope=all on by=trashed still filters to caller's trashed memories only", () => {
+    // Author trashes their own personal memory. Viewer (different
+    // user, same org+team) calls listMemories with scope=all + by=trashed
+    // — must NOT see the author's trash, even though the underlying
+    // memory was personal-to-author. Trash is per-user.
+    const m = createMemory(h.db, authorId, {
+      title: "to be trashed",
+      content: "body to be trashed",
+      tags: [],
+      origin: "user",
+      allowed_vendors: ["*"],
+    });
+    softDeleteMemory(h.db, authorId, m.id);
+
+    const viewerTrash = listMemories(
+      h.db,
+      viewerId,
+      { by: "trashed" },
+      null,
+      undefined,
+      "all",
+    );
+    expect(viewerTrash).toHaveLength(0);
+
+    // Author still sees their own trashed memory.
+    const authorTrash = listMemories(h.db, authorId, { by: "trashed" }, null);
+    expect(authorTrash).toHaveLength(1);
+    expect(authorTrash[0].id).toBe(m.id);
+  });
+});

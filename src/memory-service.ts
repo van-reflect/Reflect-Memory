@@ -62,6 +62,66 @@ export type MemoryFilter =
   | { by: "origin"; origin: string }
   | { by: "trashed" };
 
+/**
+ * Visibility scope for read/search/browse queries.
+ *   "personal" — only memories the caller authored (legacy default; kept
+ *                for backward compat with existing call sites).
+ *   "org"      — memories shared with the caller's org (any author).
+ *   "team"     — memories shared with the caller's sub-team (any author).
+ *   "all"      — union of personal + org + team (everything the caller
+ *                has read access to). Recommended for discovery tools
+ *                like browse / search / by-tag because it matches the
+ *                user's intuitive expectation that "search my memories"
+ *                covers everything they can see in the dashboard.
+ *
+ * Note on `trashed` filter: trash is always personal-only — soft-deleted
+ * shared memories don't show up in anyone else's trash because that's
+ * an editor's-view concept. The scope arg is ignored for `by: "trashed"`.
+ */
+export type MemoryScope = "personal" | "org" | "team" | "all";
+
+/**
+ * Build the SQL WHERE-clause fragment that scopes a memories query to
+ * the caller's accessible visibility. Returns the fragment and a
+ * helper that yields the parameter values, in order, for the prepared
+ * statement.
+ *
+ * The clause references the `m` alias for the memories table (used
+ * everywhere in this file). The org_id / team_id of the caller are
+ * resolved via subqueries so the call site doesn't need to pre-fetch
+ * the user row.
+ */
+function buildScopeClause(
+  scope: MemoryScope,
+): { sql: string; params: (userId: string) => unknown[] } {
+  switch (scope) {
+    case "personal":
+      return { sql: "m.user_id = ?", params: (uid) => [uid] };
+    case "org":
+      return {
+        sql:
+          "m.shared_with_org_id IS NOT NULL " +
+          "AND m.shared_with_org_id = (SELECT org_id FROM users WHERE id = ?)",
+        params: (uid) => [uid],
+      };
+    case "team":
+      return {
+        sql:
+          "m.shared_with_team_id IS NOT NULL " +
+          "AND m.shared_with_team_id = (SELECT team_id FROM users WHERE id = ?)",
+        params: (uid) => [uid],
+      };
+    case "all":
+      return {
+        sql:
+          "(m.user_id = ? " +
+          "OR (m.shared_with_org_id IS NOT NULL AND m.shared_with_org_id = (SELECT org_id FROM users WHERE id = ?)) " +
+          "OR (m.shared_with_team_id IS NOT NULL AND m.shared_with_team_id = (SELECT team_id FROM users WHERE id = ?)))",
+        params: (uid) => [uid, uid, uid],
+      };
+  }
+}
+
 export interface MemorySummary {
   id: string;
   title: string;
@@ -336,13 +396,21 @@ export function readMemoryById(
 }
 
 /**
- * Read a memory the caller can access — either because they own it OR
- * because it is shared with the team they're on. Returns null if neither
- * holds (looks like a 404 to the caller, which is intentional — we don't
- * want to leak existence of memories outside the caller's visibility).
+ * Read a memory the caller can access — either because they own it,
+ * OR because it is shared with their org, OR because it is shared with
+ * their sub-team. Returns null if none of those hold (looks like a 404
+ * to the caller, which is intentional — we don't want to leak existence
+ * of memories outside the caller's visibility).
  *
- * Used by team-collaborative endpoints (e.g. thread fetch) where a
- * teammate needs to read a memory another team member owns.
+ * Used by team-collaborative endpoints (e.g. thread fetch, get-by-id)
+ * where a teammate needs to read a memory another team member owns or
+ * a memory that was shared into a pool the caller has access to.
+ *
+ * Sub-team access was added alongside the orgs+teams v1 cutover; before
+ * that this only handled personal + org-shared, which made
+ * sub-team-shared memories invisible to `get_memory_by_id` from the
+ * MCP server (matching the wider scope-aware fix in the discovery
+ * tools).
  */
 export function readMemoryWithTeamAccess(
   db: Database.Database,
@@ -359,9 +427,13 @@ export function readMemoryWithTeamAccess(
              shared_with_org_id IS NOT NULL
              AND shared_with_org_id = (SELECT org_id FROM users WHERE id = ?)
            )
+           OR (
+             shared_with_team_id IS NOT NULL
+             AND shared_with_team_id = (SELECT team_id FROM users WHERE id = ?)
+           )
          )`,
     )
-    .get(memoryId, userId, userId) as MemoryRow | undefined;
+    .get(memoryId, userId, userId, userId) as MemoryRow | undefined;
   if (!row) return null;
   return rowToMemory(row);
 }
@@ -372,6 +444,7 @@ export function listMemories(
   filter: MemoryFilter,
   vendor?: string | null,
   pagination?: PaginationOptions,
+  scope: MemoryScope = "personal",
 ): MemoryEntry[] {
   const vendorClause = vendor
     ? `AND EXISTS (SELECT 1 FROM json_each(m.allowed_vendors) WHERE value = '*' OR value = ?)`
@@ -381,6 +454,12 @@ export function listMemories(
     filter.by === "trashed"
       ? `AND m.deleted_at IS NOT NULL`
       : `AND m.deleted_at IS NULL`;
+  // Trash is always personal-only — restoring your own soft-deletes is
+  // an editor's-view concept, not a shared one. Override scope here to
+  // avoid surfacing other users' trashed memories.
+  const effectiveScope: MemoryScope = filter.by === "trashed" ? "personal" : scope;
+  const sc = buildScopeClause(effectiveScope);
+  const scopeParams = sc.params(userId);
   const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
 
   switch (filter.by) {
@@ -389,10 +468,10 @@ export function listMemories(
         .prepare(
           `SELECT ${COLUMNS_ALIASED}
            FROM memories m
-           WHERE m.user_id = ? ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, ...vendorParams, ...pagParams) as MemoryRow[];
+        .all(...scopeParams, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
     }
 
@@ -401,10 +480,10 @@ export function listMemories(
         .prepare(
           `SELECT ${COLUMNS_ALIASED}
            FROM memories m
-           WHERE m.user_id = ? ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} ${vendorClause} ${deletedClause}
            ORDER BY m.deleted_at DESC${pagSql}`,
         )
-        .all(userId, ...vendorParams, ...pagParams) as MemoryRow[];
+        .all(...scopeParams, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
     }
 
@@ -415,10 +494,10 @@ export function listMemories(
         .prepare(
           `SELECT DISTINCT ${COLUMNS_ALIASED}
            FROM memories m, json_each(m.tags) t
-           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, ...filter.tags, ...vendorParams, ...pagParams) as MemoryRow[];
+        .all(...scopeParams, ...filter.tags, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
     }
 
@@ -429,10 +508,10 @@ export function listMemories(
         .prepare(
           `SELECT ${COLUMNS_ALIASED}
            FROM memories m
-           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, ...filter.ids, ...vendorParams, ...pagParams) as MemoryRow[];
+        .all(...scopeParams, ...filter.ids, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
     }
 
@@ -443,10 +522,10 @@ export function listMemories(
         .prepare(
           `SELECT ${COLUMNS_ALIASED}
            FROM memories m
-           WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as MemoryRow[];
+        .all(...scopeParams, likeTerm, likeTerm, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
     }
 
@@ -456,10 +535,10 @@ export function listMemories(
         .prepare(
           `SELECT ${COLUMNS_ALIASED}
            FROM memories m
-           WHERE m.user_id = ? AND m.origin = ? ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} AND m.origin = ? ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, filter.origin, ...vendorParams, ...pagParams) as MemoryRow[];
+        .all(...scopeParams, filter.origin, ...vendorParams, ...pagParams) as MemoryRow[];
       return rows.map(rowToMemory);
     }
 
@@ -475,6 +554,7 @@ export function countMemories(
   userId: string,
   filter: MemoryFilter,
   vendor?: string | null,
+  scope: MemoryScope = "personal",
 ): number {
   const vendorClause = vendor
     ? `AND EXISTS (SELECT 1 FROM json_each(m.allowed_vendors) WHERE value = '*' OR value = ?)`
@@ -484,23 +564,26 @@ export function countMemories(
     filter.by === "trashed"
       ? `AND m.deleted_at IS NOT NULL`
       : `AND m.deleted_at IS NULL`;
+  const effectiveScope: MemoryScope = filter.by === "trashed" ? "personal" : scope;
+  const sc = buildScopeClause(effectiveScope);
+  const scopeParams = sc.params(userId);
 
   switch (filter.by) {
     case "all": {
       const row = db
         .prepare(
-          `SELECT COUNT(*) as count FROM memories m WHERE m.user_id = ? ${vendorClause} ${deletedClause}`,
+          `SELECT COUNT(*) as count FROM memories m WHERE ${sc.sql} ${vendorClause} ${deletedClause}`,
         )
-        .get(userId, ...vendorParams) as { count: number };
+        .get(...scopeParams, ...vendorParams) as { count: number };
       return row.count;
     }
 
     case "trashed": {
       const row = db
         .prepare(
-          `SELECT COUNT(*) as count FROM memories m WHERE m.user_id = ? ${vendorClause} ${deletedClause}`,
+          `SELECT COUNT(*) as count FROM memories m WHERE ${sc.sql} ${vendorClause} ${deletedClause}`,
         )
-        .get(userId, ...vendorParams) as { count: number };
+        .get(...scopeParams, ...vendorParams) as { count: number };
       return row.count;
     }
 
@@ -511,9 +594,9 @@ export function countMemories(
         .prepare(
           `SELECT COUNT(DISTINCT m.id) as count
            FROM memories m, json_each(m.tags) t
-           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}`,
+           WHERE ${sc.sql} AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}`,
         )
-        .get(userId, ...filter.tags, ...vendorParams) as { count: number };
+        .get(...scopeParams, ...filter.tags, ...vendorParams) as { count: number };
       return row.count;
     }
 
@@ -523,9 +606,9 @@ export function countMemories(
       const row = db
         .prepare(
           `SELECT COUNT(*) as count FROM memories m
-           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}`,
+           WHERE ${sc.sql} AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}`,
         )
-        .get(userId, ...filter.ids, ...vendorParams) as { count: number };
+        .get(...scopeParams, ...filter.ids, ...vendorParams) as { count: number };
       return row.count;
     }
 
@@ -535,9 +618,9 @@ export function countMemories(
       const row = db
         .prepare(
           `SELECT COUNT(*) as count FROM memories m
-           WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}`,
+           WHERE ${sc.sql} AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}`,
         )
-        .get(userId, likeTerm, likeTerm, ...vendorParams) as { count: number };
+        .get(...scopeParams, likeTerm, likeTerm, ...vendorParams) as { count: number };
       return row.count;
     }
 
@@ -546,9 +629,9 @@ export function countMemories(
       const row = db
         .prepare(
           `SELECT COUNT(*) as count FROM memories m
-           WHERE m.user_id = ? AND m.origin = ? ${vendorClause} ${deletedClause}`,
+           WHERE ${sc.sql} AND m.origin = ? ${vendorClause} ${deletedClause}`,
         )
-        .get(userId, filter.origin, ...vendorParams) as { count: number };
+        .get(...scopeParams, filter.origin, ...vendorParams) as { count: number };
       return row.count;
     }
 
@@ -588,12 +671,15 @@ export function listMemorySummaries(
   filter: MemoryFilter,
   vendor?: string | null,
   pagination?: PaginationOptions,
+  scope: MemoryScope = "personal",
 ): MemorySummary[] {
   const vendorClause = vendor
     ? `AND EXISTS (SELECT 1 FROM json_each(m.allowed_vendors) WHERE value = '*' OR value = ?)`
     : "";
   const vendorParams = vendor ? [vendor] : [];
   const deletedClause = `AND m.deleted_at IS NULL`;
+  const sc = buildScopeClause(scope);
+  const scopeParams = sc.params(userId);
   const { sql: pagSql, params: pagParams } = buildPaginationClause(pagination);
 
   switch (filter.by) {
@@ -602,10 +688,10 @@ export function listMemorySummaries(
         .prepare(
           `SELECT ${SUMMARY_COLUMNS_ALIASED}
            FROM memories m
-           WHERE m.user_id = ? ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, ...vendorParams, ...pagParams) as SummaryRow[];
+        .all(...scopeParams, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
     }
 
@@ -616,10 +702,10 @@ export function listMemorySummaries(
         .prepare(
           `SELECT DISTINCT ${SUMMARY_COLUMNS_ALIASED}
            FROM memories m, json_each(m.tags) t
-           WHERE m.user_id = ? AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} AND t.value IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, ...filter.tags, ...vendorParams, ...pagParams) as SummaryRow[];
+        .all(...scopeParams, ...filter.tags, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
     }
 
@@ -630,10 +716,10 @@ export function listMemorySummaries(
         .prepare(
           `SELECT ${SUMMARY_COLUMNS_ALIASED}
            FROM memories m
-           WHERE m.user_id = ? AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} AND m.id IN (${placeholders}) ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, ...filter.ids, ...vendorParams, ...pagParams) as SummaryRow[];
+        .all(...scopeParams, ...filter.ids, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
     }
 
@@ -644,10 +730,10 @@ export function listMemorySummaries(
         .prepare(
           `SELECT ${SUMMARY_COLUMNS_ALIASED}
            FROM memories m
-           WHERE m.user_id = ? AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} AND (m.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\') ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, likeTerm, likeTerm, ...vendorParams, ...pagParams) as SummaryRow[];
+        .all(...scopeParams, likeTerm, likeTerm, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
     }
 
@@ -657,10 +743,10 @@ export function listMemorySummaries(
         .prepare(
           `SELECT ${SUMMARY_COLUMNS_ALIASED}
            FROM memories m
-           WHERE m.user_id = ? AND m.origin = ? ${vendorClause} ${deletedClause}
+           WHERE ${sc.sql} AND m.origin = ? ${vendorClause} ${deletedClause}
            ORDER BY m.created_at DESC, m.id DESC${pagSql}`,
         )
-        .all(userId, filter.origin, ...vendorParams, ...pagParams) as SummaryRow[];
+        .all(...scopeParams, filter.origin, ...vendorParams, ...pagParams) as SummaryRow[];
       return rows.map(rowToSummary);
     }
 
